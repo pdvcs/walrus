@@ -1,0 +1,70 @@
+name = "maven3"
+display_name = "Apache Maven 3"
+vendor = "Apache Software Foundation"
+website = "https://maven.apache.org"
+description = "Apache Maven build tool (3.9.x series)"
+
+# Maven Central capabilities:
+#   Release date: Maven Central Solr API (search.maven.org) — per-version timestamp in ms
+#   Checksum:     SHA1 sidecar files (.sha1) — available alongside every artifact
+#
+# Maven binaries are platform-independent (pure Java).
+# linux/x86-64, linux/arm64, and macos/arm64 all download the same tar.gz;
+# only Windows differs (zip). The sync service may deduplicate identical artifact URLs.
+
+[discovery]
+type = "xml-api"
+url = "https://repo.maven.apache.org/maven2/org/apache/maven/maven/maven-metadata.xml"
+versions_path = "$.metadata.versioning.versions.version"
+# Keep only stable 3.9.x releases — alpha/beta/RC entries have non-numeric third segment
+version_filter = "^3\\.9\\.\\d+$"
+# Maven Central Solr API: one call per version to get publish timestamp
+release_date_url_template = "https://search.maven.org/solrsearch/select?q=g:org.apache.maven+AND+a:apache-maven+AND+v:{version}&rows=1&wt=json"
+release_date_path = "$.response.docs[0].timestamp"
+
+[versioning]
+type = "semver"
+version_group_extract = "^(\\d+\\.\\d+)" # → "3.9"
+lts_support = false
+
+[retention]
+versions_per_group = 3 # keep the 3 most recent 3.9.x releases
+groups_to_keep = 1 # only the 3.9 series
+cooling_off_days = 3
+
+[checksum]
+type = "separate-file"
+algorithm = "sha1"
+url_template = "https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/{version}/apache-maven-{version}-bin.{ext}.sha1"
+
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "linux"
+arch_upstream = "x86_64"
+extension = "tar.gz"
+url_template = "https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/{version}/apache-maven-{version}-bin.{ext}"
+
+[[platforms]]
+os = "linux"
+arch = "arm64"
+os_upstream = "linux"
+arch_upstream = "aarch64"
+extension = "tar.gz"
+url_template = "https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/{version}/apache-maven-{version}-bin.{ext}"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "darwin"
+arch_upstream = "aarch64"
+extension = "tar.gz"
+url_template = "https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/{version}/apache-maven-{version}-bin.{ext}"
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "windows"
+arch_upstream = "x86_64"
+extension = "zip"
+url_template = "https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/{version}/apache-maven-{version}-bin.{ext}"

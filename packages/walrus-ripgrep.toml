@@ -1,0 +1,70 @@
+name = "ripgrep"
+display_name = "ripgrep"
+vendor = "BurntSushi"
+website = "https://github.com/BurntSushi/ripgrep"
+description = "Fast line-oriented search tool"
+
+# GitHub Releases API capabilities:
+#   Release date: "published_at" field on each release (ISO 8601) — captured automatically
+#   Checksum:     separate asset file with suffix ".sha256" — configured below
+
+[discovery]
+type = "github-releases"
+repo = "BurntSushi/ripgrep"
+include_prereleases = false
+tag_pattern = "^(\\d+\\.\\d+\\.\\d+)$"
+
+[versioning]
+type = "semver"
+version_group_extract = "^(\\d+)"
+lts_support = false
+
+[retention]
+versions_per_group = 2
+groups_to_keep = 2
+cooling_off_days = 3
+
+[checksum]
+type = "github-asset"
+algorithm = "sha256"
+asset_suffix = ".sha256"
+
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "unknown-linux-musl"
+arch_upstream = "x86_64"
+extension = "tar.gz"
+filename_template = "ripgrep-{version}-{arch}-{os}.{ext}"
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "pc-windows-msvc"
+arch_upstream = "x86_64"
+extension = "zip"
+filename_template = "ripgrep-{version}-{arch}-{os}.{ext}"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "apple-darwin"
+arch_upstream = "aarch64"
+extension = "tar.gz"
+filename_template = "ripgrep-{version}-{arch}-{os}.{ext}"
+
+[[platforms]]
+os = "macos"
+arch = "x86-64"
+os_upstream = "apple-darwin"
+arch_upstream = "x86_64"
+extension = "tar.gz"
+filename_template = "ripgrep-{version}-{arch}-{os}.{ext}"
+
+# [[platforms]]
+# os = "linux"
+# arch = "arm64"
+# os_upstream = "unknown-linux-gnu"
+# arch_upstream = "aarch64"
+# extension = "tar.gz"
+# filename_template = "ripgrep-{version}-{arch}-{os}.{ext}"

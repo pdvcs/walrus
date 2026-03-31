@@ -1,0 +1,72 @@
+name = "azuljdk"
+display_name = "Azul Zulu JDK"
+vendor = "Azul Systems"
+website = "https://www.azul.com/downloads/"
+description = "Azul Zulu OpenJDK distribution; includes Java 8 macOS ARM builds not available in Eclipse Temurin"
+
+# Azul metadata API capabilities:
+#   Release date: absent — the package listing endpoint exposes no date or timestamp fields
+#   Checksum:     absent from listing — would require a second call to /packages/{package_uuid};
+#                 not currently implemented (type = "none")
+
+[discovery]
+type = "json-api"
+explicit_versions = [8, 11, 17, 21, 25]
+release_url_template = "https://api.azul.com/metadata/v1/zulu/packages/?java_version={major_version}&os={os}&arch={arch}&java_package_type=jdk&release_status=ga&javafx_bundled=false&crac_supported=false&page_size=50"
+release_download_url_field = "download_url"
+release_filename_field = "name"
+
+[versioning]
+type = "semver"
+# min_version = "21"                 # Don't fetch Java < 21
+version_group_extract = "^(\\d+)" # "21" from "21.0.10+7"
+lts_support = true
+lts_source = "explicit"
+lts_groups = ["8", "11", "17", "21", "25"]
+
+[retention]
+versions_per_group = 2
+cooling_off_days = 3
+
+[checksum]
+type = "none"
+
+# [[platforms]]
+# os = "windows"
+# arch = "x86-64"
+# os_upstream = "windows"
+# arch_upstream = "x86_64"
+# extension = "zip"
+# name_must_contain = "win_x64.zip"
+
+# [[platforms]]
+# os = "macos"
+# arch = "x86-64"
+# os_upstream = "macos"
+# arch_upstream = "x86_64"
+# extension = "tar.gz"
+# name_must_contain = "macosx_x64.tar.gz"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "macos"
+arch_upstream = "aarch64"
+extension = "tar.gz"
+name_must_contain = "macosx_aarch64.tar.gz"
+
+# [[platforms]]
+# os = "linux"
+# arch = "x86-64"
+# os_upstream = "linux"
+# arch_upstream = "x86_64"
+# extension = "tar.gz"
+# name_must_contain = "linux_x64.tar.gz" # excludes linux_musl_x64
+
+# [[platforms]]
+# os = "linux"
+# arch = "arm64"
+# os_upstream = "linux"
+# arch_upstream = "aarch64"
+# extension = "tar.gz"
+# name_must_contain = "linux_aarch64.tar.gz" # excludes linux_musl_aarch64

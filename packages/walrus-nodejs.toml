@@ -1,0 +1,77 @@
+name = "nodejs"
+display_name = "Node.js"
+vendor = "OpenJS Foundation"
+website = "https://nodejs.org"
+description = "JavaScript runtime built on Chrome's V8 JavaScript engine"
+
+# Node.js dist API capabilities:
+#   Release date: "date" field (ISO 8601 YYYY-MM-DD) — populated via release_date_field
+#   LTS:          "lts" field — false (bool) for current releases, string codename for LTS
+#                 (e.g. "Iron" for v20, "Jod" for v22, "Krypton" for v24)
+#   Checksum:     SHASUMS256.txt per release — separate-file type
+
+[discovery]
+type = "json-api"
+url = "https://nodejs.org/dist/index.json"
+
+# Inline submode: single API call returns all releases; no release_url_template.
+# Filter to only the major versions we care about: 20, 22, 24 (LTS) and 25 (current).
+releases_path = "$[?(/^v(20|22|24|25)\\./.test(@.version))]"
+release_version_field = "version"
+tag_pattern = "^v(\\d+.*)" # strip "v" prefix: "v25.8.1" -> "25.8.1"
+release_date_field = "date"
+release_lts_field = "lts" # false → isLts=false; string codename → isLts=true
+
+# "files" is an array of platform identifier strings (e.g. "linux-x64", "win-x64-zip").
+# os_upstream on each platform must match one of these strings.
+# url_template on each platform constructs the download URL using {version}.
+files_field = "files"
+
+[versioning]
+type = "semver"
+version_group_extract = "^(\\d+)" # group by major version: 20, 22, 24, 25
+lts_support = true
+lts_source = "api" # LTS determined per-release via release_lts_field above
+
+[retention]
+versions_per_group = 3
+groups_to_keep = 4 # 20, 22, 24, 25
+cooling_off_days = 3
+
+[checksum]
+type = "separate-file"
+algorithm = "sha256"
+url_template = "https://nodejs.org/dist/v{version}/SHASUMS256.txt"
+parse_pattern = "^([a-f0-9]+)\\s+{filename}$"
+
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "linux-x64"
+arch_upstream = "x64"
+extension = "tar.xz"
+url_template = "https://nodejs.org/dist/v{version}/node-v{version}-linux-x64.tar.xz"
+
+[[platforms]]
+os = "macos"
+arch = "x86-64"
+os_upstream = "osx-x64-tar"
+arch_upstream = "x64"
+extension = "tar.gz"
+url_template = "https://nodejs.org/dist/v{version}/node-v{version}-darwin-x64.tar.gz"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "osx-arm64-tar"
+arch_upstream = "arm64"
+extension = "tar.gz"
+url_template = "https://nodejs.org/dist/v{version}/node-v{version}-darwin-arm64.tar.gz"
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "win-x64-zip"
+arch_upstream = "x64"
+extension = "zip"
+url_template = "https://nodejs.org/dist/v{version}/node-v{version}-win-x64.zip"

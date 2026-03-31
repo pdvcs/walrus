@@ -1,0 +1,21 @@
+.vscode/
+.idea/
+*.iml
+
+node_modules/
+dist/
+data/
+*.js.map
+
+*.log
+*.tmp
+*.bak
+*.swp
+*~
+
+.env.secrets
+
+# Terraform
+infra/terraform/.terraform/
+infra/terraform/*.tfstate
+infra/terraform/*.tfstate.backup

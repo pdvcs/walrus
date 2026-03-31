@@ -1,0 +1,74 @@
+name = "python"
+display_name = "Python"
+vendor = "Astral"
+website = "https://github.com/astral-sh/python-build-standalone"
+description = "Standalone CPython builds (python-build-standalone)"
+
+# GitHub Releases API capabilities:
+#   Release date: "published_at" on each release — captured automatically
+#   Checksum:     "digest" field on each asset object (sha256:hex format)
+#
+# Release tags are dates (e.g. 20260325), not version numbers.
+# Each release contains ~853 assets across 6 Python versions × many platforms × build variants.
+# asset_version_pattern extracts the Python version from each asset filename so Walrus can
+# produce one DiscoveredVersion per Python version, not one per release date.
+
+[discovery]
+type = "github-releases"
+repo = "astral-sh/python-build-standalone"
+include_prereleases = false
+# Extracts Python version from asset filenames; restricts to 3.11–3.14.
+# Add 3.15 to the alternation when it stabilises.
+asset_version_pattern = "^cpython-(3\\.(?:11|12|13|14)\\.\\d+)\\+"
+max_releases = 10   # limits fetch to ~8500 assets vs ~85300; avoids GitHub 504 on this high-asset-count repo
+
+[versioning]
+type = "semver"
+version_group_extract = "^(\\d+\\.\\d+)"   # group by major.minor: 3.11, 3.12, 3.13, 3.14
+min_version = "3.11"
+lts_support = false
+
+[retention]
+versions_per_group = 2
+groups_to_keep = 4
+cooling_off_days = 3
+
+[checksum]
+type = "github-asset-digest"
+algorithm = "sha256"
+
+# install_only: pre-built, extractable immediately — the variant uv itself downloads.
+# {tag} is the release date (e.g. 20260325); {version} is the Python version (e.g. 3.12.9).
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "apple-darwin"
+arch_upstream = "aarch64"
+extension = "tar.gz"
+filename_template = "cpython-{version}+{tag}-{arch}-{os}-install_only.{ext}"
+
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "unknown-linux-gnu"
+arch_upstream = "x86_64"
+extension = "tar.gz"
+filename_template = "cpython-{version}+{tag}-{arch}-{os}-install_only.{ext}"
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "pc-windows-msvc"
+arch_upstream = "x86_64"
+extension = "tar.gz"
+filename_template = "cpython-{version}+{tag}-{arch}-{os}-install_only.{ext}"
+
+# Uncomment to add more platforms:
+# [[platforms]]
+# os = "linux"
+# arch = "arm64"
+# os_upstream = "unknown-linux-gnu"
+# arch_upstream = "aarch64"
+# extension = "tar.gz"
+# filename_template = "cpython-{version}+{tag}-{arch}-{os}-install_only.{ext}"

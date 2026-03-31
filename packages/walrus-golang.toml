@@ -1,0 +1,78 @@
+name = "golang"
+display_name = "The Go Programming Language"
+vendor = "Google"
+website = "https://go.dev"
+description = "Go programming language"
+
+# Go downloads API capabilities:
+#   Release date: absent — no date or timestamp field at the release or file level
+#   Checksum:     "files[].sha256" inline SHA256 hex — captured via file_checksum_field below
+
+[discovery]
+type = "json-api"
+url = "https://go.dev/dl/?mode=json&include=all"
+
+# Inline submode: the main response contains versions and artifacts together.
+# (No release_url_template — that's what activates inline mode.)
+releases_path = "$[?(@.stable==true)]" # Filter to stable releases only
+release_version_field = "version" # Each release object has a "version" field
+tag_pattern = "^go(\\d+.*)" # Strip the "go" prefix: "go1.24.1" -> "1.24.1"
+
+# Navigate the files array within each release object
+files_field = "files"
+file_os_field = "os"
+file_arch_field = "arch"
+file_kind_field = "kind"
+file_kind_value = "archive" # Excludes source tarballs and installers
+file_filename_field = "filename"
+file_url_base = "https://dl.google.com/go/"
+file_checksum_field = "sha256" # Checksum is inline in the API response
+
+[versioning]
+type = "semver"
+# Go's release series is defined by major.minor, not just major.
+version_group_extract = "^(\\d+\\.\\d+)"
+min_version = "1.21" # Don't fetch Go < 1.21 (older releases are EOL)
+lts_support = false
+
+[retention]
+versions_per_group = 2 # Keep only the latest patch within each minor series
+groups_to_keep = 3
+cooling_off_days = 3
+
+# No [checksum] section needed — sha256 comes from the API response via file_checksum_field
+
+# [[platforms]]
+# os = "windows"
+# arch = "x86-64"
+# os_upstream = "windows"
+# arch_upstream = "amd64"
+# extension = "zip"
+
+# [[platforms]]
+# os = "macos"
+# arch = "x86-64"
+# os_upstream = "darwin"
+# arch_upstream = "amd64"
+# extension = "tar.gz"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "darwin"
+arch_upstream = "arm64"
+extension = "tar.gz"
+
+# [[platforms]]
+# os = "linux"
+# arch = "x86-64"
+# os_upstream = "linux"
+# arch_upstream = "amd64"
+# extension = "tar.gz"
+
+# [[platforms]]
+# os = "linux"
+# arch = "arm64"
+# os_upstream = "linux"
+# arch_upstream = "arm64"
+# extension = "tar.gz"

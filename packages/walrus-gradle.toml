@@ -1,0 +1,64 @@
+name = "gradle"
+display_name = "Gradle build tool"
+vendor = "Gradle Technologies"
+website = "https://gradle.org"
+description = "Gradle build tool"
+
+# Gradle versions API capabilities:
+#   Release date: "buildTime" field (YYYYMMDDHHmmss+ZZZZ) — captured via release_date_field
+#   Checksum:     "checksum" field (SHA256 inline) — captured via file_checksum_field
+#
+# Gradle is platform-independent (pure Java + scripts).
+# The same ZIP archive is used on all operating systems and architectures.
+
+[discovery]
+type = "json-api"
+url = "https://services.gradle.org/versions/all"
+# Inline submode (no release_url_template). Filter to stable releases only:
+# exclude snapshots, nightlies, release-nightlies, RCs, milestones, and broken builds.
+releases_path = "$[?(@.snapshot==false && @.nightly==false && @.releaseNightly==false && @.broken==false && @.rcFor=='' && @.milestoneFor=='')]"
+release_version_field = "version"
+# Flat mode (no files_field): download URL is directly on the release object
+release_download_url_field = "downloadUrl"
+file_checksum_field = "checksum" # inline SHA256
+release_date_field = "buildTime" # YYYYMMDDHHmmss+ZZZZ — normalized to ISO 8601 at parse time
+
+[versioning]
+type = "semver"
+version_group_extract = "^(\\d+)" # group by major version: 7, 8, 9, ...
+lts_support = false
+
+[retention]
+versions_per_group = 3 # keep the 3 most recent patch releases per major
+groups_to_keep = 3 # keep the 3 most recent major versions (currently 7, 8, 9)
+cooling_off_days = 3
+
+# No [checksum] section needed — sha256 comes from the inline "checksum" field
+
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "linux"
+arch_upstream = "x86_64"
+extension = "zip"
+
+[[platforms]]
+os = "linux"
+arch = "arm64"
+os_upstream = "linux"
+arch_upstream = "aarch64"
+extension = "zip"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "darwin"
+arch_upstream = "aarch64"
+extension = "zip"
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "windows"
+arch_upstream = "x86_64"
+extension = "zip"

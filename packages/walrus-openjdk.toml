@@ -1,0 +1,67 @@
+name = "openjdk"
+display_name = "Eclipse Temurin OpenJDK"
+vendor = "Eclipse Foundation"
+website = "https://adoptium.net"
+description = "Production-ready OpenJDK distribution"
+
+# Adoptium API capabilities:
+#   Release date: "timestamp" field on each release object (ISO 8601) — used for cooling-off
+#   Checksum:     "binaries[].package.checksum" inline SHA256 hex — captured by two-step code
+
+[discovery]
+type = "json-api"
+explicit_versions = [11, 17, 21, 25]
+release_url_template = "https://api.adoptium.net/v3/assets/feature_releases/{major_version}/ga?architecture={arch}&image_type=jdk&os={os}&page=0&page_size={page_size}&sort_method=DEFAULT&sort_order=DESC"
+release_date_field = "timestamp" # ISO 8601 publish timestamp on each release object
+
+[versioning]
+type = "semver"
+version_group_extract = "^(\\d+)" # "21" from "21.0.3+9"
+lts_support = true
+lts_source = "api"
+lts_api_url = "https://api.adoptium.net/v3/info/available_releases"
+lts_api_path = "$.available_lts_releases"
+
+[retention]
+versions_per_group = 2
+cooling_off_days = 3
+
+[checksum]
+type = "inline-api"
+algorithm = "sha256"
+response_path = "$.checksum"
+
+# [[platforms]]
+# os = "windows"
+# arch = "x86-64"
+# os_upstream = "windows"
+# arch_upstream = "x64"
+# extension = "zip"
+
+# [[platforms]]
+# os = "macos"
+# arch = "x86-64"
+# os_upstream = "mac"
+# arch_upstream = "x64"
+# extension = "tar.gz"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "mac"
+arch_upstream = "aarch64"
+extension = "tar.gz"
+
+# [[platforms]]
+# os = "linux"
+# arch = "x86-64"
+# os_upstream = "linux"
+# arch_upstream = "x64"
+# extension = "tar.gz"
+
+# [[platforms]]
+# os = "linux"
+# arch = "arm64"
+# os_upstream = "linux"
+# arch_upstream = "aarch64"
+# extension = "tar.gz"

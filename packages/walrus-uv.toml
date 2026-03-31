@@ -1,0 +1,70 @@
+name = "uv"
+display_name = "uv for Python"
+vendor = "Astral"
+website = "https://github.com/astral-sh/uv"
+description = "Fast Python Package and Project Manager"
+
+# GitHub Releases API capabilities:
+#   Release date: "published_at" field on each release (ISO 8601) — captured automatically
+#   Checksum:     separate asset file with suffix ".sha256" — configured below
+
+[discovery]
+type = "github-releases"
+repo = "astral-sh/uv"
+include_prereleases = false
+tag_pattern = "^(\\d+\\.\\d+\\.\\d+)$"
+
+[versioning]
+type = "semver"
+version_group_extract = "^(\\d+\\.\\d+)" # uv is pre-1.0; group by minor (0.5, 0.6, ...)
+lts_support = false
+
+[retention]
+versions_per_group = 3
+groups_to_keep = 3
+cooling_off_days = 3
+
+[checksum]
+type = "github-asset"
+algorithm = "sha256"
+asset_suffix = ".sha256"
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "pc-windows-msvc"
+arch_upstream = "x86_64"
+extension = "zip"
+filename_template = "uv-{arch}-{os}.{ext}"
+
+# [[platforms]]
+# os = "macos"
+# arch = "x86-64"
+# os_upstream = "apple-darwin"
+# arch_upstream = "x86_64"
+# extension = "tar.gz"
+# filename_template = "uv-{arch}-{os}.{ext}"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "apple-darwin"
+arch_upstream = "aarch64"
+extension = "tar.gz"
+filename_template = "uv-{arch}-{os}.{ext}"
+
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "unknown-linux-gnu"
+arch_upstream = "x86_64"
+extension = "tar.gz"
+filename_template = "uv-{arch}-{os}.{ext}"
+
+# [[platforms]]
+# os = "linux"
+# arch = "arm64"
+# os_upstream = "unknown-linux-gnu"
+# arch_upstream = "aarch64"
+# extension = "tar.gz"
+# filename_template = "uv-{arch}-{os}.{ext}"
