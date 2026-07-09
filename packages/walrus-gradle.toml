@@ -62,3 +62,9 @@ arch = "x86-64"
 os_upstream = "windows"
 arch_upstream = "x86_64"
 extension = "zip"
+
+[vulnerabilities]
+# gradle:gradle — freshly added for walrus; awaiting NVD CPE dictionary verification
+# (WAL-3 MANUAL_TEST, PO sign-off).
+cpes = ["gradle:gradle"]
+aliases = ["gradle", "gradle build tool"]

@@ -101,12 +101,158 @@ export const SyncingResponseSchema = z
   })
   .openapi("SyncingResponse");
 
+// ── Vulnerability intelligence (plan §4) ──────────────────────────────────────
+
+export const VULN_DISCLAIMER =
+  "Absence of results does not imply the product/version is safe. Data comes from " +
+  "public sources (NVD, CISA KEV, OSV) which may lag or be incomplete.";
+
+export const DataFreshnessSchema = z
+  .object({
+    nvd_last_sync: z.string().nullable(),
+    kev_last_sync: z.string().nullable(),
+    osv_last_sync: z.string().nullable(),
+  })
+  .openapi("DataFreshness");
+
+export const MatchCandidateSchema = z
+  .object({
+    slug: z.string().openapi({ description: "Walrus package name" }),
+    display_name: z.string(),
+    score: z.number(),
+  })
+  .openapi("MatchCandidate");
+
+export const MatchSchema = z
+  .object({
+    resolved: z.boolean(),
+    product_slug: z.string().nullable().openapi({ description: "Resolved walrus package name" }),
+    display_name: z.string().nullable(),
+    confidence: z.number().nullable(),
+    method: z.enum(["slug-exact", "alias-exact", "fuzzy"]).nullable(),
+    candidates: z.array(MatchCandidateSchema),
+  })
+  .openapi("VulnMatch");
+
+export const VulnCountsSchema = z
+  .object({
+    total: z.number().int(),
+    critical: z.number().int(),
+    high: z.number().int(),
+    medium: z.number().int(),
+    low: z.number().int(),
+    kev: z.number().int(),
+  })
+  .openapi("VulnCounts");
+
+export const VulnItemSchema = z
+  .object({
+    cve_id: z.string(),
+    severity: z.string().nullable(),
+    cvss_v3_score: z.number().nullable(),
+    summary: z.string().nullable(),
+    affected: z.object({
+      range: z.string(),
+      matched_because: z.string().nullable(),
+    }),
+    fixed_in: z.string().nullable(),
+    is_kev: z.boolean(),
+    sources: z.array(z.string()),
+    references: z.array(z.string()),
+  })
+  .openapi("VulnItem");
+
+export const VulnsResponseSchema = z
+  .object({
+    query: z.object({ product: z.string(), version: z.string().nullable() }),
+    match: MatchSchema,
+    vulns: z.array(VulnItemSchema),
+    unmatched_vulns: z.array(VulnItemSchema).optional(),
+    counts: VulnCountsSchema,
+    version_parse_warning: z.string().optional(),
+    data_freshness: DataFreshnessSchema,
+    disclaimer: z.string(),
+  })
+  .openapi("VulnsResponse");
+
+// GET /api/v1/vulns/products/search
+export const ProductSearchResultSchema = z
+  .object({ slug: z.string(), display_name: z.string(), score: z.number() })
+  .openapi("ProductSearchResult");
+
+export const ProductSearchResponseSchema = z
+  .object({
+    query: z.string(),
+    results: z.array(ProductSearchResultSchema),
+  })
+  .openapi("ProductSearchResponse");
+
+// GET /api/v1/cves/:cveId
+export const CveAffectedProductSchema = z
+  .object({
+    slug: z.string(),
+    display_name: z.string(),
+    range: z.string(),
+    fixed_in: z.string().nullable(),
+    source: z.string(),
+  })
+  .openapi("CveAffectedProduct");
+
+export const CveDetailResponseSchema = z
+  .object({
+    cve_id: z.string(),
+    published_at: z.string().nullable(),
+    modified_at: z.string().nullable(),
+    severity: z.string().nullable(),
+    cvss_v3_score: z.number().nullable(),
+    cvss_v3_vector: z.string().nullable(),
+    description: z.string().nullable(),
+    is_kev: z.boolean(),
+    kev_added_at: z.string().nullable(),
+    affected_products: z.array(CveAffectedProductSchema),
+    references: z.array(z.string()),
+    data_freshness: DataFreshnessSchema,
+    disclaimer: z.string(),
+  })
+  .openapi("CveDetailResponse");
+
+// GET /api/v1/packages/:name/vulns
+export const PackageVersionVulnSchema = z
+  .object({
+    cve_id: z.string(),
+    severity: z.string().nullable(),
+    fixed_in: z.string().nullable(),
+    is_kev: z.boolean(),
+    matched_because: z.string().nullable(),
+  })
+  .openapi("PackageVersionVuln");
+
+export const PackageVersionVulnsSchema = z
+  .object({
+    version: z.string(),
+    version_group: z.string(),
+    counts: VulnCountsSchema,
+    vulns: z.array(PackageVersionVulnSchema),
+  })
+  .openapi("PackageVersionVulns");
+
+export const PackageVulnsResponseSchema = z
+  .object({
+    package: z.string(),
+    tracked: z.boolean(),
+    versions: z.array(PackageVersionVulnsSchema),
+    data_freshness: DataFreshnessSchema,
+    disclaimer: z.string(),
+  })
+  .openapi("PackageVulnsResponse");
+
 // ── GET /health ───────────────────────────────────────────────────────────────
 
 export const HealthResponseSchema = z
   .object({
     status: z.string().openapi({ example: "ok" }),
     service: z.string().openapi({ example: "walrus" }),
+    vuln_data_freshness: DataFreshnessSchema.nullable(),
   })
   .openapi("HealthResponse");
 

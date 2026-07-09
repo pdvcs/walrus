@@ -1,0 +1,3137 @@
+{
+  "resultsPerPage": 21,
+  "startIndex": 0,
+  "totalResults": 21,
+  "vulnerabilities": [
+    {
+      "cve": {
+        "id": "CVE-2017-8803",
+        "sourceIdentifier": "cve@mitre.org",
+        "published": "2017-07-05T20:29:03.153",
+        "lastModified": "2026-06-17T01:26:59.357",
+        "vulnStatus": "Modified",
+        "cveTags": [],
+        "descriptions": [
+          {
+            "lang": "en",
+            "value": "Notepad++ 7.3.3 (32-bit) with Hex Editor Plugin v0.9.5 might allow user-assisted attackers to execute code via a crafted file, because of a \"Data from Faulting Address controls Code Flow\" issue. One threat model is a victim who obtains an untrusted crafted file from a remote location and issues several user-defined commands."
+          },
+          {
+            "lang": "es",
+            "value": "Notepad++ versión 7.3.3 (en 32 bits) con Plugin Hex Editor versión v0.9.5, podría permitir a atacantes asistidos por el usuario ejecutar código por medio de un archivo especialmente diseñado, debido a un problema de \"Data from Faulting Address controls Code Flow\". Un modelo de amenaza es una víctima que obtiene un archivo especialmente diseñado no seguro  desde una ubicación remota y emite varios comandos definidos por el usuario."
+          }
+        ],
+        "affected": [
+          {
+            "source": "cve@mitre.org",
+            "affectedData": [
+              {
+                "vendor": "n/a",
+                "product": "n/a",
+                "versions": [
+                  {
+                    "version": "n/a",
+                    "status": "affected"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {
+              "source": "nvd@nist.gov",
+              "type": "Primary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H",
+                "baseScore": 7.8,
+                "baseSeverity": "HIGH",
+                "attackVector": "LOCAL",
+                "attackComplexity": "LOW",
+                "privilegesRequired": "NONE",
+                "userInteraction": "REQUIRED",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "HIGH",
+                "integrityImpact": "HIGH",
+                "availabilityImpact": "HIGH"
+              },
+              "exploitabilityScore": 1.8,
+              "impactScore": 5.9
+            }
+          ],
+          "cvssMetricV2": [
+            {
+              "source": "nvd@nist.gov",
+              "type": "Primary",
+              "cvssData": {
+                "version": "2.0",
+                "vectorString": "AV:N/AC:M/Au:N/C:P/I:P/A:P",
+                "baseScore": 6.8,
+                "accessVector": "NETWORK",
+                "accessComplexity": "MEDIUM",
+                "authentication": "NONE",
+                "confidentialityImpact": "PARTIAL",
+                "integrityImpact": "PARTIAL",
+                "availabilityImpact": "PARTIAL"
+              },
+              "baseSeverity": "MEDIUM",
+              "exploitabilityScore": 8.6,
+              "impactScore": 6.4,
+              "acInsufInfo": false,
+              "obtainAllPrivilege": false,
+              "obtainUserPrivilege": false,
+              "obtainOtherPrivilege": false,
+              "userInteractionRequired": true
+            }
+          ]
+        },
+        "weaknesses": [
+          {
+            "source": "nvd@nist.gov",
+            "type": "Primary",
+            "description": [
+              {
+                "lang": "en",
+                "value": "CWE-119"
+              }
+            ]
+          }
+        ],
+        "configurations": [
+          {
+            "operator": "AND",
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:mh-nexus:hex_editor:0.9.5:*:*:*:*:*:*:*",
+                    "matchCriteriaId": "B509DA34-893C-4675-B52F-82AE870D45AE"
+                  }
+                ]
+              },
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": false,
+                    "criteria": "cpe:2.3:a:notepad-plus-plus:notepad\\+\\+:7.3.3:*:*:*:*:*:*:*",
+                    "matchCriteriaId": "1D50C0BD-CB4A-44D3-BCCA-22537296266D"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "references": [
+          {
+            "url": "https://github.com/wlinzi/security_advisories/tree/master/CVE-2017-8803",
+            "source": "cve@mitre.org",
+            "tags": ["Third Party Advisory"]
+          },
+          {
+            "url": "https://github.com/wlinzi/security_advisories/tree/master/CVE-2017-8803",
+            "source": "af854a3a-2127-422b-91ae-364da2661108",
+            "tags": ["Third Party Advisory"]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2019-16294",
+        "sourceIdentifier": "cve@mitre.org",
+        "published": "2019-09-14T16:15:10.540",
+        "lastModified": "2026-06-17T02:22:04.887",
+        "vulnStatus": "Modified",
+        "cveTags": [],
+        "descriptions": [
+          {
+            "lang": "en",
+            "value": "SciLexer.dll in Scintilla in Notepad++ (x64) before 7.7 allows remote code execution or denial of service via Unicode characters in a crafted .ml file."
+          },
+          {
+            "lang": "es",
+            "value": "La biblioteca SciLexer.dll en Scintilla en Notepad ++ (x64) versiones anteriores a 7.7, permite la ejecución de código remota o la denegación de servicio por medio de caracteres Unicode en un archivo .ml diseñado."
+          }
+        ],
+        "affected": [
+          {
+            "source": "cve@mitre.org",
+            "affectedData": [
+              {
+                "vendor": "n/a",
+                "product": "n/a",
+                "versions": [
+                  {
+                    "version": "n/a",
+                    "status": "affected"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {
+              "source": "nvd@nist.gov",
+              "type": "Primary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H",
+                "baseScore": 7.8,
+                "baseSeverity": "HIGH",
+                "attackVector": "LOCAL",
+                "attackComplexity": "LOW",
+                "privilegesRequired": "NONE",
+                "userInteraction": "REQUIRED",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "HIGH",
+                "integrityImpact": "HIGH",
+                "availabilityImpact": "HIGH"
+              },
+              "exploitabilityScore": 1.8,
+              "impactScore": 5.9
+            }
+          ],
+          "cvssMetricV2": [
+            {
+              "source": "nvd@nist.gov",
+              "type": "Primary",
+              "cvssData": {
+                "version": "2.0",
+                "vectorString": "AV:N/AC:M/Au:N/C:P/I:P/A:P",
+                "baseScore": 6.8,
+                "accessVector": "NETWORK",
+                "accessComplexity": "MEDIUM",
+                "authentication": "NONE",
+                "confidentialityImpact": "PARTIAL",
+                "integrityImpact": "PARTIAL",
+                "availabilityImpact": "PARTIAL"
+              },
+              "baseSeverity": "MEDIUM",
+              "exploitabilityScore": 8.6,
+              "impactScore": 6.4,
+              "acInsufInfo": false,
+              "obtainAllPrivilege": false,
+              "obtainUserPrivilege": false,
+              "obtainOtherPrivilege": false,
+              "userInteractionRequired": true
+            }
+          ]
+        },
+        "weaknesses": [
+          {
+            "source": "nvd@nist.gov",
+            "type": "Primary",
+            "description": [
+              {
+                "lang": "en",
+                "value": "CWE-787"
+              }
+            ]
+          }
+        ],
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:notepad-plus-plus:notepad\\+\\+:*:*:*:*:*:*:*:*",
+                    "versionEndExcluding": "7.7",
+                    "matchCriteriaId": "B0BEB633-8F01-4C62-90D5-EB0A34B93E5E"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:scintilla:scintilla:-:*:*:*:*:*:*:*",
+                    "matchCriteriaId": "ECED9455-9AD6-4F30-8FBC-FF17700B8063"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "references": [
+          {
+            "url": "http://packetstormsecurity.com/files/154706/Notepad-Code-Execution-Denial-Of-Service.html",
+            "source": "cve@mitre.org",
+            "tags": ["Third Party Advisory", "VDB Entry"]
+          },
+          {
+            "url": "https://github.com/bi7s/CVE/tree/master/CVE-2019-16294",
+            "source": "cve@mitre.org",
+            "tags": ["Exploit", "Third Party Advisory"]
+          },
+          {
+            "url": "https://notepad-plus-plus.org/download/v7.7.html",
+            "source": "cve@mitre.org",
+            "tags": ["Release Notes", "Vendor Advisory"]
+          },
+          {
+            "url": "https://www.scintilla.org/ScintillaHistory.html",
+            "source": "cve@mitre.org",
+            "tags": ["Release Notes", "Vendor Advisory"]
+          },
+          {
+            "url": "http://packetstormsecurity.com/files/154706/Notepad-Code-Execution-Denial-Of-Service.html",
+            "source": "af854a3a-2127-422b-91ae-364da2661108",
+            "tags": ["Third Party Advisory", "VDB Entry"]
+          },
+          {
+            "url": "https://github.com/bi7s/CVE/tree/master/CVE-2019-16294",
+            "source": "af854a3a-2127-422b-91ae-364da2661108",
+            "tags": ["Exploit", "Third Party Advisory"]
+          },
+          {
+            "url": "https://notepad-plus-plus.org/download/v7.7.html",
+            "source": "af854a3a-2127-422b-91ae-364da2661108",
+            "tags": ["Release Notes", "Vendor Advisory"]
+          },
+          {
+            "url": "https://www.scintilla.org/ScintillaHistory.html",
+            "source": "af854a3a-2127-422b-91ae-364da2661108",
+            "tags": ["Release Notes", "Vendor Advisory"]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2022-32168",
+        "sourceIdentifier": "vulnerabilitylab@mend.io",
+        "published": "2022-09-28T09:15:09.520",
+        "lastModified": "2026-06-17T04:46:47.843",
+        "vulnStatus": "Modified",
+        "cveTags": [],
+        "descriptions": [
+          {
+            "lang": "en",
+            "value": "Notepad++ versions 8.4.1 and before are vulnerable to DLL hijacking where an attacker can replace the vulnerable dll (UxTheme.dll) with his own dll and run arbitrary code in the context of Notepad++."
+          },
+          {
+            "lang": "es",
+            "value": "Notepad++ versiones 8.4.1 y anteriores, son vulnerables a un secuestro de DLL, donde un atacante puede reemplazar la dll vulnerable (UxTheme.dll) por su propia dll y ejecutar código arbitrario en el contexto de Notepad++"
+          }
+        ],
+        "affected": [
+          {
+            "source": "vulnerabilitylab@mend.io",
+            "affectedData": [
+              {
+                "vendor": "notepad-plus-plus",
+                "product": "notepad-plus-plus",
+                "versions": [
+                  {
+                    "version": "v8.3",
+                    "lessThan": "unspecified",
+                    "versionType": "custom",
+                    "status": "affected"
+                  },
+                  {
+                    "version": "unspecified",
+                    "lessThanOrEqual": "v8.4.4",
+                    "versionType": "custom",
+                    "status": "affected"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {
+              "source": "nvd@nist.gov",
+              "type": "Primary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H",
+                "baseScore": 7.8,
+                "baseSeverity": "HIGH",
+                "attackVector": "LOCAL",
+                "attackComplexity": "LOW",
+                "privilegesRequired": "NONE",
+                "userInteraction": "REQUIRED",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "HIGH",
+                "integrityImpact": "HIGH",
+                "availabilityImpact": "HIGH"
+              },
+              "exploitabilityScore": 1.8,
+              "impactScore": 5.9
+            },
+            {
+              "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+              "type": "Secondary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H",
+                "baseScore": 7.8,
+                "baseSeverity": "HIGH",
+                "attackVector": "LOCAL",
+                "attackComplexity": "LOW",
+                "privilegesRequired": "NONE",
+                "userInteraction": "REQUIRED",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "HIGH",
+                "integrityImpact": "HIGH",
+                "availabilityImpact": "HIGH"
+              },
+              "exploitabilityScore": 1.8,
+              "impactScore": 5.9
+            }
+          ],
+          "ssvcV203": [
+            {
+              "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+              "ssvcData": {
+                "timestamp": "2025-05-21T14:14:38.567055Z",
+                "id": "CVE-2022-32168",
+                "options": [
+                  {
+                    "exploitation": "none"
+                  },
+                  {
+                    "automatable": "no"
+                  },
+                  {
+                    "technicalImpact": "total"
+                  }
+                ],
+                "role": "CISA Coordinator",
+                "version": "2.0.3"
+              }
+            }
+          ]
+        },
+        "weaknesses": [
+          {
+            "source": "vulnerabilitylab@mend.io",
+            "type": "Secondary",
+            "description": [
+              {
+                "lang": "en",
+                "value": "CWE-427"
+              }
+            ]
+          }
+        ],
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:notepad-plus-plus:notepad\\+\\+:*:*:*:*:*:*:*:*",
+                    "versionStartIncluding": "8.3",
+                    "versionEndExcluding": "8.4.5",
+                    "matchCriteriaId": "CC679137-8D40-4D8B-B833-A3F8DFD55840"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "references": [
+          {
+            "url": "https://github.com/notepad-plus-plus/notepad-plus-plus/commit/85d7215d9b3e0d5a8433fc31aec4f2966821051e",
+            "source": "vulnerabilitylab@mend.io",
+            "tags": ["Patch", "Third Party Advisory"]
+          },
+          {
+            "url": "https://www.mend.io/vulnerability-database/CVE-2022-32168",
+            "source": "vulnerabilitylab@mend.io",
+            "tags": ["Exploit", "Third Party Advisory"]
+          },
+          {
+            "url": "https://github.com/notepad-plus-plus/notepad-plus-plus/commit/85d7215d9b3e0d5a8433fc31aec4f2966821051e",
+            "source": "af854a3a-2127-422b-91ae-364da2661108",
+            "tags": ["Patch", "Third Party Advisory"]
+          },
+          {
+            "url": "https://www.mend.io/vulnerability-database/CVE-2022-32168",
+            "source": "af854a3a-2127-422b-91ae-364da2661108",
+            "tags": ["Exploit", "Third Party Advisory"]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2022-31901",
+        "sourceIdentifier": "cve@mitre.org",
+        "published": "2023-01-19T23:15:10.530",
+        "lastModified": "2026-06-17T04:46:26.040",
+        "vulnStatus": "Modified",
+        "cveTags": [],
+        "descriptions": [
+          {
+            "lang": "en",
+            "value": "Buffer overflow in function Notepad_plus::addHotSpot in Notepad++ v8.4.3 and earlier allows attackers to crash the application via two crafted files."
+          },
+          {
+            "lang": "es",
+            "value": "El desbordamiento de búfer en la función Notepad_plus::addHotSpot en Notepad++ v8.4.3 y versiones anteriores permite a los atacantes bloquear la aplicación mediante dos archivos manipulados."
+          }
+        ],
+        "affected": [
+          {
+            "source": "cve@mitre.org",
+            "affectedData": [
+              {
+                "vendor": "n/a",
+                "product": "n/a",
+                "versions": [
+                  {
+                    "version": "n/a",
+                    "status": "affected"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {
+              "source": "nvd@nist.gov",
+              "type": "Primary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:N/I:N/A:H",
+                "baseScore": 6.5,
+                "baseSeverity": "MEDIUM",
+                "attackVector": "NETWORK",
+                "attackComplexity": "LOW",
+                "privilegesRequired": "NONE",
+                "userInteraction": "REQUIRED",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "NONE",
+                "integrityImpact": "NONE",
+                "availabilityImpact": "HIGH"
+              },
+              "exploitabilityScore": 2.8,
+              "impactScore": 3.6
+            },
+            {
+              "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+              "type": "Secondary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:N/I:N/A:H",
+                "baseScore": 6.5,
+                "baseSeverity": "MEDIUM",
+                "attackVector": "NETWORK",
+                "attackComplexity": "LOW",
+                "privilegesRequired": "NONE",
+                "userInteraction": "REQUIRED",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "NONE",
+                "integrityImpact": "NONE",
+                "availabilityImpact": "HIGH"
+              },
+              "exploitabilityScore": 2.8,
+              "impactScore": 3.6
+            }
+          ],
+          "ssvcV203": [
+            {
+              "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+              "ssvcData": {
+                "timestamp": "2025-04-04T14:07:18.141747Z",
+                "id": "CVE-2022-31901",
+                "options": [
+                  {
+                    "exploitation": "poc"
+                  },
+                  {
+                    "automatable": "no"
+                  },
+                  {
+                    "technicalImpact": "partial"
+                  }
+                ],
+                "role": "CISA Coordinator",
+                "version": "2.0.3"
+              }
+            }
+          ]
+        },
+        "weaknesses": [
+          {
+            "source": "nvd@nist.gov",
+            "type": "Primary",
+            "description": [
+              {
+                "lang": "en",
+                "value": "CWE-787"
+              }
+            ]
+          },
+          {
+            "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+            "type": "Secondary",
+            "description": [
+              {
+                "lang": "en",
+                "value": "CWE-787"
+              }
+            ]
+          }
+        ],
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:notepad-plus-plus:notepad\\+\\+:*:*:*:*:*:*:*:*",
+                    "versionEndIncluding": "8.4.3",
+                    "matchCriteriaId": "1D2EE7D9-1D00-4154-87F8-AD165E3033C7"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "references": [
+          {
+            "url": "https://github.com/CDACesec/CVE-2022-31901",
+            "source": "cve@mitre.org",
+            "tags": ["Exploit", "Third Party Advisory"]
+          },
+          {
+            "url": "https://github.com/CDACesec/CVE-2022-31901",
+            "source": "af854a3a-2127-422b-91ae-364da2661108",
+            "tags": ["Exploit", "Third Party Advisory"]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2022-31902",
+        "sourceIdentifier": "cve@mitre.org",
+        "published": "2023-02-01T02:15:07.747",
+        "lastModified": "2026-07-05T01:18:00.250",
+        "vulnStatus": "Modified",
+        "cveTags": [],
+        "descriptions": [
+          {
+            "lang": "en",
+            "value": "Notepad++ v8.4.1 was discovered to contain a stack overflow via the component Finder::add()."
+          }
+        ],
+        "affected": [
+          {
+            "source": "cve@mitre.org",
+            "affectedData": [
+              {
+                "vendor": "n/a",
+                "product": "n/a",
+                "versions": [
+                  {
+                    "version": "n/a",
+                    "status": "affected"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {
+              "source": "nvd@nist.gov",
+              "type": "Primary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:N/I:N/A:H",
+                "baseScore": 5.5,
+                "baseSeverity": "MEDIUM",
+                "attackVector": "LOCAL",
+                "attackComplexity": "LOW",
+                "privilegesRequired": "NONE",
+                "userInteraction": "REQUIRED",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "NONE",
+                "integrityImpact": "NONE",
+                "availabilityImpact": "HIGH"
+              },
+              "exploitabilityScore": 1.8,
+              "impactScore": 3.6
+            },
+            {
+              "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+              "type": "Secondary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:N/I:N/A:H",
+                "baseScore": 5.5,
+                "baseSeverity": "MEDIUM",
+                "attackVector": "LOCAL",
+                "attackComplexity": "LOW",
+                "privilegesRequired": "NONE",
+                "userInteraction": "REQUIRED",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "NONE",
+                "integrityImpact": "NONE",
+                "availabilityImpact": "HIGH"
+              },
+              "exploitabilityScore": 1.8,
+              "impactScore": 3.6
+            }
+          ],
+          "ssvcV203": [
+            {
+              "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+              "ssvcData": {
+                "timestamp": "2025-03-27T16:24:38.235290Z",
+                "id": "CVE-2022-31902",
+                "options": [
+                  {
+                    "exploitation": "poc"
+                  },
+                  {
+                    "automatable": "no"
+                  },
+                  {
+                    "technicalImpact": "partial"
+                  }
+                ],
+                "role": "CISA Coordinator",
+                "version": "2.0.3"
+              }
+            }
+          ]
+        },
+        "weaknesses": [
+          {
+            "source": "nvd@nist.gov",
+            "type": "Primary",
+            "description": [
+              {
+                "lang": "en",
+                "value": "CWE-787"
+              }
+            ]
+          },
+          {
+            "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+            "type": "Secondary",
+            "description": [
+              {
+                "lang": "en",
+                "value": "CWE-787"
+              }
+            ]
+          }
+        ],
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:notepad-plus-plus:notepad\\+\\+:*:*:*:*:*:*:*:*",
+                    "versionEndIncluding": "8.4.3",
+                    "matchCriteriaId": "1D2EE7D9-1D00-4154-87F8-AD165E3033C7"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "references": [
+          {
+            "url": "https://github.com/CDACesec/CVE-2022-31902",
+            "source": "cve@mitre.org",
+            "tags": ["Exploit", "Third Party Advisory"]
+          },
+          {
+            "url": "http://notepad.com",
+            "source": "af854a3a-2127-422b-91ae-364da2661108",
+            "tags": ["Broken Link"]
+          },
+          {
+            "url": "https://github.com/CDACesec/CVE-2022-31902",
+            "source": "af854a3a-2127-422b-91ae-364da2661108",
+            "tags": ["Exploit", "Third Party Advisory"]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2023-40031",
+        "sourceIdentifier": "security-advisories@github.com",
+        "published": "2023-08-25T20:15:08.517",
+        "lastModified": "2026-06-17T06:15:50.780",
+        "vulnStatus": "Modified",
+        "cveTags": [],
+        "descriptions": [
+          {
+            "lang": "en",
+            "value": "Notepad++ is a free and open-source source code editor. Versions 8.5.6 and prior are vulnerable to heap buffer write overflow in `Utf8_16_Read::convert`. This issue may lead to arbitrary code execution. As of time of publication, no known patches are available in existing versions of Notepad++."
+          }
+        ],
+        "affected": [
+          {
+            "source": "security-advisories@github.com",
+            "affectedData": [
+              {
+                "vendor": "notepad-plus-plus",
+                "product": "notepad-plus-plus",
+                "versions": [
+                  {
+                    "version": "<= 8.5.6",
+                    "status": "affected"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {
+              "source": "security-advisories@github.com",
+              "type": "Secondary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H",
+                "baseScore": 7.8,
+                "baseSeverity": "HIGH",
+                "attackVector": "LOCAL",
+                "attackComplexity": "LOW",
+                "privilegesRequired": "NONE",
+                "userInteraction": "REQUIRED",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "HIGH",
+                "integrityImpact": "HIGH",
+                "availabilityImpact": "HIGH"
+              },
+              "exploitabilityScore": 1.8,
+              "impactScore": 5.9
+            },
+            {
+              "source": "nvd@nist.gov",
+              "type": "Primary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H",
+                "baseScore": 7.8,
+                "baseSeverity": "HIGH",
+                "attackVector": "LOCAL",
+                "attackComplexity": "LOW",
+                "privilegesRequired": "NONE",
+                "userInteraction": "REQUIRED",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "HIGH",
+                "integrityImpact": "HIGH",
+                "availabilityImpact": "HIGH"
+              },
+              "exploitabilityScore": 1.8,
+              "impactScore": 5.9
+            }
+          ],
+          "ssvcV203": [
+            {
+              "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+              "ssvcData": {
+                "timestamp": "2024-10-02T14:52:59.230803Z",
+                "id": "CVE-2023-40031",
+                "options": [
+                  {
+                    "exploitation": "poc"
+                  },
+                  {
+                    "automatable": "no"
+                  },
+                  {
+                    "technicalImpact": "total"
+                  }
+                ],
+                "role": "CISA Coordinator",
+                "version": "2.0.3"
+              }
+            }
+          ]
+        },
+        "weaknesses": [
+          {
+            "source": "security-advisories@github.com",
+            "type": "Secondary",
+            "description": [
+              {
+                "lang": "en",
+                "value": "CWE-120"
+              },
+              {
+                "lang": "en",
+                "value": "CWE-122"
+              }
+            ]
+          }
+        ],
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:notepad-plus-plus:notepad\\+\\+:*:*:*:*:*:*:*:*",
+                    "versionEndIncluding": "8.5.6",
+                    "matchCriteriaId": "51C2BF99-30E2-4BFC-B6BE-DBB33C6C6FEF"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "references": [
+          {
+            "url": "https://securitylab.github.com/advisories/GHSL-2023-092_Notepad__/",
+            "source": "security-advisories@github.com",
+            "tags": ["Exploit", "Third Party Advisory"]
+          },
+          {
+            "url": "https://securitylab.github.com/advisories/GHSL-2023-092_Notepad__/",
+            "source": "af854a3a-2127-422b-91ae-364da2661108",
+            "tags": ["Exploit", "Third Party Advisory"]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2023-40036",
+        "sourceIdentifier": "security-advisories@github.com",
+        "published": "2023-08-25T20:15:08.637",
+        "lastModified": "2026-06-17T06:15:52.333",
+        "vulnStatus": "Modified",
+        "cveTags": [],
+        "descriptions": [
+          {
+            "lang": "en",
+            "value": "Notepad++ is a free and open-source source code editor. Versions 8.5.6 and prior are vulnerable to global buffer read overflow in `CharDistributionAnalysis::HandleOneChar`. The exploitability of this issue is not clear. Potentially, it may be used to leak internal memory allocation information. As of time of publication, no known patches are available in existing versions of Notepad++."
+          }
+        ],
+        "affected": [
+          {
+            "source": "security-advisories@github.com",
+            "affectedData": [
+              {
+                "vendor": "notepad-plus-plus",
+                "product": "notepad-plus-plus",
+                "versions": [
+                  {
+                    "version": "<= 8.5.6",
+                    "status": "affected"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {
+              "source": "security-advisories@github.com",
+              "type": "Secondary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N",
+                "baseScore": 5.5,
+                "baseSeverity": "MEDIUM",
+                "attackVector": "LOCAL",
+                "attackComplexity": "LOW",
+                "privilegesRequired": "NONE",
+                "userInteraction": "REQUIRED",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "HIGH",
+                "integrityImpact": "NONE",
+                "availabilityImpact": "NONE"
+              },
+              "exploitabilityScore": 1.8,
+              "impactScore": 3.6
+            },
+            {
+              "source": "nvd@nist.gov",
+              "type": "Primary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N",
+                "baseScore": 5.5,
+                "baseSeverity": "MEDIUM",
+                "attackVector": "LOCAL",
+                "attackComplexity": "LOW",
+                "privilegesRequired": "NONE",
+                "userInteraction": "REQUIRED",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "HIGH",
+                "integrityImpact": "NONE",
+                "availabilityImpact": "NONE"
+              },
+              "exploitabilityScore": 1.8,
+              "impactScore": 3.6
+            }
+          ],
+          "ssvcV203": [
+            {
+              "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+              "ssvcData": {
+                "timestamp": "2024-10-01T14:51:07.646666Z",
+                "id": "CVE-2023-40036",
+                "options": [
+                  {
+                    "exploitation": "none"
+                  },
+                  {
+                    "automatable": "no"
+                  },
+                  {
+                    "technicalImpact": "partial"
+                  }
+                ],
+                "role": "CISA Coordinator",
+                "version": "2.0.3"
+              }
+            }
+          ]
+        },
+        "weaknesses": [
+          {
+            "source": "security-advisories@github.com",
+            "type": "Secondary",
+            "description": [
+              {
+                "lang": "en",
+                "value": "CWE-120"
+              }
+            ]
+          },
+          {
+            "source": "nvd@nist.gov",
+            "type": "Primary",
+            "description": [
+              {
+                "lang": "en",
+                "value": "CWE-120"
+              }
+            ]
+          }
+        ],
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:notepad-plus-plus:notepad\\+\\+:*:*:*:*:*:*:*:*",
+                    "versionEndIncluding": "8.5.6",
+                    "matchCriteriaId": "51C2BF99-30E2-4BFC-B6BE-DBB33C6C6FEF"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "references": [
+          {
+            "url": "https://securitylab.github.com/advisories/GHSL-2023-092_Notepad__/",
+            "source": "security-advisories@github.com",
+            "tags": ["Exploit", "Third Party Advisory"]
+          },
+          {
+            "url": "https://securitylab.github.com/advisories/GHSL-2023-092_Notepad__/",
+            "source": "af854a3a-2127-422b-91ae-364da2661108",
+            "tags": ["Exploit", "Third Party Advisory"]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2023-40164",
+        "sourceIdentifier": "security-advisories@github.com",
+        "published": "2023-08-25T21:15:08.687",
+        "lastModified": "2026-06-17T06:16:29.927",
+        "vulnStatus": "Modified",
+        "cveTags": [],
+        "descriptions": [
+          {
+            "lang": "en",
+            "value": "Notepad++ is a free and open-source source code editor. Versions 8.5.6 and prior are vulnerable to global buffer read overflow in `nsCodingStateMachine::NextStater`. The exploitability of this issue is not clear. Potentially, it may be used to leak internal memory allocation information. As of time of publication, no known patches are available in existing versions of Notepad++."
+          },
+          {
+            "lang": "es",
+            "value": "Notepad++ es un editor de código fuente gratuito y de código abierto. Las versiones 8.5.6 y anteriores son vulnerables al desbordamiento global de lectura de búfer en `nsCodingStateMachine::NextStater`. La explotabilidad de este problema no está clara. Potencialmente, puede utilizarse para filtrar información de asignación de memoria interna. En el momento de la publicación, no hay parches conocidos disponibles en las versiones existentes de Notepad++.\n"
+          }
+        ],
+        "affected": [
+          {
+            "source": "security-advisories@github.com",
+            "affectedData": [
+              {
+                "vendor": "notepad-plus-plus",
+                "product": "notepad-plus-plus",
+                "versions": [
+                  {
+                    "version": "<= 8.5.6",
+                    "status": "affected"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {
+              "source": "security-advisories@github.com",
+              "type": "Secondary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N",
+                "baseScore": 5.5,
+                "baseSeverity": "MEDIUM",
+                "attackVector": "LOCAL",
+                "attackComplexity": "LOW",
+                "privilegesRequired": "NONE",
+                "userInteraction": "REQUIRED",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "HIGH",
+                "integrityImpact": "NONE",
+                "availabilityImpact": "NONE"
+              },
+              "exploitabilityScore": 1.8,
+              "impactScore": 3.6
+            },
+            {
+              "source": "nvd@nist.gov",
+              "type": "Primary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N",
+                "baseScore": 5.5,
+                "baseSeverity": "MEDIUM",
+                "attackVector": "LOCAL",
+                "attackComplexity": "LOW",
+                "privilegesRequired": "NONE",
+                "userInteraction": "REQUIRED",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "HIGH",
+                "integrityImpact": "NONE",
+                "availabilityImpact": "NONE"
+              },
+              "exploitabilityScore": 1.8,
+              "impactScore": 3.6
+            }
+          ],
+          "ssvcV203": [
+            {
+              "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+              "ssvcData": {
+                "timestamp": "2024-10-02T14:51:53.871001Z",
+                "id": "CVE-2023-40164",
+                "options": [
+                  {
+                    "exploitation": "poc"
+                  },
+                  {
+                    "automatable": "no"
+                  },
+                  {
+                    "technicalImpact": "partial"
+                  }
+                ],
+                "role": "CISA Coordinator",
+                "version": "2.0.3"
+              }
+            }
+          ]
+        },
+        "weaknesses": [
+          {
+            "source": "security-advisories@github.com",
+            "type": "Secondary",
+            "description": [
+              {
+                "lang": "en",
+                "value": "CWE-120"
+              }
+            ]
+          }
+        ],
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:notepad-plus-plus:notepad\\+\\+:*:*:*:*:*:*:*:*",
+                    "versionEndIncluding": "8.5.6",
+                    "matchCriteriaId": "51C2BF99-30E2-4BFC-B6BE-DBB33C6C6FEF"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "references": [
+          {
+            "url": "https://securitylab.github.com/advisories/GHSL-2023-092_Notepad__/",
+            "source": "security-advisories@github.com",
+            "tags": ["Exploit", "Third Party Advisory"]
+          },
+          {
+            "url": "https://securitylab.github.com/advisories/GHSL-2023-092_Notepad__/",
+            "source": "af854a3a-2127-422b-91ae-364da2661108",
+            "tags": ["Exploit", "Third Party Advisory"]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2023-40166",
+        "sourceIdentifier": "security-advisories@github.com",
+        "published": "2023-08-25T21:15:08.777",
+        "lastModified": "2026-06-17T06:16:30.650",
+        "vulnStatus": "Modified",
+        "cveTags": [],
+        "descriptions": [
+          {
+            "lang": "en",
+            "value": "Notepad++ is a free and open-source source code editor. Versions 8.5.6 and prior are vulnerable to heap buffer read overflow in `FileManager::detectLanguageFromTextBegining `. The exploitability of this issue is not clear. Potentially, it may be used to leak internal memory allocation information. As of time of publication, no known patches are available in existing versions of Notepad++."
+          },
+          {
+            "lang": "es",
+            "value": "Notepad++ es un editor de código fuente gratuito y de código abierto. Las versiones 8.5.6 y anteriores son vulnerables al desbordamiento de lectura del búfer de montón en `FileManager::detectLanguageFromTextBegining`. La explotabilidad de este problema no está clara. Potencialmente, puede ser utilizado para filtrar información de asignación de memoria interna. En el momento de la publicación, no hay parches conocidos disponibles en las versiones existentes de Notepad++.\n"
+          }
+        ],
+        "affected": [
+          {
+            "source": "security-advisories@github.com",
+            "affectedData": [
+              {
+                "vendor": "notepad-plus-plus",
+                "product": "notepad-plus-plus",
+                "versions": [
+                  {
+                    "version": "<= 8.5.6",
+                    "status": "affected"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {
+              "source": "security-advisories@github.com",
+              "type": "Secondary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N",
+                "baseScore": 5.5,
+                "baseSeverity": "MEDIUM",
+                "attackVector": "LOCAL",
+                "attackComplexity": "LOW",
+                "privilegesRequired": "NONE",
+                "userInteraction": "REQUIRED",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "HIGH",
+                "integrityImpact": "NONE",
+                "availabilityImpact": "NONE"
+              },
+              "exploitabilityScore": 1.8,
+              "impactScore": 3.6
+            },
+            {
+              "source": "nvd@nist.gov",
+              "type": "Primary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N",
+                "baseScore": 5.5,
+                "baseSeverity": "MEDIUM",
+                "attackVector": "LOCAL",
+                "attackComplexity": "LOW",
+                "privilegesRequired": "NONE",
+                "userInteraction": "REQUIRED",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "HIGH",
+                "integrityImpact": "NONE",
+                "availabilityImpact": "NONE"
+              },
+              "exploitabilityScore": 1.8,
+              "impactScore": 3.6
+            }
+          ],
+          "ssvcV203": [
+            {
+              "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+              "ssvcData": {
+                "timestamp": "2024-10-02T14:49:53.312458Z",
+                "id": "CVE-2023-40166",
+                "options": [
+                  {
+                    "exploitation": "poc"
+                  },
+                  {
+                    "automatable": "no"
+                  },
+                  {
+                    "technicalImpact": "partial"
+                  }
+                ],
+                "role": "CISA Coordinator",
+                "version": "2.0.3"
+              }
+            }
+          ]
+        },
+        "weaknesses": [
+          {
+            "source": "security-advisories@github.com",
+            "type": "Secondary",
+            "description": [
+              {
+                "lang": "en",
+                "value": "CWE-120"
+              },
+              {
+                "lang": "en",
+                "value": "CWE-122"
+              }
+            ]
+          }
+        ],
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:notepad-plus-plus:notepad\\+\\+:*:*:*:*:*:*:*:*",
+                    "versionEndIncluding": "8.5.6",
+                    "matchCriteriaId": "51C2BF99-30E2-4BFC-B6BE-DBB33C6C6FEF"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "references": [
+          {
+            "url": "https://securitylab.github.com/advisories/GHSL-2023-092_Notepad__/",
+            "source": "security-advisories@github.com",
+            "tags": ["Exploit", "Third Party Advisory"]
+          },
+          {
+            "url": "https://securitylab.github.com/advisories/GHSL-2023-092_Notepad__/",
+            "source": "af854a3a-2127-422b-91ae-364da2661108",
+            "tags": ["Exploit", "Third Party Advisory"]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2023-6401",
+        "sourceIdentifier": "cna@vuldb.com",
+        "published": "2023-11-30T15:15:09.507",
+        "lastModified": "2026-06-17T06:50:41.553",
+        "vulnStatus": "Modified",
+        "cveTags": [],
+        "descriptions": [
+          {
+            "lang": "en",
+            "value": "A vulnerability classified as problematic was found in NotePad++ up to 8.1. Affected by this vulnerability is an unknown functionality of the file dbghelp.exe. The manipulation leads to uncontrolled search path. An attack has to be approached locally. The identifier VDB-246421 was assigned to this vulnerability. NOTE: The vendor was contacted early about this disclosure but did not respond in any way."
+          },
+          {
+            "lang": "es",
+            "value": "Una vulnerabilidad clasificada como problemática fue encontrada en NotePad++ hasta 8.1. Una función desconocida del archivo dbghelp.exe es afectada por esta vulnerabilidad. La manipulación conduce a una ruta de búsqueda incontrolada. Un ataque debe abordarse localmente. A esta vulnerabilidad se le asignó el identificador VDB-246421. NOTA: Se contactó primeramente con el proveedor sobre esta divulgación, pero no respondió de ninguna manera."
+          }
+        ],
+        "affected": [
+          {
+            "source": "cna@vuldb.com",
+            "affectedData": [
+              {
+                "vendor": "n/a",
+                "product": "NotePad++",
+                "versions": [
+                  {
+                    "version": "8.0",
+                    "status": "affected"
+                  },
+                  {
+                    "version": "8.1",
+                    "status": "affected"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {
+              "source": "cna@vuldb.com",
+              "type": "Secondary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:L/I:L/A:L",
+                "baseScore": 5.3,
+                "baseSeverity": "MEDIUM",
+                "attackVector": "LOCAL",
+                "attackComplexity": "LOW",
+                "privilegesRequired": "LOW",
+                "userInteraction": "NONE",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "LOW",
+                "integrityImpact": "LOW",
+                "availabilityImpact": "LOW"
+              },
+              "exploitabilityScore": 1.8,
+              "impactScore": 3.4
+            },
+            {
+              "source": "nvd@nist.gov",
+              "type": "Primary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H",
+                "baseScore": 7.8,
+                "baseSeverity": "HIGH",
+                "attackVector": "LOCAL",
+                "attackComplexity": "LOW",
+                "privilegesRequired": "LOW",
+                "userInteraction": "NONE",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "HIGH",
+                "integrityImpact": "HIGH",
+                "availabilityImpact": "HIGH"
+              },
+              "exploitabilityScore": 1.8,
+              "impactScore": 5.9
+            }
+          ],
+          "cvssMetricV2": [
+            {
+              "source": "cna@vuldb.com",
+              "type": "Secondary",
+              "cvssData": {
+                "version": "2.0",
+                "vectorString": "AV:L/AC:L/Au:S/C:P/I:P/A:P",
+                "baseScore": 4.3,
+                "accessVector": "LOCAL",
+                "accessComplexity": "LOW",
+                "authentication": "SINGLE",
+                "confidentialityImpact": "PARTIAL",
+                "integrityImpact": "PARTIAL",
+                "availabilityImpact": "PARTIAL"
+              },
+              "baseSeverity": "MEDIUM",
+              "exploitabilityScore": 3.1,
+              "impactScore": 6.4,
+              "acInsufInfo": false,
+              "obtainAllPrivilege": false,
+              "obtainUserPrivilege": false,
+              "obtainOtherPrivilege": false,
+              "userInteractionRequired": false
+            }
+          ]
+        },
+        "weaknesses": [
+          {
+            "source": "cna@vuldb.com",
+            "type": "Secondary",
+            "description": [
+              {
+                "lang": "en",
+                "value": "CWE-427"
+              }
+            ]
+          }
+        ],
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:notepad-plus-plus:notepad\\+\\+:*:*:*:*:*:*:*:*",
+                    "versionEndIncluding": "8.1",
+                    "matchCriteriaId": "9DA6D40B-2B67-41EB-8426-AF8ACD46391D"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "references": [
+          {
+            "url": "https://vuldb.com/?ctiid.246421",
+            "source": "cna@vuldb.com",
+            "tags": ["Third Party Advisory"]
+          },
+          {
+            "url": "https://vuldb.com/?id.246421",
+            "source": "cna@vuldb.com",
+            "tags": ["Third Party Advisory"]
+          },
+          {
+            "url": "https://vuldb.com/?ctiid.246421",
+            "source": "af854a3a-2127-422b-91ae-364da2661108",
+            "tags": ["Third Party Advisory"]
+          },
+          {
+            "url": "https://vuldb.com/?id.246421",
+            "source": "af854a3a-2127-422b-91ae-364da2661108",
+            "tags": ["Third Party Advisory"]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2023-47452",
+        "sourceIdentifier": "cve@mitre.org",
+        "published": "2023-11-30T21:15:08.800",
+        "lastModified": "2026-06-17T06:32:43.763",
+        "vulnStatus": "Modified",
+        "cveTags": [],
+        "descriptions": [
+          {
+            "lang": "en",
+            "value": "An Untrusted search path vulnerability in notepad++ 6.5 allows local users to gain escalated privileges through the msimg32.dll file in the current working directory."
+          },
+          {
+            "lang": "es",
+            "value": "Una vulnerabilidad de ruta de búsqueda no confiable en notepad++ 6.5 permite a los usuarios locales obtener privilegios aumentados a través del archivo msimg32.dll en el directorio de trabajo actual."
+          }
+        ],
+        "affected": [
+          {
+            "source": "cve@mitre.org",
+            "affectedData": [
+              {
+                "vendor": "n/a",
+                "product": "n/a",
+                "versions": [
+                  {
+                    "version": "n/a",
+                    "status": "affected"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {
+              "source": "nvd@nist.gov",
+              "type": "Primary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H",
+                "baseScore": 7.8,
+                "baseSeverity": "HIGH",
+                "attackVector": "LOCAL",
+                "attackComplexity": "LOW",
+                "privilegesRequired": "LOW",
+                "userInteraction": "NONE",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "HIGH",
+                "integrityImpact": "HIGH",
+                "availabilityImpact": "HIGH"
+              },
+              "exploitabilityScore": 1.8,
+              "impactScore": 5.9
+            }
+          ]
+        },
+        "weaknesses": [
+          {
+            "source": "nvd@nist.gov",
+            "type": "Primary",
+            "description": [
+              {
+                "lang": "en",
+                "value": "CWE-427"
+              }
+            ]
+          }
+        ],
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:notepad-plus-plus:notepad\\+\\+:6.5:*:*:*:*:*:*:*",
+                    "matchCriteriaId": "C1E62123-2C3B-405E-B5F1-DFB4C38F7681"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "references": [
+          {
+            "url": "https://github.com/xieqiang11/poc-1/tree/main",
+            "source": "cve@mitre.org",
+            "tags": ["Exploit"]
+          },
+          {
+            "url": "https://github.com/xieqiang11/poc-1/tree/main",
+            "source": "af854a3a-2127-422b-91ae-364da2661108",
+            "tags": ["Exploit"]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2025-15556",
+        "sourceIdentifier": "disclosure@vulncheck.com",
+        "published": "2026-02-03T01:15:57.757",
+        "lastModified": "2026-06-17T08:38:01.047",
+        "vulnStatus": "Analyzed",
+        "cveTags": [],
+        "descriptions": [
+          {
+            "lang": "en",
+            "value": "Notepad++ versions prior to 8.8.9, when using the WinGUp updater, contain an update integrity verification vulnerability where downloaded update metadata and installers are not cryptographically verified. An attacker able to intercept or redirect update traffic can cause the updater to download and execute an attacker-controlled installer, resulting in arbitrary code execution with the privileges of the user."
+          },
+          {
+            "lang": "es",
+            "value": "Las versiones de Notepad++ anteriores a la 8.8.9, al usar el actualizador WinGUp, contienen una vulnerabilidad de verificación de integridad de actualización donde los metadatos y los instaladores de actualización descargados no se verifican criptográficamente. Un atacante capaz de interceptar o redirigir el tráfico de actualización puede hacer que el actualizador descargue y ejecute un instalador controlado por el atacante, lo que resulta en la ejecución de código arbitrario con los privilegios del usuario."
+          }
+        ],
+        "affected": [
+          {
+            "source": "disclosure@vulncheck.com",
+            "affectedData": [
+              {
+                "vendor": "notepad-plus-plus",
+                "product": "notepad-plus-plus",
+                "defaultStatus": "unaffected",
+                "repo": "https://github.com/notepad-plus-plus",
+                "versions": [
+                  {
+                    "version": "0",
+                    "lessThan": "8.8.9",
+                    "versionType": "semver",
+                    "status": "affected"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "metrics": {
+          "cvssMetricV40": [
+            {
+              "source": "disclosure@vulncheck.com",
+              "type": "Secondary",
+              "cvssData": {
+                "version": "4.0",
+                "vectorString": "CVSS:4.0/AV:N/AC:H/AT:N/PR:N/UI:P/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N/E:X/CR:X/IR:X/AR:X/MAV:X/MAC:X/MAT:X/MPR:X/MUI:X/MVC:X/MVI:X/MVA:X/MSC:X/MSI:X/MSA:X/S:X/AU:X/R:X/V:X/RE:X/U:X",
+                "baseScore": 7.7,
+                "baseSeverity": "HIGH",
+                "attackVector": "NETWORK",
+                "attackComplexity": "HIGH",
+                "attackRequirements": "NONE",
+                "privilegesRequired": "NONE",
+                "userInteraction": "PASSIVE",
+                "vulnConfidentialityImpact": "HIGH",
+                "vulnIntegrityImpact": "HIGH",
+                "vulnAvailabilityImpact": "HIGH",
+                "subConfidentialityImpact": "NONE",
+                "subIntegrityImpact": "NONE",
+                "subAvailabilityImpact": "NONE",
+                "exploitMaturity": "NOT_DEFINED",
+                "confidentialityRequirement": "NOT_DEFINED",
+                "integrityRequirement": "NOT_DEFINED",
+                "availabilityRequirement": "NOT_DEFINED",
+                "modifiedAttackVector": "NOT_DEFINED",
+                "modifiedAttackComplexity": "NOT_DEFINED",
+                "modifiedAttackRequirements": "NOT_DEFINED",
+                "modifiedPrivilegesRequired": "NOT_DEFINED",
+                "modifiedUserInteraction": "NOT_DEFINED",
+                "modifiedVulnConfidentialityImpact": "NOT_DEFINED",
+                "modifiedVulnIntegrityImpact": "NOT_DEFINED",
+                "modifiedVulnAvailabilityImpact": "NOT_DEFINED",
+                "modifiedSubConfidentialityImpact": "NOT_DEFINED",
+                "modifiedSubIntegrityImpact": "NOT_DEFINED",
+                "modifiedSubAvailabilityImpact": "NOT_DEFINED",
+                "Safety": "NOT_DEFINED",
+                "Automatable": "NOT_DEFINED",
+                "Recovery": "NOT_DEFINED",
+                "valueDensity": "NOT_DEFINED",
+                "vulnerabilityResponseEffort": "NOT_DEFINED",
+                "providerUrgency": "NOT_DEFINED"
+              }
+            }
+          ],
+          "cvssMetricV31": [
+            {
+              "source": "nvd@nist.gov",
+              "type": "Primary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:H",
+                "baseScore": 7.5,
+                "baseSeverity": "HIGH",
+                "attackVector": "NETWORK",
+                "attackComplexity": "HIGH",
+                "privilegesRequired": "NONE",
+                "userInteraction": "REQUIRED",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "HIGH",
+                "integrityImpact": "HIGH",
+                "availabilityImpact": "HIGH"
+              },
+              "exploitabilityScore": 1.6,
+              "impactScore": 5.9
+            }
+          ],
+          "ssvcV203": [
+            {
+              "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+              "ssvcData": {
+                "timestamp": "2026-02-13T04:56:27.295409Z",
+                "id": "CVE-2025-15556",
+                "options": [
+                  {
+                    "exploitation": "active"
+                  },
+                  {
+                    "automatable": "no"
+                  },
+                  {
+                    "technicalImpact": "total"
+                  }
+                ],
+                "role": "CISA Coordinator",
+                "version": "2.0.3"
+              }
+            }
+          ]
+        },
+        "cisaExploitAdd": "2026-02-12",
+        "cisaActionDue": "2026-03-05",
+        "cisaRequiredAction": "Apply mitigations per vendor instructions, follow applicable BOD 22-01 guidance for cloud services, or discontinue use of the product if mitigations are unavailable.",
+        "cisaVulnerabilityName": "Notepad++ Download of Code Without Integrity Check Vulnerability",
+        "weaknesses": [
+          {
+            "source": "disclosure@vulncheck.com",
+            "type": "Secondary",
+            "description": [
+              {
+                "lang": "en",
+                "value": "CWE-494"
+              }
+            ]
+          }
+        ],
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:notepad-plus-plus:notepad\\+\\+:*:*:*:*:*:*:*:*",
+                    "versionEndExcluding": "8.8.9",
+                    "matchCriteriaId": "79565996-D87E-4892-BD1C-2AE9F89C1A4E"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "references": [
+          {
+            "url": "https://community.notepad-plus-plus.org/topic/27298/notepad-v8-8-9-vulnerability-fix",
+            "source": "disclosure@vulncheck.com",
+            "tags": ["Release Notes"]
+          },
+          {
+            "url": "https://github.com/notepad-plus-plus/notepad-plus-plus/commit/bcf2aa68ef414338d717e20e059459570ed6c5ab",
+            "source": "disclosure@vulncheck.com",
+            "tags": ["Patch"]
+          },
+          {
+            "url": "https://github.com/notepad-plus-plus/wingup/commit/ce0037549995ed0396cc363544d14b3425614fdb",
+            "source": "disclosure@vulncheck.com",
+            "tags": ["Patch"]
+          },
+          {
+            "url": "https://notepad-plus-plus.org/news/hijacked-incident-info-update/",
+            "source": "disclosure@vulncheck.com",
+            "tags": ["Patch", "Vendor Advisory"]
+          },
+          {
+            "url": "https://www.vulncheck.com/advisories/notepad-plus-plus-wingup-updater-lacks-update-integrity-verification",
+            "source": "disclosure@vulncheck.com",
+            "tags": ["Third Party Advisory"]
+          },
+          {
+            "url": "https://notepad-plus-plus.org//news//clarification-security-incident/",
+            "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+            "tags": ["Vendor Advisory"]
+          },
+          {
+            "url": "https://www.cisa.gov/known-exploited-vulnerabilities-catalog?field_cve=CVE-2025-15556",
+            "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+            "tags": ["US Government Resource"]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2026-25926",
+        "sourceIdentifier": "security-advisories@github.com",
+        "published": "2026-02-19T00:16:21.787",
+        "lastModified": "2026-06-17T10:25:26.373",
+        "vulnStatus": "Analyzed",
+        "cveTags": [],
+        "descriptions": [
+          {
+            "lang": "en",
+            "value": "Notepad++ is a free and open-source source code editor. An Unsafe Search Path vulnerability (CWE-426) exists in versions prior to 8.9.2 when launching Windows Explorer without an absolute executable path. This may allow execution of a malicious explorer.exe if an attacker can control the process working directory. Under certain conditions, this could lead to arbitrary code execution in the context of the running application. Version 8.9.2 patches the issue."
+          },
+          {
+            "lang": "es",
+            "value": "Notepad++ es un editor de código fuente gratuito y de código abierto. Hay una vulnerabilidad de ruta de búsqueda insegura (CWE-426) en versiones anteriores a la 8.9.2 al iniciar el Explorador de Windows sin una ruta de ejecución absoluta. Esto puede permitir la ejecución de un explorer.exe malicioso si un atacante puede controlar el directorio de trabajo del proceso. Bajo ciertas condiciones, esto podría llevar a la ejecución de código arbitrario en el contexto de la aplicación en ejecución. La versión 8.9.2 corrige el problema."
+          }
+        ],
+        "affected": [
+          {
+            "source": "security-advisories@github.com",
+            "affectedData": [
+              {
+                "vendor": "notepad-plus-plus",
+                "product": "notepad-plus-plus",
+                "versions": [
+                  {
+                    "version": "< 8.9.2",
+                    "status": "affected"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {
+              "source": "security-advisories@github.com",
+              "type": "Secondary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:L/AC:L/PR:L/UI:R/S:U/C:H/I:H/A:H",
+                "baseScore": 7.3,
+                "baseSeverity": "HIGH",
+                "attackVector": "LOCAL",
+                "attackComplexity": "LOW",
+                "privilegesRequired": "LOW",
+                "userInteraction": "REQUIRED",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "HIGH",
+                "integrityImpact": "HIGH",
+                "availabilityImpact": "HIGH"
+              },
+              "exploitabilityScore": 1.3,
+              "impactScore": 5.9
+            }
+          ],
+          "ssvcV203": [
+            {
+              "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+              "ssvcData": {
+                "timestamp": "2026-02-19T17:07:31.919150Z",
+                "id": "CVE-2026-25926",
+                "options": [
+                  {
+                    "exploitation": "none"
+                  },
+                  {
+                    "automatable": "no"
+                  },
+                  {
+                    "technicalImpact": "total"
+                  }
+                ],
+                "role": "CISA Coordinator",
+                "version": "2.0.3"
+              }
+            }
+          ]
+        },
+        "weaknesses": [
+          {
+            "source": "security-advisories@github.com",
+            "type": "Secondary",
+            "description": [
+              {
+                "lang": "en",
+                "value": "CWE-426"
+              }
+            ]
+          }
+        ],
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:notepad-plus-plus:notepad\\+\\+:*:*:*:*:*:*:*:*",
+                    "versionEndExcluding": "8.9.2",
+                    "matchCriteriaId": "372C203D-E0C9-48B7-8F39-E06FDFBBE7DE"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "references": [
+          {
+            "url": "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/tag/v8.9.2",
+            "source": "security-advisories@github.com",
+            "tags": ["Product", "Release Notes"]
+          },
+          {
+            "url": "https://github.com/notepad-plus-plus/notepad-plus-plus/security/advisories/GHSA-rjvm-fcxw-2jxq",
+            "source": "security-advisories@github.com",
+            "tags": ["Exploit", "Vendor Advisory"]
+          },
+          {
+            "url": "https://notepad-plus-plus.org/news/v892-released",
+            "source": "security-advisories@github.com",
+            "tags": ["Press/Media Coverage"]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2026-5525",
+        "sourceIdentifier": "33c584b5-0579-4c06-b2a0-8d8329fcab9c",
+        "published": "2026-04-10T08:16:26.067",
+        "lastModified": "2026-06-17T10:59:09.560",
+        "vulnStatus": "Analyzed",
+        "cveTags": [],
+        "descriptions": [
+          {
+            "lang": "en",
+            "value": "A stack-based buffer overflow vulnerability exists in Notepad++ version 8.9.3 in the file drop handler component. When a user drags and drops a directory path of exactly 259 characters without a trailing backslash, the application appends a backslash and null terminator without proper bounds checking, resulting in a stack buffer overflow and application crash (STATUS_STACK_BUFFER_OVERRUN)."
+          }
+        ],
+        "affected": [
+          {
+            "source": "33c584b5-0579-4c06-b2a0-8d8329fcab9c",
+            "affectedData": [
+              {
+                "vendor": "Notepad++ Project",
+                "product": "Notepad++",
+                "defaultStatus": "unaffected",
+                "versions": [
+                  {
+                    "version": "8.9.3",
+                    "status": "affected"
+                  },
+                  {
+                    "version": "8.9.4",
+                    "status": "unaffected"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {
+              "source": "33c584b5-0579-4c06-b2a0-8d8329fcab9c",
+              "type": "Secondary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:L/AC:H/PR:L/UI:R/S:U/C:H/I:H/A:N",
+                "baseScore": 6,
+                "baseSeverity": "MEDIUM",
+                "attackVector": "LOCAL",
+                "attackComplexity": "HIGH",
+                "privilegesRequired": "LOW",
+                "userInteraction": "REQUIRED",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "HIGH",
+                "integrityImpact": "HIGH",
+                "availabilityImpact": "NONE"
+              },
+              "exploitabilityScore": 0.8,
+              "impactScore": 5.2
+            },
+            {
+              "source": "nvd@nist.gov",
+              "type": "Primary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H",
+                "baseScore": 7.8,
+                "baseSeverity": "HIGH",
+                "attackVector": "LOCAL",
+                "attackComplexity": "LOW",
+                "privilegesRequired": "NONE",
+                "userInteraction": "REQUIRED",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "HIGH",
+                "integrityImpact": "HIGH",
+                "availabilityImpact": "HIGH"
+              },
+              "exploitabilityScore": 1.8,
+              "impactScore": 5.9
+            }
+          ],
+          "ssvcV203": [
+            {
+              "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+              "ssvcData": {
+                "timestamp": "2026-04-10T12:49:53.116510Z",
+                "id": "CVE-2026-5525",
+                "options": [
+                  {
+                    "exploitation": "poc"
+                  },
+                  {
+                    "automatable": "no"
+                  },
+                  {
+                    "technicalImpact": "total"
+                  }
+                ],
+                "role": "CISA Coordinator",
+                "version": "2.0.3"
+              }
+            }
+          ]
+        },
+        "weaknesses": [
+          {
+            "source": "33c584b5-0579-4c06-b2a0-8d8329fcab9c",
+            "type": "Secondary",
+            "description": [
+              {
+                "lang": "en",
+                "value": "CWE-121"
+              }
+            ]
+          }
+        ],
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:notepad-plus-plus:notepad\\+\\+:8.9.3:*:*:*:*:*:*:*",
+                    "matchCriteriaId": "C8130B60-1945-4683-9267-16AE16685649"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "references": [
+          {
+            "url": "https://github.com/notepad-plus-plus/notepad-plus-plus/commit/bfe7514d68bc559534c046c4ef2d1865267aa2b0",
+            "source": "33c584b5-0579-4c06-b2a0-8d8329fcab9c",
+            "tags": ["Patch"]
+          },
+          {
+            "url": "https://github.com/notepad-plus-plus/notepad-plus-plus/issues/17921",
+            "source": "33c584b5-0579-4c06-b2a0-8d8329fcab9c",
+            "tags": ["Exploit", "Issue Tracking", "Mitigation", "Vendor Advisory"]
+          },
+          {
+            "url": "https://github.com/notepad-plus-plus/notepad-plus-plus/pull/17930",
+            "source": "33c584b5-0579-4c06-b2a0-8d8329fcab9c",
+            "tags": ["Issue Tracking", "Patch"]
+          },
+          {
+            "url": "https://github.com/notepad-plus-plus/notepad-plus-plus/issues/17921",
+            "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+            "tags": ["Exploit", "Issue Tracking", "Mitigation", "Vendor Advisory"]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2026-6539",
+        "sourceIdentifier": "disclosure@vulncheck.com",
+        "published": "2026-04-30T21:16:33.820",
+        "lastModified": "2026-06-17T11:00:57.383",
+        "vulnStatus": "Analyzed",
+        "cveTags": [],
+        "descriptions": [
+          {
+            "lang": "en",
+            "value": "Notepad++ 8.9.3 contains a format string injection vulnerability in the Find Results panel handler that allows attackers to cause denial of service and information disclosure by crafting a malicious nativeLang.xml language pack file. Attackers can distribute a poisoned language pack through community channels that triggers format string interpretation when a user performs search operations, leading to access violations and potential leakage of stack or register contents."
+          }
+        ],
+        "affected": [
+          {
+            "source": "disclosure@vulncheck.com",
+            "affectedData": [
+              {
+                "vendor": "Notepad++",
+                "product": "Notepad++",
+                "defaultStatus": "unaffected",
+                "platforms": ["Windows"],
+                "versions": [
+                  {
+                    "version": "0",
+                    "lessThan": "8.9.4",
+                    "versionType": "semver",
+                    "status": "affected"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "metrics": {
+          "cvssMetricV40": [
+            {
+              "source": "disclosure@vulncheck.com",
+              "type": "Secondary",
+              "cvssData": {
+                "version": "4.0",
+                "vectorString": "CVSS:4.0/AV:L/AC:L/AT:N/PR:N/UI:A/VC:L/VI:N/VA:L/SC:N/SI:N/SA:N/E:X/CR:X/IR:X/AR:X/MAV:X/MAC:X/MAT:X/MPR:X/MUI:X/MVC:X/MVI:X/MVA:X/MSC:X/MSI:X/MSA:X/S:X/AU:X/R:X/V:X/RE:X/U:X",
+                "baseScore": 4.6,
+                "baseSeverity": "MEDIUM",
+                "attackVector": "LOCAL",
+                "attackComplexity": "LOW",
+                "attackRequirements": "NONE",
+                "privilegesRequired": "NONE",
+                "userInteraction": "ACTIVE",
+                "vulnConfidentialityImpact": "LOW",
+                "vulnIntegrityImpact": "NONE",
+                "vulnAvailabilityImpact": "LOW",
+                "subConfidentialityImpact": "NONE",
+                "subIntegrityImpact": "NONE",
+                "subAvailabilityImpact": "NONE",
+                "exploitMaturity": "NOT_DEFINED",
+                "confidentialityRequirement": "NOT_DEFINED",
+                "integrityRequirement": "NOT_DEFINED",
+                "availabilityRequirement": "NOT_DEFINED",
+                "modifiedAttackVector": "NOT_DEFINED",
+                "modifiedAttackComplexity": "NOT_DEFINED",
+                "modifiedAttackRequirements": "NOT_DEFINED",
+                "modifiedPrivilegesRequired": "NOT_DEFINED",
+                "modifiedUserInteraction": "NOT_DEFINED",
+                "modifiedVulnConfidentialityImpact": "NOT_DEFINED",
+                "modifiedVulnIntegrityImpact": "NOT_DEFINED",
+                "modifiedVulnAvailabilityImpact": "NOT_DEFINED",
+                "modifiedSubConfidentialityImpact": "NOT_DEFINED",
+                "modifiedSubIntegrityImpact": "NOT_DEFINED",
+                "modifiedSubAvailabilityImpact": "NOT_DEFINED",
+                "Safety": "NOT_DEFINED",
+                "Automatable": "NOT_DEFINED",
+                "Recovery": "NOT_DEFINED",
+                "valueDensity": "NOT_DEFINED",
+                "vulnerabilityResponseEffort": "NOT_DEFINED",
+                "providerUrgency": "NOT_DEFINED"
+              }
+            }
+          ],
+          "cvssMetricV31": [
+            {
+              "source": "disclosure@vulncheck.com",
+              "type": "Secondary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:L/I:N/A:L",
+                "baseScore": 4.4,
+                "baseSeverity": "MEDIUM",
+                "attackVector": "LOCAL",
+                "attackComplexity": "LOW",
+                "privilegesRequired": "NONE",
+                "userInteraction": "REQUIRED",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "LOW",
+                "integrityImpact": "NONE",
+                "availabilityImpact": "LOW"
+              },
+              "exploitabilityScore": 1.8,
+              "impactScore": 2.5
+            }
+          ],
+          "ssvcV203": [
+            {
+              "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+              "ssvcData": {
+                "timestamp": "2026-05-01T14:21:36.067358Z",
+                "id": "CVE-2026-6539",
+                "options": [
+                  {
+                    "exploitation": "none"
+                  },
+                  {
+                    "automatable": "no"
+                  },
+                  {
+                    "technicalImpact": "partial"
+                  }
+                ],
+                "role": "CISA Coordinator",
+                "version": "2.0.3"
+              }
+            }
+          ]
+        },
+        "weaknesses": [
+          {
+            "source": "disclosure@vulncheck.com",
+            "type": "Secondary",
+            "description": [
+              {
+                "lang": "en",
+                "value": "CWE-134"
+              }
+            ]
+          }
+        ],
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:notepad-plus-plus:notepad\\+\\+:8.9.3:*:*:*:*:*:*:*",
+                    "matchCriteriaId": "C8130B60-1945-4683-9267-16AE16685649"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "references": [
+          {
+            "url": "https://notepad-plus-plus.org/news/v894-released/",
+            "source": "disclosure@vulncheck.com",
+            "tags": ["Release Notes"]
+          },
+          {
+            "url": "https://www.vulncheck.com/advisories/notepad-format-string-injection-via-nativelang-xml",
+            "source": "disclosure@vulncheck.com",
+            "tags": ["Third Party Advisory"]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2026-46710",
+        "sourceIdentifier": "security-advisories@github.com",
+        "published": "2026-06-26T21:16:33.903",
+        "lastModified": "2026-06-29T21:21:38.640",
+        "vulnStatus": "Analyzed",
+        "cveTags": [],
+        "descriptions": [
+          {
+            "lang": "en",
+            "value": "Notepad++ is a free and open-source source code editor. From 8.9.4 until 8.9.6, Notepad++ contains a local privilege escalation vulnerability in the installer. During installation, the installer invokes powershell.exe without using an absolute path after setting the working directory to the installation contextMenu directory. If an attacker can pre-place a malicious powershell.exe in a user-writable custom installation directory, and a privileged user later runs the installer and selects that directory, the attacker-controlled executable is launched with the elevated privileges of the installer. This vulnerability is fixed in 8.9.6."
+          }
+        ],
+        "affected": [
+          {
+            "source": "security-advisories@github.com",
+            "affectedData": [
+              {
+                "vendor": "notepad-plus-plus",
+                "product": "notepad-plus-plus",
+                "versions": [
+                  {
+                    "version": ">= 8.9.4, < 8.9.6",
+                    "status": "affected"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "metrics": {
+          "cvssMetricV40": [
+            {
+              "source": "security-advisories@github.com",
+              "type": "Secondary",
+              "cvssData": {
+                "version": "4.0",
+                "vectorString": "CVSS:4.0/AV:L/AC:H/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N/E:X/CR:X/IR:X/AR:X/MAV:X/MAC:X/MAT:X/MPR:X/MUI:X/MVC:X/MVI:X/MVA:X/MSC:X/MSI:X/MSA:X/S:X/AU:X/R:X/V:X/RE:X/U:X",
+                "baseScore": 7.5,
+                "baseSeverity": "HIGH",
+                "attackVector": "LOCAL",
+                "attackComplexity": "HIGH",
+                "attackRequirements": "NONE",
+                "privilegesRequired": "NONE",
+                "userInteraction": "NONE",
+                "vulnConfidentialityImpact": "HIGH",
+                "vulnIntegrityImpact": "HIGH",
+                "vulnAvailabilityImpact": "HIGH",
+                "subConfidentialityImpact": "NONE",
+                "subIntegrityImpact": "NONE",
+                "subAvailabilityImpact": "NONE",
+                "exploitMaturity": "NOT_DEFINED",
+                "confidentialityRequirement": "NOT_DEFINED",
+                "integrityRequirement": "NOT_DEFINED",
+                "availabilityRequirement": "NOT_DEFINED",
+                "modifiedAttackVector": "NOT_DEFINED",
+                "modifiedAttackComplexity": "NOT_DEFINED",
+                "modifiedAttackRequirements": "NOT_DEFINED",
+                "modifiedPrivilegesRequired": "NOT_DEFINED",
+                "modifiedUserInteraction": "NOT_DEFINED",
+                "modifiedVulnConfidentialityImpact": "NOT_DEFINED",
+                "modifiedVulnIntegrityImpact": "NOT_DEFINED",
+                "modifiedVulnAvailabilityImpact": "NOT_DEFINED",
+                "modifiedSubConfidentialityImpact": "NOT_DEFINED",
+                "modifiedSubIntegrityImpact": "NOT_DEFINED",
+                "modifiedSubAvailabilityImpact": "NOT_DEFINED",
+                "Safety": "NOT_DEFINED",
+                "Automatable": "NOT_DEFINED",
+                "Recovery": "NOT_DEFINED",
+                "valueDensity": "NOT_DEFINED",
+                "vulnerabilityResponseEffort": "NOT_DEFINED",
+                "providerUrgency": "NOT_DEFINED"
+              }
+            }
+          ],
+          "cvssMetricV31": [
+            {
+              "source": "nvd@nist.gov",
+              "type": "Primary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H",
+                "baseScore": 7.8,
+                "baseSeverity": "HIGH",
+                "attackVector": "LOCAL",
+                "attackComplexity": "LOW",
+                "privilegesRequired": "NONE",
+                "userInteraction": "REQUIRED",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "HIGH",
+                "integrityImpact": "HIGH",
+                "availabilityImpact": "HIGH"
+              },
+              "exploitabilityScore": 1.8,
+              "impactScore": 5.9
+            }
+          ],
+          "ssvcV203": [
+            {
+              "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+              "ssvcData": {
+                "timestamp": "2026-06-29T13:21:01.228779Z",
+                "id": "CVE-2026-46710",
+                "options": [
+                  {
+                    "exploitation": "none"
+                  },
+                  {
+                    "automatable": "no"
+                  },
+                  {
+                    "technicalImpact": "total"
+                  }
+                ],
+                "role": "CISA Coordinator",
+                "version": "2.0.3"
+              }
+            }
+          ]
+        },
+        "weaknesses": [
+          {
+            "source": "security-advisories@github.com",
+            "type": "Secondary",
+            "description": [
+              {
+                "lang": "en",
+                "value": "CWE-426"
+              }
+            ]
+          }
+        ],
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:notepad-plus-plus:notepad\\+\\+:*:*:*:*:*:*:*:*",
+                    "versionStartIncluding": "8.9.4",
+                    "versionEndExcluding": "8.9.6",
+                    "matchCriteriaId": "B4FAE122-161E-4B79-BBB5-373FF3D1E0E8"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "references": [
+          {
+            "url": "https://github.com/notepad-plus-plus/notepad-plus-plus/commit/1d4aabe2102d982667ead2dd974bee5e0b1f2d9c",
+            "source": "security-advisories@github.com",
+            "tags": ["Patch"]
+          },
+          {
+            "url": "https://github.com/notepad-plus-plus/notepad-plus-plus/security/advisories/GHSA-6f8f-vmfc-r8c5",
+            "source": "security-advisories@github.com",
+            "tags": ["Patch", "Vendor Advisory"]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2026-48770",
+        "sourceIdentifier": "security-advisories@github.com",
+        "published": "2026-06-26T21:16:34.033",
+        "lastModified": "2026-06-29T21:21:52.510",
+        "vulnStatus": "Analyzed",
+        "cveTags": [],
+        "descriptions": [
+          {
+            "lang": "en",
+            "value": "Notepad++ is a free and open-source source code editor. Prior to 8.9.6.1, a local process in the same interactive Windows session can send a malformed WM_COPYDATA message to Notepad++ using the COPYDATA_FULL_CMDLINE path. The handler appears to process COPYDATASTRUCT.lpData as an unbounded NUL-terminated wchar_t* instead of enforcing COPYDATASTRUCT.cbData. This vulnerability is fixed in 8.9.6.1."
+          }
+        ],
+        "affected": [
+          {
+            "source": "security-advisories@github.com",
+            "affectedData": [
+              {
+                "vendor": "notepad-plus-plus",
+                "product": "notepad-plus-plus",
+                "versions": [
+                  {
+                    "version": "< 8.9.6.1",
+                    "status": "affected"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {
+              "source": "security-advisories@github.com",
+              "type": "Secondary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:L/AC:L/PR:L/UI:R/S:U/C:N/I:N/A:H",
+                "baseScore": 5,
+                "baseSeverity": "MEDIUM",
+                "attackVector": "LOCAL",
+                "attackComplexity": "LOW",
+                "privilegesRequired": "LOW",
+                "userInteraction": "REQUIRED",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "NONE",
+                "integrityImpact": "NONE",
+                "availabilityImpact": "HIGH"
+              },
+              "exploitabilityScore": 1.3,
+              "impactScore": 3.6
+            }
+          ],
+          "ssvcV203": [
+            {
+              "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+              "ssvcData": {
+                "timestamp": "2026-06-29T12:11:50.434471Z",
+                "id": "CVE-2026-48770",
+                "options": [
+                  {
+                    "exploitation": "poc"
+                  },
+                  {
+                    "automatable": "no"
+                  },
+                  {
+                    "technicalImpact": "partial"
+                  }
+                ],
+                "role": "CISA Coordinator",
+                "version": "2.0.3"
+              }
+            }
+          ]
+        },
+        "weaknesses": [
+          {
+            "source": "security-advisories@github.com",
+            "type": "Secondary",
+            "description": [
+              {
+                "lang": "en",
+                "value": "CWE-125"
+              }
+            ]
+          }
+        ],
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:notepad-plus-plus:notepad\\+\\+:*:*:*:*:*:*:*:*",
+                    "versionEndExcluding": "8.9.6.1",
+                    "matchCriteriaId": "E0D0325F-713A-4523-8DE8-51517017DC16"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "references": [
+          {
+            "url": "https://github.com/notepad-plus-plus/notepad-plus-plus/commit/f20a0888a92ce557a339b833cd9d9d8e97dc797d",
+            "source": "security-advisories@github.com",
+            "tags": ["Patch"]
+          },
+          {
+            "url": "https://github.com/notepad-plus-plus/notepad-plus-plus/security/advisories/GHSA-r39g-3mcw-xcg2",
+            "source": "security-advisories@github.com",
+            "tags": ["Exploit", "Patch", "Vendor Advisory", "Mitigation"]
+          },
+          {
+            "url": "https://github.com/notepad-plus-plus/notepad-plus-plus/security/advisories/GHSA-r39g-3mcw-xcg2",
+            "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+            "tags": ["Exploit", "Patch", "Vendor Advisory", "Mitigation"]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2026-48778",
+        "sourceIdentifier": "security-advisories@github.com",
+        "published": "2026-06-26T21:16:34.167",
+        "lastModified": "2026-06-29T21:22:02.437",
+        "vulnStatus": "Analyzed",
+        "cveTags": [],
+        "descriptions": [
+          {
+            "lang": "en",
+            "value": "Notepad++ is a free and open-source source code editor. Prior to 8.9.6.1, the <GUIConfig name=\"commandLineInterpreter\"> tag in config.xml is read by NppXml::value() (Parameters.cpp:6430) and stored in _nppGUI._commandLineInterpreter without any validation, whitelist, or digital signature check. When the user triggers IDM_FILE_OPEN_CMD (File → Open Containing Folder → cmd), NppCommands.cpp:228 creates a Command object with this value and calls run(), which invokes ShellExecute (RunDlg.cpp:221) with the attacker-controlled string as the executable path. This vulnerability is fixed in 8.9.6.1."
+          }
+        ],
+        "affected": [
+          {
+            "source": "security-advisories@github.com",
+            "affectedData": [
+              {
+                "vendor": "notepad-plus-plus",
+                "product": "notepad-plus-plus",
+                "versions": [
+                  {
+                    "version": "< 8.9.6.1",
+                    "status": "affected"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {
+              "source": "security-advisories@github.com",
+              "type": "Secondary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H",
+                "baseScore": 7.8,
+                "baseSeverity": "HIGH",
+                "attackVector": "LOCAL",
+                "attackComplexity": "LOW",
+                "privilegesRequired": "NONE",
+                "userInteraction": "REQUIRED",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "HIGH",
+                "integrityImpact": "HIGH",
+                "availabilityImpact": "HIGH"
+              },
+              "exploitabilityScore": 1.8,
+              "impactScore": 5.9
+            }
+          ],
+          "ssvcV203": [
+            {
+              "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+              "ssvcData": {
+                "timestamp": "2026-06-29T13:09:56.846745Z",
+                "id": "CVE-2026-48778",
+                "options": [
+                  {
+                    "exploitation": "poc"
+                  },
+                  {
+                    "automatable": "no"
+                  },
+                  {
+                    "technicalImpact": "total"
+                  }
+                ],
+                "role": "CISA Coordinator",
+                "version": "2.0.3"
+              }
+            }
+          ]
+        },
+        "weaknesses": [
+          {
+            "source": "security-advisories@github.com",
+            "type": "Secondary",
+            "description": [
+              {
+                "lang": "en",
+                "value": "CWE-78"
+              }
+            ]
+          }
+        ],
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:notepad-plus-plus:notepad\\+\\+:*:*:*:*:*:*:*:*",
+                    "versionEndExcluding": "8.9.6.1",
+                    "matchCriteriaId": "E0D0325F-713A-4523-8DE8-51517017DC16"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "references": [
+          {
+            "url": "https://github.com/notepad-plus-plus/notepad-plus-plus/commit/24c7b5c63cece76dbc8c4f2607a27ebfe22fa614",
+            "source": "security-advisories@github.com",
+            "tags": ["Patch"]
+          },
+          {
+            "url": "https://github.com/notepad-plus-plus/notepad-plus-plus/security/advisories/GHSA-7hm3-wp5q-ccv9",
+            "source": "security-advisories@github.com",
+            "tags": ["Exploit", "Patch", "Vendor Advisory"]
+          },
+          {
+            "url": "https://github.com/notepad-plus-plus/notepad-plus-plus/security/advisories/GHSA-7hm3-wp5q-ccv9",
+            "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+            "tags": ["Exploit", "Patch", "Vendor Advisory"]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2026-48800",
+        "sourceIdentifier": "security-advisories@github.com",
+        "published": "2026-06-26T21:16:34.297",
+        "lastModified": "2026-06-30T05:19:35.057",
+        "vulnStatus": "Modified",
+        "cveTags": [],
+        "descriptions": [
+          {
+            "lang": "en",
+            "value": "Notepad++ is a free and open-source source code editor. Prior to 8.9.6.1, the <Command> tag text content inside <UserDefinedCommands> in shortcuts.xml is read by NppXml::value(aNode) (Parameters.cpp:3658) in the feedUserCmds() function and stored in UserCommand._cmd without any validation. When the user clicks the corresponding entry in the Run menu, NppCommands.cpp:4264 creates a Command object with string2wstring(ucmd.getCmd()) and calls run(), which invokes ShellExecute (RunDlg.cpp:221) with the attacker-controlled string as the executable path. The injected command appears as a normal menu item in the Run menu, making it a viable persistence mechanism.  This vulnerability is fixed in 8.9.6.1."
+          }
+        ],
+        "affected": [
+          {
+            "source": "security-advisories@github.com",
+            "affectedData": [
+              {
+                "vendor": "notepad-plus-plus",
+                "product": "notepad-plus-plus",
+                "versions": [
+                  {
+                    "version": "< 8.9.6.1",
+                    "status": "affected"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {
+              "source": "security-advisories@github.com",
+              "type": "Secondary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H",
+                "baseScore": 7.8,
+                "baseSeverity": "HIGH",
+                "attackVector": "LOCAL",
+                "attackComplexity": "LOW",
+                "privilegesRequired": "NONE",
+                "userInteraction": "REQUIRED",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "HIGH",
+                "integrityImpact": "HIGH",
+                "availabilityImpact": "HIGH"
+              },
+              "exploitabilityScore": 1.8,
+              "impactScore": 5.9
+            }
+          ],
+          "ssvcV203": [
+            {
+              "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+              "ssvcData": {
+                "timestamp": "2026-06-30T03:34:44.249103Z",
+                "id": "CVE-2026-48800",
+                "options": [
+                  {
+                    "exploitation": "poc"
+                  },
+                  {
+                    "automatable": "no"
+                  },
+                  {
+                    "technicalImpact": "total"
+                  }
+                ],
+                "role": "CISA Coordinator",
+                "version": "2.0.3"
+              }
+            }
+          ]
+        },
+        "weaknesses": [
+          {
+            "source": "security-advisories@github.com",
+            "type": "Secondary",
+            "description": [
+              {
+                "lang": "en",
+                "value": "CWE-78"
+              }
+            ]
+          }
+        ],
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:notepad-plus-plus:notepad\\+\\+:*:*:*:*:*:*:*:*",
+                    "versionEndExcluding": "8.9.6.1",
+                    "matchCriteriaId": "E0D0325F-713A-4523-8DE8-51517017DC16"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "references": [
+          {
+            "url": "https://github.com/notepad-plus-plus/notepad-plus-plus/commit/6b3dc52a9245c6d8c6287a8d6d93a30981c05feb",
+            "source": "security-advisories@github.com",
+            "tags": ["Patch"]
+          },
+          {
+            "url": "https://github.com/notepad-plus-plus/notepad-plus-plus/security/advisories/GHSA-3x3f-3j39-pj3v",
+            "source": "security-advisories@github.com",
+            "tags": ["Exploit", "Patch", "Vendor Advisory"]
+          },
+          {
+            "url": "https://github.com/notepad-plus-plus/notepad-plus-plus/security/advisories/GHSA-3x3f-3j39-pj3v",
+            "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+            "tags": ["Exploit", "Patch", "Vendor Advisory"]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2026-52884",
+        "sourceIdentifier": "security-advisories@github.com",
+        "published": "2026-06-26T21:16:34.797",
+        "lastModified": "2026-06-29T21:22:26.173",
+        "vulnStatus": "Analyzed",
+        "cveTags": [],
+        "descriptions": [
+          {
+            "lang": "en",
+            "value": "Notepad++ is a free and open-source source code editor. In v8.9.6.1, isInTrustedDirectory() does NOT canonicalize the path before checking. It uses a prefix-based check (PathIsPrefix() or equivalent) that matches paths starting with trusted directory strings. A path traversal using ..\\..\\ after a trusted directory prefix passes the check while resolving to an untrusted location. The CVE-2026-48800 patch adds isInTrustedDirectory() validation in Command::run() (RunDlg.cpp) before calling ShellExecute(). This function checks whether the resolved executable path is under a trusted directory.  This vulnerability is fixed in 8.9.6.2."
+          }
+        ],
+        "affected": [
+          {
+            "source": "security-advisories@github.com",
+            "affectedData": [
+              {
+                "vendor": "notepad-plus-plus",
+                "product": "notepad-plus-plus",
+                "versions": [
+                  {
+                    "version": "= 8.9.6.1",
+                    "status": "affected"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {
+              "source": "security-advisories@github.com",
+              "type": "Secondary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H",
+                "baseScore": 7.8,
+                "baseSeverity": "HIGH",
+                "attackVector": "LOCAL",
+                "attackComplexity": "LOW",
+                "privilegesRequired": "NONE",
+                "userInteraction": "REQUIRED",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "HIGH",
+                "integrityImpact": "HIGH",
+                "availabilityImpact": "HIGH"
+              },
+              "exploitabilityScore": 1.8,
+              "impactScore": 5.9
+            }
+          ],
+          "ssvcV203": [
+            {
+              "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+              "ssvcData": {
+                "timestamp": "2026-06-29T12:10:33.378787Z",
+                "id": "CVE-2026-52884",
+                "options": [
+                  {
+                    "exploitation": "none"
+                  },
+                  {
+                    "automatable": "no"
+                  },
+                  {
+                    "technicalImpact": "total"
+                  }
+                ],
+                "role": "CISA Coordinator",
+                "version": "2.0.3"
+              }
+            }
+          ]
+        },
+        "weaknesses": [
+          {
+            "source": "security-advisories@github.com",
+            "type": "Secondary",
+            "description": [
+              {
+                "lang": "en",
+                "value": "CWE-42"
+              }
+            ]
+          }
+        ],
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:notepad-plus-plus:notepad\\+\\+:8.9.6.1:*:*:*:*:*:*:*",
+                    "matchCriteriaId": "FF4B62FE-F294-4DF6-AFFF-27478F8D4C80"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "references": [
+          {
+            "url": "https://github.com/notepad-plus-plus/notepad-plus-plus/commit/ea1508855e9c4528f6198ce9d345f13cb759ebf4",
+            "source": "security-advisories@github.com",
+            "tags": ["Patch"]
+          },
+          {
+            "url": "https://github.com/notepad-plus-plus/notepad-plus-plus/security/advisories/GHSA-p58x-r3c9-x9p6",
+            "source": "security-advisories@github.com",
+            "tags": ["Exploit", "Patch", "Vendor Advisory"]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2026-52885",
+        "sourceIdentifier": "security-advisories@github.com",
+        "published": "2026-06-26T21:16:34.920",
+        "lastModified": "2026-06-29T21:22:34.847",
+        "vulnStatus": "Analyzed",
+        "cveTags": [],
+        "descriptions": [
+          {
+            "lang": "en",
+            "value": "Notepad++ is a free and open-source source code editor. Prior to 8.9.6.4, NppCommands.cpp checks the HMAC of the on-disk shortcuts.xml at the moment a user command fires (Time-of-Check). However, the command payload is taken from the in-memory _userCommands vector, which is populated at application startup and never re-synchronized with the on-disk file (Time-of-Use). Swapping shortcuts.xml between startup and command execution causes the HMAC check to validate a clean file while a malicious command runs. An attacker with write access to shortcuts.xml places a malicious version on disk before launch, then immediately restores the legitimate file. The HMAC check at execution time validates the restored legitimate file (check passes), while the malicious payload executes from memory. This vulnerability is fixed in 8.9.6.4."
+          }
+        ],
+        "affected": [
+          {
+            "source": "security-advisories@github.com",
+            "affectedData": [
+              {
+                "vendor": "notepad-plus-plus",
+                "product": "notepad-plus-plus",
+                "versions": [
+                  {
+                    "version": "< 8.9.6.4",
+                    "status": "affected"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "metrics": {
+          "cvssMetricV40": [
+            {
+              "source": "security-advisories@github.com",
+              "type": "Secondary",
+              "cvssData": {
+                "version": "4.0",
+                "vectorString": "CVSS:4.0/AV:L/AC:H/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N/E:X/CR:X/IR:X/AR:X/MAV:X/MAC:X/MAT:X/MPR:X/MUI:X/MVC:X/MVI:X/MVA:X/MSC:X/MSI:X/MSA:X/S:X/AU:X/R:X/V:X/RE:X/U:X",
+                "baseScore": 7.5,
+                "baseSeverity": "HIGH",
+                "attackVector": "LOCAL",
+                "attackComplexity": "HIGH",
+                "attackRequirements": "NONE",
+                "privilegesRequired": "NONE",
+                "userInteraction": "NONE",
+                "vulnConfidentialityImpact": "HIGH",
+                "vulnIntegrityImpact": "HIGH",
+                "vulnAvailabilityImpact": "HIGH",
+                "subConfidentialityImpact": "NONE",
+                "subIntegrityImpact": "NONE",
+                "subAvailabilityImpact": "NONE",
+                "exploitMaturity": "NOT_DEFINED",
+                "confidentialityRequirement": "NOT_DEFINED",
+                "integrityRequirement": "NOT_DEFINED",
+                "availabilityRequirement": "NOT_DEFINED",
+                "modifiedAttackVector": "NOT_DEFINED",
+                "modifiedAttackComplexity": "NOT_DEFINED",
+                "modifiedAttackRequirements": "NOT_DEFINED",
+                "modifiedPrivilegesRequired": "NOT_DEFINED",
+                "modifiedUserInteraction": "NOT_DEFINED",
+                "modifiedVulnConfidentialityImpact": "NOT_DEFINED",
+                "modifiedVulnIntegrityImpact": "NOT_DEFINED",
+                "modifiedVulnAvailabilityImpact": "NOT_DEFINED",
+                "modifiedSubConfidentialityImpact": "NOT_DEFINED",
+                "modifiedSubIntegrityImpact": "NOT_DEFINED",
+                "modifiedSubAvailabilityImpact": "NOT_DEFINED",
+                "Safety": "NOT_DEFINED",
+                "Automatable": "NOT_DEFINED",
+                "Recovery": "NOT_DEFINED",
+                "valueDensity": "NOT_DEFINED",
+                "vulnerabilityResponseEffort": "NOT_DEFINED",
+                "providerUrgency": "NOT_DEFINED"
+              }
+            }
+          ],
+          "cvssMetricV31": [
+            {
+              "source": "nvd@nist.gov",
+              "type": "Primary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:L/AC:H/PR:L/UI:N/S:U/C:N/I:H/A:H",
+                "baseScore": 6.3,
+                "baseSeverity": "MEDIUM",
+                "attackVector": "LOCAL",
+                "attackComplexity": "HIGH",
+                "privilegesRequired": "LOW",
+                "userInteraction": "NONE",
+                "scope": "UNCHANGED",
+                "confidentialityImpact": "NONE",
+                "integrityImpact": "HIGH",
+                "availabilityImpact": "HIGH"
+              },
+              "exploitabilityScore": 1,
+              "impactScore": 5.2
+            }
+          ],
+          "ssvcV203": [
+            {
+              "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+              "ssvcData": {
+                "timestamp": "2026-06-29T13:11:30.827250Z",
+                "id": "CVE-2026-52885",
+                "options": [
+                  {
+                    "exploitation": "poc"
+                  },
+                  {
+                    "automatable": "no"
+                  },
+                  {
+                    "technicalImpact": "total"
+                  }
+                ],
+                "role": "CISA Coordinator",
+                "version": "2.0.3"
+              }
+            }
+          ]
+        },
+        "weaknesses": [
+          {
+            "source": "security-advisories@github.com",
+            "type": "Secondary",
+            "description": [
+              {
+                "lang": "en",
+                "value": "CWE-367"
+              }
+            ]
+          }
+        ],
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:notepad-plus-plus:notepad\\+\\+:*:*:*:*:*:*:*:*",
+                    "versionEndExcluding": "8.9.6.4",
+                    "matchCriteriaId": "C08EFDC8-72A6-48D5-8201-DE843A33BB3B"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "references": [
+          {
+            "url": "https://github.com/notepad-plus-plus/notepad-plus-plus/commit/4f7563c7c7f8ffa0d795ec86a7777067c7d644b5",
+            "source": "security-advisories@github.com",
+            "tags": ["Patch"]
+          },
+          {
+            "url": "https://github.com/notepad-plus-plus/notepad-plus-plus/security/advisories/GHSA-qm4c-qg8p-qfcr",
+            "source": "security-advisories@github.com",
+            "tags": ["Exploit", "Patch", "Vendor Advisory"]
+          },
+          {
+            "url": "https://github.com/notepad-plus-plus/notepad-plus-plus/security/advisories/GHSA-qm4c-qg8p-qfcr",
+            "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+            "tags": ["Exploit", "Patch", "Vendor Advisory"]
+          }
+        ]
+      }
+    }
+  ]
+}

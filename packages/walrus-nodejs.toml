@@ -75,3 +75,9 @@ os_upstream = "win-x64-zip"
 arch_upstream = "x64"
 extension = "zip"
 url_template = "https://nodejs.org/dist/v{version}/node-v{version}-win-x64.zip"
+
+[vulnerabilities]
+# nodejs:node.js 1658 entries (verified 2026-07-08). OSV Bitnami/node carries CVE aliases.
+cpes = ["nodejs:node.js"]
+osv = { ecosystem = "Bitnami", name = "node" }
+aliases = ["node", "node.js", "node js", "nodejs"]

@@ -1,6 +1,6 @@
 {
   "name": "walrus",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Smart package ingress system",
   "main": "dist/main.js",
   "scripts": {
@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit",
     "dev": "npm run build:static && dotenv -e .env.local -- tsx watch src/main.ts",
     "test": "dotenv -e .env.local -e .env.secrets -- vitest run",
-    "test:unit": "vitest run tests/common tests/discovery tests/services",
+    "test:unit": "vitest run tests/common tests/discovery tests/services tests/scripts tests/vuln/normalize.test.ts tests/vuln/version-ranges.test.ts tests/vuln/cpe.test.ts tests/vuln/sync/nvd-client.test.ts",
     "test:integration": "dotenv -e .env.local -e .env.secrets -- vitest run tests/db",
     "migrate": "dotenv -e .env.local -e .env.secrets -- tsx src/db/client.ts migrate",
     "db:reset": "read -p 'Wipe walrus DB? [type \"yes\" to wipe] ' yn && [ \"$yn\" = yes ] && psql walrus -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO walrus;' && npm run migrate || echo Aborted.",
@@ -19,6 +19,7 @@
     "lint:eslint": "eslint src tests scripts",
     "lint:oxlint": "oxlint src tests scripts",
     "check-schemas": "tsx scripts/check-schemas.ts",
+    "vuln:backfill": "dotenv -e .env.local -e .env.secrets -- tsx scripts/vuln-backfill.ts",
     "validate": "dotenv -e .env.local -- tsx scripts/validate-package.ts"
   },
   "dependencies": {
@@ -28,6 +29,7 @@
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "fast-xml-parser": "^5.5.5",
+    "fuzzball": "^2.2.6",
     "jsonpath-plus": "^10.3.0",
     "pg": "^8.13.3",
     "pino": "^9.6.0",
@@ -49,6 +51,7 @@
     "dotenv-cli": "^11.0.0",
     "esbuild": "^0.27.4",
     "eslint": "^10.0.2",
+    "fast-check": "^4.9.0",
     "msw": "^2.7.3",
     "oxfmt": "^0.35.0",
     "oxlint": "^1.50.0",

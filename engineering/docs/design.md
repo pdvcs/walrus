@@ -176,7 +176,6 @@ hops. In the future, this will allow us to add identity-awareness (authn and aut
 
 ---
 
-
 ### Admin API (`/admin/v1/`) — operator tooling
 
 - Force sync (with optional `?dry_run=true`)
@@ -188,6 +187,51 @@ hops. In the future, this will allow us to add identity-awareness (authn and aut
 ### Internal API (`/internal/sync`) — called by Cloud Scheduler
 
 Triggers the sync worker on a 6-hour schedule. Not exposed to the public network.
+
+---
+
+## Vulnerability Intelligence
+
+Walrus subsumes the CVE-lookup capability of the standalone `vulncheck` service (ADR-001):
+"does {product} version {X} have known CVEs?", plus a walrus-native cross-reference against the
+versions walrus actually caches. It is a native port keyed to walrus packages — there is no
+separate products table.
+
+**Data model** (migration `0002_vulnerabilities.sql`): `cves` (denormalized NVD record + raw
+JSONB, KEV flag), `cve_affects` (version ranges per package, `source` = `nvd` | `osv`, deduped
+by a `UNIQUE NULLS NOT DISTINCT` constraint), `package_cpes` and `package_aliases`
+(reconciled from each package's optional `[vulnerabilities]` TOML section at boot),
+`vuln_sync_state` (per-source ingestion cursors), and `unresolved_queries` (alias-curation feed).
+`packages` gains `osv_ecosystem` / `osv_name`.
+
+**Matching core** (`src/vuln/`, ported behaviour-for-behaviour, property-tested):
+
+- `normalize.ts` — name normalizer + variant generation (`++` → `plus`, squashed forms).
+- `version-ranges.ts` — `compareVersions` (semver-first, segment-comparator fallback for
+  `2021.1`, `1.0b`, `8.3.2.0`), `evaluateRange`, `describeRange`. **Never throws; uncomparable
+  ⇒ fail open** flagged `range-uncomparable`. Deliberately separate from
+  `common/version-utils.ts` (sort keys ≠ range evaluation).
+- `cpe.ts` — CPE 2.3 formatted-string parser (splits on unescaped colons).
+- `resolver.ts` — exact name → exact alias → pg_trgm + fuzzball rerank → unresolved with
+  candidates (the messy-name/autocomplete IP).
+
+**Ingestion** (`src/vuln/sync/`, no resident worker): NVD API 2.0 client (pagination, rate-limit
+awareness, backoff), NVD sync (parse `cpeMatch[]`, join `package_cpes`, rebuild `nvd` affects
+per CVE), KEV flagging, and OSV cross-check (provenance-tagged `osv` affects + stub CVEs).
+Triggered by external cron on `/internal/vuln-sync/:source` (`nvd|kev|osv|all`), an admin
+button, and a one-time `npm run vuln:backfill`. See the ops runbook in
+[build-release.md](build-release.md).
+
+**Query API** (`/api/v1/vulns`, `/api/v1/vulns/products/search`, `/api/v1/cves/:id`,
+`/api/v1/packages/:name/vulns`) — Zod schemas in `src/routes/schemas.ts`, registered in
+`openapi.ts`, `Schema.parse()` before send. The `/packages/:name/vulns` endpoint is the
+headline walrus-native feature (join CVEs against cached `versions`); it powers the per-version
+CVE badges in the admin UI. Every response carries a standing disclaimer and `data_freshness`.
+`/health` gains a nullable `vuln_data_freshness`. Golden tests ported from vulncheck prove
+behavioural parity.
+
+**Out of scope (v1):** authn/authz + rate limiting, tracking tools walrus doesn't serve,
+download-blocking of affected artifacts (v1 informs only).
 
 ---
 

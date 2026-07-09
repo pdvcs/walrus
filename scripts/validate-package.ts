@@ -14,6 +14,7 @@ import { getStrategy } from "../src/discovery/index.js";
 import { sortVersionsDesc } from "../src/common/version-utils.js";
 import { PackageConfig } from "../src/types/package-config.js";
 import { DiscoveredVersion } from "../src/discovery/types.js";
+import { computeVulnInput } from "../src/services/vuln-config.js";
 
 const PACKAGES_DIR = path.join(process.cwd(), "packages");
 const SPOT_CHECK_PLATFORM = { os: "linux", arch: "x86-64" } as const;
@@ -104,6 +105,30 @@ async function validatePackage(filePath: string): Promise<boolean> {
       `  ${c.red("✗")} Schema validation failed: ${err instanceof Error ? err.message : String(err)}`,
     );
     return false;
+  }
+
+  // Vulnerability metadata (plan §2) — static config, printed before network discovery.
+  const vulnInput = computeVulnInput(config);
+  if (vulnInput) {
+    const cpeStr =
+      vulnInput.cpes.length > 0
+        ? vulnInput.cpes
+            .map(
+              (cpe) => `${cpe.cpe_vendor}:${cpe.cpe_product}${cpe.is_primary ? " (primary)" : ""}`,
+            )
+            .join(", ")
+        : c.dim("none (OSV-only)");
+    const osvStr = vulnInput.osvEcosystem
+      ? `${vulnInput.osvEcosystem}/${vulnInput.osvName}`
+      : c.dim("none");
+    console.log(`  ${c.green("✓")} Vulnerability tracking enabled`);
+    console.log(`    CPE pairs: ${cpeStr}`);
+    console.log(`    OSV: ${osvStr}`);
+    console.log(`    Aliases (${vulnInput.aliases.length}): ${vulnInput.aliases.join(", ")}`);
+  } else {
+    console.log(
+      `  ${c.dim("○")} ${c.dim("No [vulnerabilities] section — vuln tracking disabled")}`,
+    );
   }
 
   let versions: DiscoveredVersion[];

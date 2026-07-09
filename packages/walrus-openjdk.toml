@@ -65,3 +65,19 @@ extension = "tar.gz"
 # os_upstream = "linux"
 # arch_upstream = "aarch64"
 # extension = "tar.gz"
+
+[vulnerabilities]
+# NVD CPE 2.3 vendor:product pairs (first = primary). Carried from vulncheck's
+# verified seed corpus (2026-07-08): eclipse:temurin 56 entries,
+# oracle:openjdk 241 entries — upstream OpenJDK CVEs apply to Temurin builds.
+cpes = ["eclipse:temurin", "oracle:openjdk"]
+aliases = [
+  "temurin",
+  "adoptium",
+  "adoptopenjdk",
+  "adopt openjdk",
+  "eclipse temurin",
+  "openjdk",
+  "jdk",
+  "java",
+]

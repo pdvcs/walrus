@@ -8,7 +8,8 @@ import {
   setPackageEnabled,
 } from "../../src/db/queries/packages.js";
 
-const TEST_DB_URL = process.env.DATABASE_URL ?? "postgresql://walrus:walrus@localhost:5432/walrus";
+const TEST_DB_URL =
+  process.env.DATABASE_URL ?? "postgresql://walrus:walrus@localhost:5432/walrus_test";
 
 const PKGS = ["test-packages-pkg", "test-packages-pkg-a", "test-packages-pkg-b"];
 

@@ -79,6 +79,51 @@ filename_template = "mytool-{arch}-{os}.{ext}"
     expect(threw).toBe(true);
   });
 
+  it("prints resolved vulnerability metadata when a [vulnerabilities] section is present", () => {
+    const vulnPath = path.join(tmpDir, "withvuln.toml");
+    fs.writeFileSync(
+      vulnPath,
+      `
+name = "mytool"
+display_name = "My Tool"
+vendor = "Acme"
+
+[discovery]
+type = "github-releases"
+repo = "acme/mytool"
+
+[versioning]
+type = "semver"
+version_group_extract = "^(\\\\d+\\\\.\\\\d+)"
+lts_support = false
+
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "unknown-linux-gnu"
+arch_upstream = "x86_64"
+extension = "tar.gz"
+filename_template = "mytool-{arch}-{os}.{ext}"
+
+[vulnerabilities]
+cpes = ["acme:mytool"]
+osv = { ecosystem = "PyPI", name = "mytool" }
+aliases = ["mytool", "my tool"]
+`,
+    );
+    // Discovery will fail on the fake repo, but the vuln metadata block is printed
+    // before discovery errors abort — capture stdout regardless of exit code.
+    let out = "";
+    try {
+      out = execSync(`${VALIDATE_CMD} ${vulnPath}`, { env: ENV, stdio: "pipe" }).toString();
+    } catch (err) {
+      out = (err as { stdout: Buffer }).stdout?.toString() ?? "";
+    }
+    expect(out).toMatch(/Vulnerability tracking enabled/);
+    expect(out).toMatch(/acme:mytool \(primary\)/);
+    expect(out).toMatch(/PyPI\/mytool/);
+  });
+
   it("exits with code 0 for no packages directory (graceful)", () => {
     const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), "walrus-empty-"));
     // No TOML files — the CLI should exit 0 with a warning

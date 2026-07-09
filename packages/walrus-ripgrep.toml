@@ -68,3 +68,8 @@ filename_template = "ripgrep-{version}-{arch}-{os}.{ext}"
 # arch_upstream = "aarch64"
 # extension = "tar.gz"
 # filename_template = "ripgrep-{version}-{arch}-{os}.{ext}"
+
+[vulnerabilities]
+# ripgrep_project:ripgrep 71 entries (verified 2026-07-08).
+cpes = ["ripgrep_project:ripgrep"]
+aliases = ["ripgrep", "rg", "rip grep"]

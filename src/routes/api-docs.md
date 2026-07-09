@@ -176,12 +176,138 @@ Endpoints under `/admin/v1/` provide:
 
 ---
 
+## Vulnerability API
+
+Walrus subsumes CVE-lookup for the packages it tracks (see
+[engineering/docs/design.md](../../engineering/docs/design.md) and ADR-001). Data comes from
+NVD (primary), CISA KEV (exploited-in-the-wild flag), and OSV (cross-check). Every response
+carries a standing `disclaimer` and a `data_freshness` object (`nvd_last_sync` / `kev_last_sync`
+/ `osv_last_sync`, nullable until the first sync).
+
+> **Disclaimer:** Absence of results does not imply a product/version is safe — the underlying
+> public sources may lag or be incomplete.
+
+### GET /api/v1/vulns?product=&version=&include_unmatched=
+
+The flagship lookup. Resolves a product name/alias (fuzzy), then returns known CVEs, optionally
+range-checked against `version`.
+
+```bash
+curl 'http://localhost:8080/api/v1/vulns?product=openjdk&version=11.0.2'
+```
+
+```json
+{
+  "query": { "product": "openjdk", "version": "11.0.2" },
+  "match": {
+    "resolved": true,
+    "product_slug": "openjdk",
+    "display_name": "Eclipse Temurin OpenJDK",
+    "confidence": 1.0,
+    "method": "slug-exact",
+    "candidates": []
+  },
+  "vulns": [
+    {
+      "cve_id": "CVE-2023-XXXXX",
+      "severity": "HIGH",
+      "cvss_v3_score": 7.5,
+      "summary": "…",
+      "affected": { "range": "< 20", "matched_because": "11.0.2 < 20" },
+      "fixed_in": "20",
+      "is_kev": false,
+      "sources": ["nvd"],
+      "references": ["https://nvd.nist.gov/vuln/detail/CVE-2023-XXXXX"]
+    }
+  ],
+  "counts": { "total": 1, "critical": 0, "high": 1, "medium": 0, "low": 0, "kev": 0 },
+  "data_freshness": { "nvd_last_sync": "…", "kev_last_sync": "…", "osv_last_sync": "…" },
+  "disclaimer": "Absence of results does not imply…"
+}
+```
+
+The three **"no result"** cases are deliberately distinguishable:
+
+- **Resolved + `vulns: []`** — the product is tracked and has zero known CVEs (at the given version).
+- **`resolved: false` (HTTP 200)** — the name didn't resolve; `match.candidates[]` holds suggestions.
+  Not an error — clients render an autocomplete/"did you mean".
+  ```bash
+  curl 'http://localhost:8080/api/v1/vulns?product=asdfgh'   # → 200, resolved:false, candidates[]
+  ```
+- **`version_parse_warning` present** — the version string was uncomparable; matching CVEs are
+  **included** flagged `matched_because: "range-uncomparable"` (fail-open, never silently dropped).
+  ```bash
+  curl 'http://localhost:8080/api/v1/vulns?product=openjdk&version=lol'
+  ```
+
+Missing `product` → **HTTP 400**.
+
+### GET /api/v1/vulns/products/search?q=
+
+Autocomplete over product names/aliases (trigram + prefix boost, top 10). Powers the admin explorer.
+
+```bash
+curl 'http://localhost:8080/api/v1/vulns/products/search?q=openj'
+# { "query": "openj", "results": [ { "slug": "openjdk", "display_name": "…", "score": 100 } ] }
+```
+
+### GET /api/v1/cves/:cveId
+
+CVE detail: metadata, KEV status, affected products (described ranges + provenance), references.
+Malformed id → **400**; unknown id → **404**.
+
+```bash
+curl 'http://localhost:8080/api/v1/cves/CVE-2023-40031'
+```
+
+### GET /api/v1/packages/:name/vulns
+
+**Walrus-native.** Cross-references CVEs against the package's **cached versions**. Optional
+`?version=` restricts to one. Packages with no `[vulnerabilities]` config return `tracked: false`
+(HTTP 200, not an error); unknown packages → **404**.
+
+```bash
+curl 'http://localhost:8080/api/v1/packages/openjdk/vulns'
+```
+
+```json
+{
+  "package": "openjdk",
+  "tracked": true,
+  "versions": [
+    {
+      "version": "11.0.2",
+      "version_group": "11",
+      "counts": { "total": 12, "critical": 1, "high": 6, "medium": 5, "low": 0, "kev": 0 },
+      "vulns": [
+        { "cve_id": "…", "severity": "…", "fixed_in": "…", "is_kev": false, "matched_because": "…" }
+      ]
+    }
+  ],
+  "data_freshness": { "…": "…" },
+  "disclaimer": "…"
+}
+```
+
+### Ingestion triggers (internal / admin)
+
+Vuln data is refreshed by external cron hitting `POST /internal/vuln-sync/:source`
+(`nvd | kev | osv | all`), or the sync-now buttons in the admin explorer
+(`POST /admin/v1/vuln-sync/:source`, audited in `admin_actions`). See the
+[ops runbook](../../engineering/docs/build-release.md) for cadence and the one-time backfill.
+
+---
+
 ## Utility
 
 ### GET /health
 
 ```json
-{ "status": "ok", "service": "walrus" }
+{
+  "status": "ok",
+  "service": "walrus",
+  "vuln_data_freshness": { "nvd_last_sync": null, "kev_last_sync": null, "osv_last_sync": null }
+}
 ```
 
 ### GET /api

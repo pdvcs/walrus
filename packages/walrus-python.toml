@@ -20,11 +20,11 @@ include_prereleases = false
 # Extracts Python version from asset filenames; restricts to 3.11–3.14.
 # Add 3.15 to the alternation when it stabilises.
 asset_version_pattern = "^cpython-(3\\.(?:11|12|13|14)\\.\\d+)\\+"
-max_releases = 10   # limits fetch to ~8500 assets vs ~85300; avoids GitHub 504 on this high-asset-count repo
+max_releases = 10 # limits fetch to ~8500 assets vs ~85300; avoids GitHub 504 on this high-asset-count repo
 
 [versioning]
 type = "semver"
-version_group_extract = "^(\\d+\\.\\d+)"   # group by major.minor: 3.11, 3.12, 3.13, 3.14
+version_group_extract = "^(\\d+\\.\\d+)" # group by major.minor: 3.11, 3.12, 3.13, 3.14
 min_version = "3.11"
 lts_support = false
 
@@ -72,3 +72,9 @@ filename_template = "cpython-{version}+{tag}-{arch}-{os}-install_only.{ext}"
 # arch_upstream = "aarch64"
 # extension = "tar.gz"
 # filename_template = "cpython-{version}+{tag}-{arch}-{os}-install_only.{ext}"
+
+[vulnerabilities]
+# python:python 631 entries, python:cpython 1 entry (verified 2026-07-08). OSV Bitnami/python.
+cpes = ["python:python", "python:cpython"]
+osv = { ecosystem = "Bitnami", name = "python" }
+aliases = ["python", "cpython", "python3", "python 3", "psf python"]

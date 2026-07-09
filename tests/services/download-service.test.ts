@@ -7,7 +7,9 @@ import { StorageBackend } from "../../src/storage/types.js";
 
 async function drainStream(stream: Readable): Promise<void> {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  for await (const _chunk of stream) { /* drain so hash transform fires */ }
+  for await (const _chunk of stream) {
+    /* drain so hash transform fires */
+  }
 }
 
 function makeUploadMock() {
@@ -243,7 +245,9 @@ describe("DownloadService", () => {
       upload: vi.fn().mockImplementation(async (_key: string, stream: Readable) => {
         // Consume a bit then error
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        for await (const _chunk of stream) { /* drain */ }
+        for await (const _chunk of stream) {
+          /* drain */
+        }
       }),
       download: vi.fn(),
       delete: vi.fn().mockResolvedValue(undefined),
@@ -259,9 +263,7 @@ describe("DownloadService", () => {
         controller.error(new Error("network reset"));
       },
     });
-    const fetchImpl = vi.fn().mockResolvedValue(
-      new Response(erroringBody, { status: 200 }),
-    );
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(erroringBody, { status: 200 }));
 
     const service = new DownloadService({} as Pool, storage, {
       fetchImpl: fetchImpl as unknown as typeof fetch,

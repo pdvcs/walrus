@@ -10,6 +10,10 @@ import {
   ListPackagesResponseSchema,
   ListVersionsResponseSchema,
   SyncingResponseSchema,
+  VulnsResponseSchema,
+  ProductSearchResponseSchema,
+  CveDetailResponseSchema,
+  PackageVulnsResponseSchema,
 } from "./schemas.js";
 
 const registry = new OpenAPIRegistry();
@@ -173,6 +177,109 @@ registry.registerPath({
         },
       },
       content: { "application/json": { schema: CoolingOffErrorSchema } },
+    },
+  },
+});
+
+// ── Vulnerability intelligence ─────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/v1/vulns",
+  summary: "Look up known CVEs for a product/version",
+  operationId: "queryVulns",
+  tags: ["Vulnerabilities"],
+  request: {
+    query: z.object({
+      product: z.string().openapi({ description: "Product name or alias (e.g. `openjdk`, `npp`)" }),
+      version: z.string().optional().openapi({ description: "Version to range-check against" }),
+      include_unmatched: z
+        .boolean()
+        .optional()
+        .openapi({ description: "Also return CVEs whose ranges did not match the version" }),
+    }),
+  },
+  responses: {
+    200: {
+      description:
+        "Resolution + matching CVEs. Unresolved products return 200 with candidates and empty vulns.",
+      content: { "application/json": { schema: VulnsResponseSchema } },
+    },
+    400: {
+      description: "Missing `product` parameter",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/v1/vulns/products/search",
+  summary: "Autocomplete product names/aliases",
+  operationId: "searchProducts",
+  tags: ["Vulnerabilities"],
+  request: { query: z.object({ q: z.string().openapi({ description: "Search prefix/term" }) }) },
+  responses: {
+    200: {
+      description: "Ranked product matches (top 10)",
+      content: { "application/json": { schema: ProductSearchResponseSchema } },
+    },
+    400: {
+      description: "Missing `q` parameter",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/v1/cves/{cveId}",
+  summary: "CVE detail",
+  operationId: "getCve",
+  tags: ["Vulnerabilities"],
+  request: {
+    params: z.object({ cveId: z.string().openapi({ description: "CVE id, e.g. CVE-2023-40031" }) }),
+  },
+  responses: {
+    200: {
+      description: "CVE metadata, KEV status, affected products, references",
+      content: { "application/json": { schema: CveDetailResponseSchema } },
+    },
+    400: {
+      description: "Malformed CVE id",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    404: {
+      description: "Unknown CVE (or affects no tracked package)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/v1/packages/{name}/vulns",
+  summary: "CVEs affecting a package's cached versions",
+  operationId: "getPackageVulns",
+  tags: ["Vulnerabilities"],
+  request: {
+    params: packageNameParam,
+    query: z.object({
+      version: z
+        .string()
+        .optional()
+        .openapi({ description: "Restrict to a single cached version" }),
+    }),
+  },
+  responses: {
+    200: {
+      description:
+        "Per-cached-version CVE counts + matches. Untracked packages return tracked:false.",
+      content: { "application/json": { schema: PackageVulnsResponseSchema } },
+    },
+    404: {
+      description: "Unknown package",
+      content: { "application/json": { schema: ErrorSchema } },
     },
   },
 });

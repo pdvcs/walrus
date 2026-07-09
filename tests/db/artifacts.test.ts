@@ -12,7 +12,8 @@ import {
   listArtifactsForVersion,
 } from "../../src/db/queries/artifacts.js";
 
-const TEST_DB_URL = process.env.DATABASE_URL ?? "postgresql://walrus:walrus@localhost:5432/walrus";
+const TEST_DB_URL =
+  process.env.DATABASE_URL ?? "postgresql://walrus:walrus@localhost:5432/walrus_test";
 
 const PKG = "test-artifacts-pkg";
 

@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { SyncRunResult } from "../services/sync-service.js";
+import { isVulnSyncSource, runVulnSync, VulnSyncImpls } from "../vuln/sync/index.js";
 
 export interface InternalRouteDeps {
   runSync: (
@@ -10,6 +11,10 @@ export interface InternalRouteDeps {
     dryRun: boolean;
     triggerType: "scheduled";
   }) => Promise<Array<{ package: string; result: SyncRunResult }>>;
+  /** Vuln sync implementations, injected from main.ts (real NVD/KEV/OSV) or tests (fakes). */
+  vulnSync: VulnSyncImpls;
+  /** Operator hints (e.g. "run vuln:backfill"); appended to the sync response when non-empty. */
+  vulnHints?: () => Promise<string[]>;
 }
 
 export function createInternalRouter(deps: InternalRouteDeps): Router {
@@ -30,6 +35,28 @@ export function createInternalRouter(deps: InternalRouteDeps): Router {
 
       const results = await deps.runSyncAll({ dryRun, triggerType: "scheduled" });
       res.status(202).json({ dry_run: dryRun, results });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Vuln ingestion triggers (external cron). source ∈ nvd | kev | osv | all.
+  // Suggested cadence: NVD 2-hourly, KEV daily, OSV weekly (see build-release.md).
+  router.post("/vuln-sync/:source", async (req, res, next) => {
+    try {
+      const source = req.params.source;
+      if (!isVulnSyncSource(source)) {
+        res.status(400).json({ error: `Unknown vuln sync source: ${source}` });
+        return;
+      }
+      const outcomes = await runVulnSync(source, deps.vulnSync);
+      const allOk = outcomes.every((o) => o.ok);
+      const hints = deps.vulnHints ? await deps.vulnHints() : [];
+      res.status(allOk ? 200 : 207).json({
+        source,
+        outcomes,
+        ...(hints.length > 0 ? { hints } : {}),
+      });
     } catch (err) {
       next(err);
     }

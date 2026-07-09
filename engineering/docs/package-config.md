@@ -628,3 +628,43 @@ Validating packages/walrus-mytool.toml...
 | `[[platforms]].name_must_contain`    | No          | Extra filter when OS/arch matching isn't selective enough                               |
 | `[discovery].release_date_field`     | No          | Field on each release object holding the upstream release date (cooling-off anchor)     |
 | `[discovery].release_lts_field`      | No          | Inline json-api only: field on each release whose truthy string value marks it as LTS   |
+
+---
+
+## `[vulnerabilities]` (optional): CVE tracking metadata
+
+Declaring a `[vulnerabilities]` section opts a package into walrus's vulnerability
+intelligence subsystem (see `plans/vuln-integration.md`, ADR-001). On boot walrus
+reconciles this section into the `package_cpes`, `package_aliases`, and
+`packages.osv_ecosystem/osv_name` tables. Omitting the section means the package
+has no vuln tracking — vuln endpoints report it as `tracked: false` (not an error).
+
+```toml
+[vulnerabilities]
+# NVD CPE 2.3 vendor:product pairs; the FIRST entry is the primary product.
+# Each entry is a single "vendor:product" string (exactly one colon).
+cpes = ["oracle:openjdk"]
+# Optional OSV cross-check mapping (ecosystem + package name in that ecosystem).
+osv = { ecosystem = "Bitnami", name = "node" }
+# Human-name aliases for resolution / autocomplete. Stored normalized
+# (lowercased, whitespace collapsed). The package's own name and display_name
+# are always added automatically, so you only list extra synonyms here.
+aliases = ["openjdk", "open jdk", "jdk", "java"]
+```
+
+| Field     | Required? | Notes                                                                               |
+| --------- | --------- | ----------------------------------------------------------------------------------- |
+| `cpes`    | No        | Array of `vendor:product`; first = primary. Omit for OSV-only packages (e.g. `uv`). |
+| `osv`     | No        | `{ ecosystem, name }`. Enables the weekly OSV cross-check for this package.         |
+| `aliases` | No        | Extra human synonyms. Name + display_name are auto-included.                        |
+
+**Authoring discipline (WAL-3 MANUAL_TEST):** CPE `vendor:product` pairs must be
+verified against the live NVD CPE dictionary
+(`https://services.nvd.nist.gov/rest/json/cpes/2.0`) — a wrong pair silently
+attaches another product's CVEs. A package can legitimately match several pairs
+(e.g. Temurin and Zulu both carry `oracle:openjdk` for upstream OpenJDK CVEs).
+Packages with no CPE presence in NVD may omit `cpes` and rely on OSV only.
+
+`npm run check-schemas` validates the section shape (a cpe without a colon, or
+with more than one, is rejected). `npm run validate -- packages/<file>.toml`
+prints the resolved CPE pairs, OSV mapping, and normalized alias set.

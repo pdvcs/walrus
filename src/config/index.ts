@@ -15,6 +15,9 @@ const configSchema = z.object({
   DISCOVERY_HTTP_TIMEOUT_MS: z.coerce.number().default(15000),
   DISCOVERY_HTTP_MAX_RETRIES: z.coerce.number().default(2),
   DISCOVERY_HTTP_RETRY_BASE_DELAY_MS: z.coerce.number().default(300),
+  // Optional upstream credential for the NVD API 2.0 (raises the rate limit from
+  // 5 to 50 req/30s). Unrelated to walrus authn/authz. Lives in .env.secrets.
+  NVD_API_KEY: z.string().optional(),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;

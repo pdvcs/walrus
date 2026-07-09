@@ -94,6 +94,26 @@ const ChecksumSchema = z.object({
   response_path: z.string().optional(),
 });
 
+const VulnerabilitiesSchema = z.object({
+  // NVD CPE 2.3 `vendor:product` pairs; first entry is primary. Verify against
+  // the NVD CPE dictionary when authoring (plan §2 / WAL-3 MANUAL_TEST).
+  cpes: z
+    .array(
+      z
+        .string()
+        .refine((s) => s.split(":").length === 2 && s.split(":").every((p) => p.length > 0), {
+          message: "cpe must be a single 'vendor:product' pair (exactly one colon, both non-empty)",
+        }),
+    )
+    .default([]),
+  // Optional OSV cross-check mapping.
+  osv: z.object({ ecosystem: z.string().min(1), name: z.string().min(1) }).optional(),
+  // Human-name aliases for resolution / autocomplete (normalized on load).
+  aliases: z.array(z.string().min(1)).default([]),
+});
+
+export type VulnerabilitiesConfig = z.infer<typeof VulnerabilitiesSchema>;
+
 export const PackageConfigSchema = z.object({
   name: z.string().regex(/^[a-z][a-z0-9-]*$/, "Name must be lowercase alphanumeric with hyphens"),
   display_name: z.string(),
@@ -105,6 +125,7 @@ export const PackageConfigSchema = z.object({
   retention: RetentionSchema.default({ versions_per_group: 3 }),
   checksum: ChecksumSchema.optional(),
   platforms: z.array(PlatformSchema).min(1),
+  vulnerabilities: VulnerabilitiesSchema.optional(),
 });
 
 export type PackageConfig = z.infer<typeof PackageConfigSchema>;

@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import { loadPackageConfig, loadAllPackages } from "../../src/services/package-registry.js";
+import { computeVulnInput } from "../../src/services/vuln-config.js";
 
 const FIXTURES_DIR = path.join(os.tmpdir(), "walrus-test-packages");
 
@@ -214,6 +215,98 @@ extension = "tar.gz"
     if (config.discovery.type === "github-releases") {
       expect(config.discovery.include_prereleases).toBe(false);
     }
+  });
+});
+
+describe("[vulnerabilities] section", () => {
+  const withVuln = (section: string) => `
+name = "openjdk"
+display_name = "Eclipse Temurin OpenJDK"
+vendor = "Eclipse Foundation"
+
+[discovery]
+type = "github-releases"
+repo = "adoptium/temurin"
+
+[versioning]
+type = "semver"
+version_group_extract = "^(\\\\d+)"
+lts_support = false
+
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "linux"
+arch_upstream = "amd64"
+extension = "tar.gz"
+
+${section}
+`;
+
+  it("parses cpes, osv, and aliases", () => {
+    const filePath = path.join(FIXTURES_DIR, "vuln-ok.toml");
+    fs.writeFileSync(
+      filePath,
+      withVuln(`[vulnerabilities]
+cpes = ["eclipse:temurin", "oracle:openjdk"]
+osv = { ecosystem = "Bitnami", name = "openjdk" }
+aliases = ["temurin", "openjdk", "jdk"]`),
+    );
+    const config = loadPackageConfig(filePath);
+    expect(config.vulnerabilities?.cpes).toEqual(["eclipse:temurin", "oracle:openjdk"]);
+    expect(config.vulnerabilities?.osv).toEqual({ ecosystem: "Bitnami", name: "openjdk" });
+    expect(config.vulnerabilities?.aliases).toContain("temurin");
+  });
+
+  it("rejects a cpe without a colon", () => {
+    const filePath = path.join(FIXTURES_DIR, "vuln-bad-cpe.toml");
+    fs.writeFileSync(filePath, withVuln(`[vulnerabilities]\ncpes = ["oracleopenjdk"]`));
+    expect(() => loadPackageConfig(filePath)).toThrow(/Invalid package config/);
+  });
+
+  it("rejects a cpe with more than one colon", () => {
+    const filePath = path.join(FIXTURES_DIR, "vuln-bad-cpe2.toml");
+    fs.writeFileSync(filePath, withVuln(`[vulnerabilities]\ncpes = ["a:b:c"]`));
+    expect(() => loadPackageConfig(filePath)).toThrow(/Invalid package config/);
+  });
+
+  it("allows an OSV-only section (no cpes)", () => {
+    const filePath = path.join(FIXTURES_DIR, "vuln-osv-only.toml");
+    fs.writeFileSync(
+      filePath,
+      withVuln(`[vulnerabilities]\nosv = { ecosystem = "PyPI", name = "uv" }\naliases = ["uv"]`),
+    );
+    const config = loadPackageConfig(filePath);
+    expect(config.vulnerabilities?.cpes).toEqual([]);
+    expect(config.vulnerabilities?.osv?.name).toBe("uv");
+  });
+
+  it("computeVulnInput normalizes aliases, marks the first cpe primary, and includes the package identity", () => {
+    const filePath = path.join(FIXTURES_DIR, "vuln-input.toml");
+    fs.writeFileSync(
+      filePath,
+      withVuln(`[vulnerabilities]
+cpes = ["eclipse:temurin", "oracle:openjdk"]
+aliases = ["  Adopt OpenJDK ", "JDK"]`),
+    );
+    const config = loadPackageConfig(filePath);
+    const input = computeVulnInput(config)!;
+    expect(input.cpes[0]).toEqual({
+      cpe_vendor: "eclipse",
+      cpe_product: "temurin",
+      is_primary: true,
+    });
+    expect(input.cpes[1].is_primary).toBe(false);
+    // normalized + package identity present
+    expect(input.aliases).toContain("adopt openjdk");
+    expect(input.aliases).toContain("jdk");
+    expect(input.aliases).toContain("openjdk"); // from name
+    expect(input.aliases).toContain("eclipse temurin openjdk"); // from display_name
+  });
+
+  it("computeVulnInput returns null when the section is absent", () => {
+    const config = loadPackageConfig(path.join(FIXTURES_DIR, "uv-test.toml"));
+    expect(computeVulnInput(config)).toBeNull();
   });
 });
 

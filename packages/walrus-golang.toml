@@ -76,3 +76,9 @@ extension = "tar.gz"
 # os_upstream = "linux"
 # arch_upstream = "arm64"
 # extension = "tar.gz"
+
+[vulnerabilities]
+# golang:go 371 entries (verified 2026-07-08). OSV Go/stdlib gives first-class GO-* advisories.
+cpes = ["golang:go"]
+osv = { ecosystem = "Go", name = "stdlib" }
+aliases = ["go", "golang", "go language", "go sdk", "golang sdk", "go lang"]

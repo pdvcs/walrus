@@ -60,6 +60,7 @@ bash infra/scripts/deploy.sh
 ```
 
 The script:
+
 1. Runs `npm run build`
 2. Builds and pushes a Docker image tagged with the current git SHA
 3. Populates the `walrus-database-url` secret in Secret Manager
@@ -83,9 +84,9 @@ Prompts for confirmation, disables Cloud SQL deletion protection, then runs `ter
 
 ## Cost estimate (no VPC/NAT)
 
-| Resource | ~Monthly cost |
-|---|---|
-| Cloud SQL `db-f1-micro` | ~$7 |
-| Cloud Run (min 1 instance, 512 MB) | ~$5–15 |
-| GCS, Artifact Registry, Scheduler | negligible |
-| **Total** | **~$15–25/month** |
+| Resource                           | ~Monthly cost     |
+| ---------------------------------- | ----------------- |
+| Cloud SQL `db-f1-micro`            | ~$7               |
+| Cloud Run (min 1 instance, 512 MB) | ~$5–15            |
+| GCS, Artifact Registry, Scheduler  | negligible        |
+| **Total**                          | **~$15–25/month** |

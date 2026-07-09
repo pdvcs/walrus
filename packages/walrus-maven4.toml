@@ -71,3 +71,9 @@ os_upstream = "windows"
 arch_upstream = "x86_64"
 extension = "zip"
 url_template = "https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/{version}/apache-maven-{version}-bin.{ext}"
+
+[vulnerabilities]
+# apache:maven — freshly added for walrus; awaiting NVD CPE dictionary verification
+# (WAL-3 MANUAL_TEST, PO sign-off). Maven 4.x release-candidate series.
+cpes = ["apache:maven"]
+aliases = ["maven", "apache maven", "mvn", "maven 4"]

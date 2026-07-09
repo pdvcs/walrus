@@ -10,7 +10,8 @@ import {
   listSyncJobs,
 } from "../../src/db/queries/sync-jobs.js";
 
-const TEST_DB_URL = process.env.DATABASE_URL ?? "postgresql://walrus:walrus@localhost:5432/walrus";
+const TEST_DB_URL =
+  process.env.DATABASE_URL ?? "postgresql://walrus:walrus@localhost:5432/walrus_test";
 
 const PKG = "test-syncjobs-pkg";
 const OTHER_PKG = "test-syncjobs-other-pkg";

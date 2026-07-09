@@ -6,6 +6,8 @@ import { log } from "./common/log.js";
 import { pool, runMigrations } from "./db/client.js";
 import { createStorageBackend } from "./storage/index.js";
 import { loadAllPackages } from "./services/package-registry.js";
+import { reconcileAllPackageVulns } from "./services/vuln-config.js";
+import { createVulnSyncImpls } from "./vuln/sync/impls.js";
 import { DownloadService, ChecksumAlgorithm } from "./services/download-service.js";
 import { RetentionService } from "./services/retention-service.js";
 import { SyncService, SyncRunOptions, SyncRunResult } from "./services/sync-service.js";
@@ -13,8 +15,27 @@ import { createPackagesRouter } from "./routes/packages.js";
 import { createDownloadRouter } from "./routes/download.js";
 import { buildRedownloadPath, createAdminRouter } from "./routes/admin.js";
 import { createInternalRouter } from "./routes/internal.js";
+import { createVulnsRouter } from "./routes/vulns.js";
+import { createCvesRouter } from "./routes/cves.js";
+import { createPackageVulnsRouter } from "./routes/package-vulns.js";
+import { createAdminVulnsRouter } from "./routes/admin-vulns.js";
 import { createApiDocsRouter } from "./routes/api-docs.js";
+import { isPackageTracked } from "./db/queries/package-aliases.js";
+import { crossReferenceVersions } from "./services/vuln-service.js";
+import { queryVulns, VulnQueryDeps } from "./services/vuln-query.js";
+import { getVulnHints } from "./services/vuln-hints.js";
+import { insertAdminAction } from "./db/queries/admin-actions.js";
+import { resolvePackage } from "./vuln/resolver.js";
+import {
+  listAffectsWithCveForPackage,
+  getCveById,
+  listAffectedPackagesForCve,
+} from "./db/queries/cves.js";
+import { searchAliases } from "./db/queries/package-aliases.js";
+import { getDataFreshness } from "./db/queries/vuln-sync-state.js";
+import { logUnresolvedQuery } from "./db/queries/unresolved-queries.js";
 import { createOpenApiRouter } from "./routes/openapi.js";
+import { HealthResponseSchema } from "./routes/schemas.js";
 import {
   getPackage,
   listPackages,
@@ -43,6 +64,7 @@ import {
 import { getRecentSyncJob, getJobWithArtifacts, listSyncJobs } from "./db/queries/sync-jobs.js";
 
 const storage = createStorageBackend();
+const vulnSyncImpls = createVulnSyncImpls(pool);
 const packageRegistry = loadAllPackages();
 if (packageRegistry.errors.length > 0) {
   for (const error of packageRegistry.errors) {
@@ -131,12 +153,69 @@ export function createApp(): express.Express {
     res.redirect("/admin/v1/");
   });
 
-  app.get("/health", (_req, res) => {
-    res.json({ status: "ok", service: "walrus" });
+  app.get("/health", async (_req, res, next) => {
+    try {
+      const vuln_data_freshness = await getDataFreshness(pool).catch(() => null);
+      res.json(
+        HealthResponseSchema.parse({ status: "ok", service: "walrus", vuln_data_freshness }),
+      );
+    } catch (err) {
+      next(err);
+    }
   });
 
   app.use("/api", createApiDocsRouter());
   app.use("/openapi.json", createOpenApiRouter());
+
+  const vulnQueryDeps: VulnQueryDeps = {
+    resolvePackage: (query) => resolvePackage(pool, query),
+    listAffectsForPackage: (name) => listAffectsWithCveForPackage(pool, name),
+    getDataFreshness: () => getDataFreshness(pool),
+    logUnresolved: (query, top) => logUnresolvedQuery(pool, query, top),
+  };
+
+  app.use(
+    "/api/v1/vulns",
+    createVulnsRouter({
+      ...vulnQueryDeps,
+      searchAliases: (q) => searchAliases(pool, q),
+    }),
+  );
+
+  app.use(
+    "/admin/v1",
+    createAdminVulnsRouter({
+      queryVulns: (product, version) => queryVulns(vulnQueryDeps, { product, version }),
+      getDataFreshness: () => getDataFreshness(pool),
+      getHints: () => getVulnHints(pool),
+      vulnSyncImpls,
+      logAdminAction: (details) => insertAdminAction(pool, { action_type: "vuln-sync", details }),
+    }),
+  );
+
+  app.use(
+    "/api/v1/cves",
+    createCvesRouter({
+      getCve: (cveId) => getCveById(pool, cveId),
+      listAffectedPackages: (cveId) => listAffectedPackagesForCve(pool, cveId),
+      getDataFreshness: () => getDataFreshness(pool),
+    }),
+  );
+
+  app.use(
+    "/api/v1/packages",
+    createPackageVulnsRouter({
+      packageExists: async (name) => (await getPackage(pool, name)) !== null,
+      isTracked: (name) => isPackageTracked(pool, name),
+      listCachedVersions: async (name, version) => {
+        const rows = await listVersions(pool, name, {});
+        const mapped = rows.map((r) => ({ version: r.version, version_group: r.version_group }));
+        return version ? mapped.filter((v) => v.version === version) : mapped;
+      },
+      listAffectsForPackage: (name) => listAffectsWithCveForPackage(pool, name),
+      getDataFreshness: () => getDataFreshness(pool),
+    }),
+  );
 
   app.use(
     "/api/v1/packages",
@@ -291,6 +370,28 @@ export function createApp(): express.Express {
           return null;
         }
       },
+      getPackageVulnBadges: async (name: string) => {
+        if (!(await isPackageTracked(pool, name))) return { tracked: false, byVersion: {} };
+        const versionRows = await listVersions(pool, name, {});
+        const affects = await listAffectsWithCveForPackage(pool, name);
+        const perVersion = crossReferenceVersions(
+          versionRows.map((r) => ({ version: r.version, version_group: r.version_group })),
+          affects,
+        );
+        const byVersion: Record<
+          string,
+          { total: number; critical: number; high: number; kev: number }
+        > = {};
+        for (const v of perVersion) {
+          byVersion[v.version] = {
+            total: v.counts.total,
+            critical: v.counts.critical,
+            high: v.counts.high,
+            kev: v.counts.kev,
+          };
+        }
+        return { tracked: true, byVersion };
+      },
     }),
   );
 
@@ -299,6 +400,8 @@ export function createApp(): express.Express {
     createInternalRouter({
       runSync: (packageName, opts) => runSync(packageName, opts),
       runSyncAll: (opts) => runSyncAll(opts),
+      vulnSync: vulnSyncImpls,
+      vulnHints: () => getVulnHints(pool),
     }),
   );
 
@@ -318,6 +421,7 @@ const app = createApp();
 if (require.main === module) {
   runMigrations()
     .then(() => recoverInterruptedState())
+    .then(() => reconcileAllPackageVulns(pool, configs))
     .then(() => {
       log.info("Startup recovery complete");
       app.listen(config.PORT, () => {

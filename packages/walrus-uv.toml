@@ -68,3 +68,9 @@ filename_template = "uv-{arch}-{os}.{ext}"
 # arch_upstream = "aarch64"
 # extension = "tar.gz"
 # filename_template = "uv-{arch}-{os}.{ext}"
+
+[vulnerabilities]
+# No NVD CPE presence for Astral uv (verified absent 2026-07-08) — OSV-only tracking.
+# uv is published to PyPI as "uv"; OSV PyPI advisories carry CVE aliases.
+osv = { ecosystem = "PyPI", name = "uv" }
+aliases = ["uv", "astral uv", "uv python"]

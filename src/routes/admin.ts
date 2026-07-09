@@ -77,6 +77,20 @@ export interface AdminRouteDeps {
   listVersionsInGroup: (packageName: string, group: string) => Promise<VersionRow[]>;
   listArtifactsForVersionId: (versionId: number) => Promise<ArtifactRow[]>;
   getTomlSource: (name: string) => string | null;
+  /**
+   * Per-version CVE summary for the package detail badges (plan §6). Backed by the
+   * same cross-reference service as GET /api/v1/packages/:name/vulns — no duplicate SQL.
+   */
+  getPackageVulnBadges: (
+    name: string,
+  ) => Promise<{ tracked: boolean; byVersion: Record<string, VulnBadgeCounts> }>;
+}
+
+export interface VulnBadgeCounts {
+  total: number;
+  critical: number;
+  high: number;
+  kev: number;
 }
 
 export function createAdminRouter(deps: AdminRouteDeps): Router {
@@ -624,8 +638,10 @@ export function createAdminRouter(deps: AdminRouteDeps): Router {
         groups.push({ name: groupName, versions: versionDetails });
       }
 
+      const vulnBadges = await deps.getPackageVulnBadges(packageName);
+
       res.setHeader("Content-Type", "text/html; charset=utf-8");
-      res.send(renderPackageDetailPage(packageName, pkg, lastJob, groups));
+      res.send(renderPackageDetailPage(packageName, pkg, lastJob, groups, vulnBadges));
     } catch (err) {
       next(err);
     }
@@ -825,9 +841,9 @@ function fmtMs(ms: number): string {
   return `${Math.floor(ms / 60_000)}m ${Math.floor((ms % 60_000) / 1000)}s`;
 }
 
-function renderSharedHtml(
+export function renderSharedHtml(
   title: string,
-  activeNav: "packages" | "jobs" | "validate",
+  activeNav: "packages" | "jobs" | "validate" | "vulns",
   body: string,
   scripts = "",
   rawTail = "",
@@ -859,6 +875,10 @@ function renderSharedHtml(
     .badge-enabled  { background: #dcfce7; color: #15803d; }
     .badge-disabled { background: #f3f4f6; color: #6b7280; }
     .badge-lts      { background: #ede9fe; color: #6d28d9; }
+    .badge-vuln-crit { background: #fee2e2; color: #b91c1c; }
+    .badge-vuln-high { background: #fef3c7; color: #92400e; }
+    .badge-vuln-none { background: #f3f4f6; color: #6b7280; }
+    .badge-kev      { background: #7f1d1d; color: #fff; }
     table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; margin-top: 12px; }
     th { background: #f9fafb; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7280; padding: 9px 12px; text-align: left; border-bottom: 1px solid #e5e7eb; }
     td { padding: 8px 12px; border-bottom: 1px solid #f3f4f6; font-size: 0.85rem; vertical-align: middle; }
@@ -891,6 +911,7 @@ function renderSharedHtml(
     <a href="/admin/v1/"${activeNav === "packages" ? ' class="active"' : ""}>Packages</a>
     <a href="/admin/v1/jobs"${activeNav === "jobs" ? ' class="active"' : ""}>Jobs</a>
     <a href="/admin/v1/validate"${activeNav === "validate" ? ' class="active"' : ""}>Validate TOML</a>
+    <a href="/admin/v1/vulns"${activeNav === "vulns" ? ' class="active"' : ""}>Vulnerabilities</a>
     <a href="/api">API Docs</a>
     <a href="/health">Health</a>
   </nav>
@@ -1180,6 +1201,7 @@ function renderPackageDetailPage(
   pkg: PackageRow | null,
   lastJob: SyncJobRow | null,
   groups: GroupDetail[],
+  vulnBadges: { tracked: boolean; byVersion: Record<string, VulnBadgeCounts> },
 ): string {
   const esc = escHtml;
   const displayName = pkg ? esc(pkg.display_name) : esc(packageName);
@@ -1214,7 +1236,7 @@ function renderPackageDetailPage(
   const groupsHtml =
     groups.length === 0
       ? `<p class="empty">No versions synced yet. Run a sync to discover versions.</p>`
-      : groups.map((g) => renderGroupSection(packageName, g)).join("");
+      : groups.map((g) => renderGroupSection(packageName, g, vulnBadges)).join("");
 
   const body = `
     <div style="margin-bottom:16px"><a href="/admin/v1/">← Back to packages</a></div>
@@ -1275,7 +1297,28 @@ function renderPackageDetailPage(
   return renderSharedHtml(displayName, "packages", body, scripts);
 }
 
-function renderGroupSection(packageName: string, g: GroupDetail): string {
+function renderVulnBadge(
+  packageName: string,
+  version: string,
+  counts: VulnBadgeCounts | undefined,
+): string {
+  if (!counts || counts.total === 0) return "";
+  const cls =
+    counts.critical > 0 || counts.kev > 0
+      ? "badge-vuln-crit"
+      : counts.high > 0
+        ? "badge-vuln-high"
+        : "badge-vuln-none";
+  const label = counts.kev > 0 ? `${counts.total} CVE · KEV` : `${counts.total} CVE`;
+  const href = `/admin/v1/vulns?product=${encodeURIComponent(packageName)}&version=${encodeURIComponent(version)}`;
+  return ` <a href="${href}" title="${counts.critical} critical, ${counts.high} high${counts.kev > 0 ? `, ${counts.kev} KEV` : ""}" class="badge ${cls}" style="text-decoration:none">${label}</a>`;
+}
+
+function renderGroupSection(
+  packageName: string,
+  g: GroupDetail,
+  vulnBadges: { tracked: boolean; byVersion: Record<string, VulnBadgeCounts> },
+): string {
   const esc = escHtml;
   const hasLts = g.versions.some((v) => v.isLts);
   const platforms = [
@@ -1317,7 +1360,10 @@ function renderGroupSection(packageName: string, g: GroupDetail): string {
           return `<td><span class="${cls}">${icon[a.status] ?? "?"} ${esc(a.status)}</span>${redownloadBtn}</td>`;
         })
         .join("");
-      return `<tr><td><strong>${esc(v.version)}</strong></td>${cells}</tr>`;
+      const badge = vulnBadges.tracked
+        ? renderVulnBadge(packageName, v.version, vulnBadges.byVersion[v.version])
+        : "";
+      return `<tr><td><strong>${esc(v.version)}</strong>${badge}</td>${cells}</tr>`;
     })
     .join("");
 
@@ -1376,7 +1422,7 @@ function renderJobsListPage(jobs: SyncJobRow[]): string {
   return renderSharedHtml("Sync Jobs", "jobs", body, scripts);
 }
 
-function escHtml(str: string): string {
+export function escHtml(str: string): string {
   return str
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")

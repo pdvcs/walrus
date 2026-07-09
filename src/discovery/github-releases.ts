@@ -38,7 +38,8 @@ export class GitHubReleasesStrategy implements DiscoveryStrategy {
     if (config.discovery.type !== "github-releases") {
       throw new Error('GitHubReleasesStrategy requires discovery.type = "github-releases"');
     }
-    const { repo, include_prereleases, tag_pattern, asset_version_pattern, max_releases } = config.discovery;
+    const { repo, include_prereleases, tag_pattern, asset_version_pattern, max_releases } =
+      config.discovery;
 
     const releases = await this.fetchReleases(repo, max_releases);
     const ltsGroups = this.extractLtsGroups(config, releases);

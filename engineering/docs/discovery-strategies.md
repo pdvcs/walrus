@@ -2,7 +2,7 @@
 
 This document explains how Walrus discovers package versions: the architecture, each strategy's implementation, and the real packages that exercise each code path. Read this when you're working on the discovery layer itself, adding a new strategy type, or debugging why a particular upstream isn't behaving as expected.
 
-For the operator-facing reference (how to *write* a TOML config), see `docs/package-config.md`.
+For the operator-facing reference (how to _write_ a TOML config), see `docs/package-config.md`.
 
 ---
 
@@ -23,18 +23,18 @@ The return type is always `DiscoveredVersion[]`:
 
 ```typescript
 interface DiscoveredVersion {
-  version: string;          // Full version string after tag_pattern applied
-  versionGroup: string;     // Extracted retention bucket (from version_group_extract)
+  version: string; // Full version string after tag_pattern applied
+  versionGroup: string; // Extracted retention bucket (from version_group_extract)
   isLts: boolean;
   artifacts: Map<PlatformKey, ArtifactInfo>; // keyed "linux/x86-64", "macos/arm64", etc.
-  releasedAt?: Date;        // Upstream publish timestamp, when the API provides it
+  releasedAt?: Date; // Upstream publish timestamp, when the API provides it
 }
 
 interface ArtifactInfo {
   url: string;
   filename: string;
-  checksum?: string;        // Hex digest if known at discovery time
-  checksumUrl?: string;     // URL to fetch the digest from later
+  checksum?: string; // Hex digest if known at discovery time
+  checksumUrl?: string; // URL to fetch the digest from later
   checksumType?: string;
 }
 ```
@@ -149,7 +149,7 @@ Go's `[[platforms]]` blocks have no `filename_template` or `url_template` — in
 
 **Package:** `nodejs`
 
-Node.js uses the same single-call inline shape as Go, but `files_field` contains platform identifier *strings* rather than file objects:
+Node.js uses the same single-call inline shape as Go, but `files_field` contains platform identifier _strings_ rather than file objects:
 
 ```
 GET https://nodejs.org/dist/index.json
@@ -230,14 +230,14 @@ Last-resort strategy for servers that expose a browsable HTTP directory with no 
 
 Checksums are resolved separately from discovery, but the discovery strategy sets up how they'll be fetched by populating `ArtifactInfo.checksum` (known now) or `ArtifactInfo.checksumUrl` (fetch later).
 
-| TOML type              | Mechanism                                                                         | Used by                     |
-| ---------------------- | --------------------------------------------------------------------------------- | --------------------------- |
-| `github-asset`         | Sidecar file attached to the same GitHub Release (`{filename}{asset_suffix}`)     | `uv`, `ripgrep`             |
-| `github-asset-digest`  | `digest` field on the GitHub asset object (GitHub-native SHA256, no extra fetch)  | `python`                    |
-| `inline-api`           | JSONPath into the per-version API response (`response_path`)                      | `openjdk`                   |
-| `separate-file`        | Sidecar at a predictable URL; optional `parse_pattern` to extract hash from file  | `maven3`, `maven4`, `nodejs`|
-| *(inline via field)*   | `file_checksum_field` on the discovery config — hash read during discovery itself | `golang`, `gradle`          |
-| `none`                 | No checksum available from upstream                                               | `azuljdk`                   |
+| TOML type             | Mechanism                                                                         | Used by                      |
+| --------------------- | --------------------------------------------------------------------------------- | ---------------------------- |
+| `github-asset`        | Sidecar file attached to the same GitHub Release (`{filename}{asset_suffix}`)     | `uv`, `ripgrep`              |
+| `github-asset-digest` | `digest` field on the GitHub asset object (GitHub-native SHA256, no extra fetch)  | `python`                     |
+| `inline-api`          | JSONPath into the per-version API response (`response_path`)                      | `openjdk`                    |
+| `separate-file`       | Sidecar at a predictable URL; optional `parse_pattern` to extract hash from file  | `maven3`, `maven4`, `nodejs` |
+| _(inline via field)_  | `file_checksum_field` on the discovery config — hash read during discovery itself | `golang`, `gradle`           |
+| `none`                | No checksum available from upstream                                               | `azuljdk`                    |
 
 When `file_checksum_field` is set on the discovery config, no `[checksum]` section is needed — the hash is already in `ArtifactInfo.checksum` by the time the sync service picks up the result.
 

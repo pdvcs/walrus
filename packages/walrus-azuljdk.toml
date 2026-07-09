@@ -70,3 +70,8 @@ name_must_contain = "macosx_aarch64.tar.gz"
 # arch_upstream = "aarch64"
 # extension = "tar.gz"
 # name_must_contain = "linux_aarch64.tar.gz" # excludes linux_musl_aarch64
+
+[vulnerabilities]
+# azul:zulu 83 entries; oracle:openjdk upstream CVEs apply to Zulu builds (verified 2026-07-08).
+cpes = ["azul:zulu", "oracle:openjdk"]
+aliases = ["zulu", "azul", "azul zulu", "azul jdk", "zulu jdk", "openjdk", "jdk", "java"]
