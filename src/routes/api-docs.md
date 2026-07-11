@@ -251,6 +251,20 @@ curl 'http://localhost:8080/api/v1/vulns/products/search?q=openj'
 # { "query": "openj", "results": [ { "slug": "openjdk", "display_name": "…", "score": 100 } ] }
 ```
 
+### GET /api/v1/vulns/products/:name
+
+Returns vulnerability product metadata for one Walrus package: aliases (including provenance),
+CPE vendor/product pairs, OSV mapping, tracking state, and a distinct CVE count. Unknown package
+names return **404**; a known package without vulnerability metadata returns `tracked: false`.
+
+```bash
+curl 'http://localhost:8080/api/v1/vulns/products/openjdk'
+```
+
+> **NVD applicability limitation:** Walrus flattens NVD configuration trees to vulnerable
+> application CPEs. It does not fully evaluate `AND`, `OR`, or `negate` environment predicates, so
+> environment-dependent CVEs can be conservatively over-reported.
+
 ### GET /api/v1/cves/:cveId
 
 CVE detail: metadata, KEV status, affected products (described ranges + provenance), references.
@@ -306,7 +320,12 @@ Vuln data is refreshed by external cron hitting `POST /internal/vuln-sync/:sourc
 {
   "status": "ok",
   "service": "walrus",
-  "vuln_data_freshness": { "nvd_last_sync": null, "kev_last_sync": null, "osv_last_sync": null }
+  "vuln_data_freshness": { "nvd_last_sync": null, "kev_last_sync": null, "osv_last_sync": null },
+  "vuln_sync_status": {
+    "nvd": { "last_attempt": null, "last_success": null, "last_failure": null, "last_ok": null },
+    "kev": { "last_attempt": null, "last_success": null, "last_failure": null, "last_ok": null },
+    "osv": { "last_attempt": null, "last_success": null, "last_failure": null, "last_ok": null }
+  }
 }
 ```
 
@@ -317,3 +336,10 @@ This page. Returns raw Markdown by default; send `Accept: text/html` for rendere
 ### GET /openapi.json
 
 OpenAPI 3.1.0 specification for this API. [View](/openapi.json)
+
+### Start an NVD backfill (operator API)
+
+`POST /internal/vuln-backfill` accepts JSON `{ "since": "YYYY-MM-DD" }` (optional) and returns
+`202 Accepted` with a durable job reference and status URL. Poll
+`GET /internal/vuln-backfill/:id` for lifecycle timestamps and CPE-pair progress. A currently
+queued/running backfill returns `409` with `code: "already_running"`.

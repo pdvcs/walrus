@@ -14,28 +14,38 @@ import { Pool } from "pg";
 import { config } from "../src/config/index.js";
 import { runMigrations } from "../src/db/client.js";
 import { NvdClient } from "../src/vuln/sync/nvd-client.js";
-import { backfillNvd } from "../src/vuln/sync/nvd-sync.js";
+import { backfillNvd, buildPublicationWindows } from "../src/vuln/sync/nvd-sync.js";
 import { listDistinctCpePairs } from "../src/db/queries/package-aliases.js";
 import { loadAllPackages } from "../src/services/package-registry.js";
 import { reconcileAllPackageVulns } from "../src/services/vuln-config.js";
+import { withVulnSyncLock } from "../src/vuln/sync/lock.js";
+import { runVulnBackfillJob } from "../src/services/vuln-backfill.js";
 
-function parseSince(args: string[]): string | undefined {
+export function parseSince(args: string[]): string | undefined {
   const i = args.indexOf("--since");
-  if (i >= 0 && args[i + 1]) {
-    const v = args[i + 1];
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) {
-      console.error(`Invalid --since date (expected YYYY-MM-DD): ${v}`);
-      process.exit(1);
-    }
-    return v;
-  }
-  return undefined;
+  if (i < 0) return undefined;
+  const value = args[i + 1];
+  if (!value || value.startsWith("--")) throw new Error("--since requires a YYYY-MM-DD value");
+  // Validate before opening the database or reconciling package configuration.
+  buildPublicationWindows(value);
+  return value;
 }
 
 async function main(): Promise<void> {
+  const jobIdIndex = process.argv.indexOf("--job-id");
+  const jobId = jobIdIndex >= 0 ? process.argv[jobIdIndex + 1] : undefined;
   const since = parseSince(process.argv.slice(2));
   const pool = new Pool({ connectionString: config.DATABASE_URL });
   await runMigrations();
+
+  if (jobId) {
+    try {
+      await runVulnBackfillJob(pool, jobId);
+    } finally {
+      await pool.end();
+    }
+    return;
+  }
 
   // Reconcile package configs so CPE pairs exist even on a fresh DB (the same
   // step the app runs at boot) — makes the backfill self-sufficient.
@@ -61,7 +71,9 @@ async function main(): Promise<void> {
   const nvd = new NvdClient();
   const started = Date.now();
   try {
-    const totals = await backfillNvd(pool, nvd, { since, log: (m) => console.log(m) });
+    const totals = await withVulnSyncLock(pool, "nvd", () =>
+      backfillNvd(pool, nvd, { since, log: (m) => console.log(m) }),
+    );
     const secs = ((Date.now() - started) / 1000).toFixed(0);
     console.log(
       `\n✓ Backfill complete in ${secs}s: ${totals.cves} CVEs, ${totals.affects} affects rows ` +
@@ -75,7 +87,9 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  console.error("Unexpected error:", err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error("Unexpected error:", err);
+    process.exit(1);
+  });
+}

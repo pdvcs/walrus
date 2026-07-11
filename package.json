@@ -7,7 +7,7 @@
     "build": "tsc && npm run build:static",
     "build:static": "esbuild src/static/editor-bundle.ts --bundle --outfile=dist/public/editor-bundle.js --format=iife --platform=browser --minify",
     "typecheck": "tsc --noEmit",
-    "dev": "npm run build:static && dotenv -e .env.local -- tsx watch src/main.ts",
+    "dev": "npm run build:static && dotenv -e .env.local -e .env.secrets -- tsx watch src/main.ts",
     "test": "dotenv -e .env.local -e .env.secrets -- vitest run",
     "test:unit": "vitest run tests/common tests/discovery tests/services tests/scripts tests/vuln/normalize.test.ts tests/vuln/version-ranges.test.ts tests/vuln/cpe.test.ts tests/vuln/sync/nvd-client.test.ts",
     "test:integration": "dotenv -e .env.local -e .env.secrets -- vitest run tests/db",

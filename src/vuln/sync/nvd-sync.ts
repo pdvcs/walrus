@@ -11,6 +11,7 @@ import {
   upsertCveFull,
   deleteAffectsForSource,
   insertAffects,
+  knownCveIds,
   AffectsInsert,
 } from "../../db/queries/cves.js";
 import { loadCpeLookup, listDistinctCpePairs } from "../../db/queries/package-aliases.js";
@@ -161,43 +162,86 @@ export async function ingestCveItems(
 }
 
 type Logger = (msg: string) => void;
+const DAY_MS = 24 * 3600 * 1000;
+const MAX_NVD_DATE_WINDOW_MS = 119 * DAY_MS;
+
+export interface PublicationWindow extends Record<string, string> {
+  pubStartDate: string;
+  pubEndDate: string;
+}
+
+/** Build adjacent inclusive NVD publication windows (the API caps spans at 120 days). */
+export function buildPublicationWindows(since: string, now = new Date()): PublicationWindow[] {
+  const start = new Date(`${since}T00:00:00.000Z`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(since) || Number.isNaN(start.getTime())) {
+    throw new Error(`Invalid --since date (expected YYYY-MM-DD): ${since}`);
+  }
+  if (start.toISOString().slice(0, 10) !== since) {
+    throw new Error(`Invalid --since date: ${since}`);
+  }
+  if (Number.isNaN(now.getTime())) throw new Error("Invalid backfill end time");
+  if (start.getTime() > now.getTime()) {
+    throw new Error(`--since date must not be in the future: ${since}`);
+  }
+
+  const windows: PublicationWindow[] = [];
+  let windowStart = start;
+  while (windowStart.getTime() <= now.getTime()) {
+    const windowEnd = new Date(
+      Math.min(now.getTime(), windowStart.getTime() + MAX_NVD_DATE_WINDOW_MS),
+    );
+    windows.push({
+      pubStartDate: windowStart.toISOString(),
+      pubEndDate: windowEnd.toISOString(),
+    });
+    windowStart = new Date(windowEnd.getTime() + 1);
+  }
+  return windows;
+}
 
 /** Per-pair backfill using virtualMatchString (keeps the DB scoped to tracked packages). */
 export async function backfillNvd(
   pool: Pool,
   nvd: NvdClient,
-  opts: { since?: string; log?: Logger } = {},
+  opts: {
+    since?: string;
+    log?: Logger;
+    now?: Date;
+    onPairComplete?: (done: number) => Promise<void>;
+  } = {},
 ): Promise<IngestCounts> {
   const log = opts.log ?? (() => {});
   const pairs = await listDistinctCpePairs(pool);
   const lookup = await loadCpeLookup(pool);
   const totals: IngestCounts = { cves: 0, affects: 0, skippedCpes: 0 };
-  const extra: Record<string, string> = opts.since
-    ? { pubStartDate: `${opts.since}T00:00:00.000Z` }
-    : {};
+  const now = opts.now ?? new Date();
+  const windows: Array<Record<string, string>> = opts.since
+    ? buildPublicationWindows(opts.since, now)
+    : [{}];
 
   try {
-    for (const pair of pairs) {
+    for (const [pairIndex, pair] of pairs.entries()) {
       const matchString = buildMatchString(pair.cpe_vendor, pair.cpe_product);
       log(`backfill: ${pair.cpe_vendor}:${pair.cpe_product} (${matchString})`);
-      const items = await nvd.cvesForCpe(matchString, extra);
-      const counts = await ingestCveItems(pool, items, lookup);
-      log(
-        `  ${items.length} CVEs → ${counts.affects} affects rows (${counts.skippedCpes} untracked CPEs skipped)`,
-      );
-      totals.cves += counts.cves;
-      totals.affects += counts.affects;
-      totals.skippedCpes += counts.skippedCpes;
+      for (const window of windows) {
+        const items = await nvd.cvesForCpe(matchString, window);
+        const counts = await ingestCveItems(pool, items, lookup);
+        log(
+          `  ${items.length} CVEs → ${counts.affects} affects rows (${counts.skippedCpes} untracked CPEs skipped)`,
+        );
+        totals.cves += counts.cves;
+        totals.affects += counts.affects;
+        totals.skippedCpes += counts.skippedCpes;
+      }
+      await opts.onPairComplete?.(pairIndex + 1);
     }
-    await setSyncState(pool, "nvd-cve", new Date().toISOString(), true);
+    await setSyncState(pool, "nvd-cve", now.toISOString(), true);
   } catch (err) {
     await setSyncState(pool, "nvd-cve", null, false);
     throw err;
   }
   return totals;
 }
-
-const MAX_WINDOW_MS = 119 * 24 * 3600 * 1000; // NVD caps lastMod windows at 120 days
 
 /**
  * Incremental sync from the vuln_sync_state cursor. On a fresh DB (no cursor)
@@ -213,15 +257,25 @@ export async function incrementalNvdSync(
   const log = opts.log ?? (() => {});
   const cursor = await getSyncCursor(pool, "nvd-cve");
   const now = new Date();
-  const start = cursor ? new Date(cursor) : new Date(now.getTime() - MAX_WINDOW_MS);
-  const end = new Date(Math.min(now.getTime(), start.getTime() + MAX_WINDOW_MS));
+  const start = cursor ? new Date(cursor) : new Date(now.getTime() - MAX_NVD_DATE_WINDOW_MS);
+  const end = new Date(Math.min(now.getTime(), start.getTime() + MAX_NVD_DATE_WINDOW_MS));
 
   try {
     const items = await nvd.cvesModifiedSince(start.toISOString(), end.toISOString());
     // A lastMod window returns EVERYTHING modified; keep only CVEs that touch a
     // tracked package (or that we already know about).
     const lookup = await loadCpeLookup(pool);
-    const relevant = items.filter((item) => extractAffects(item, lookup).rows.length > 0);
+    const known = await knownCveIds(
+      pool,
+      items.map((item) => item.cve.id),
+    );
+    const relevantById = new Map<string, NvdCveItem>();
+    for (const item of items) {
+      if (known.has(item.cve.id) || extractAffects(item, lookup).rows.length > 0) {
+        relevantById.set(item.cve.id, item);
+      }
+    }
+    const relevant = [...relevantById.values()];
     const counts = await ingestCveItems(pool, relevant, lookup);
     log(
       `incremental: ${items.length} modified CVEs in window, ${relevant.length} relevant, ${counts.affects} affects rows`,

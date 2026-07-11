@@ -1,9 +1,14 @@
 import { Router } from "express";
 import { token_set_ratio } from "fuzzball";
-import { ProductSearchResponseSchema, VulnsResponseSchema } from "./schemas.js";
+import {
+  ProductSearchResponseSchema,
+  VulnProductResponseSchema,
+  VulnsResponseSchema,
+} from "./schemas.js";
 import { Resolution } from "../vuln/resolver.js";
 import { AffectsWithCveRow } from "../db/queries/cves.js";
 import { AliasSearchRow } from "../db/queries/package-aliases.js";
+import type { VulnProductMetadata } from "../db/queries/package-aliases.js";
 import { normalizeName } from "../vuln/normalize.js";
 import { queryVulns, DataFreshness } from "../services/vuln-query.js";
 
@@ -15,6 +20,7 @@ export interface VulnsRouteDeps {
   getDataFreshness: () => Promise<DataFreshness>;
   logUnresolved: (query: string, top?: { slug: string; score: number }) => Promise<void>;
   searchAliases: (normalizedQuery: string) => Promise<AliasSearchRow[]>;
+  getProductMetadata: (name: string) => Promise<VulnProductMetadata | null>;
 }
 
 /**
@@ -50,6 +56,19 @@ export function createVulnsRouter(deps: VulnsRouteDeps): Router {
       }
       const results = [...best.values()].sort((a, b) => b.score - a.score).slice(0, 10);
       res.json(ProductSearchResponseSchema.parse({ query: rawQ, results }));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get("/products/:name", async (req, res, next) => {
+    try {
+      const product = await deps.getProductMetadata(req.params.name);
+      if (!product) {
+        res.status(404).json({ error: `Unknown package: ${req.params.name}` });
+        return;
+      }
+      res.json(VulnProductResponseSchema.parse(product));
     } catch (err) {
       next(err);
     }

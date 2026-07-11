@@ -222,13 +222,20 @@ Triggered by external cron on `/internal/vuln-sync/:source` (`nvd|kev|osv|all`),
 button, and a one-time `npm run vuln:backfill`. See the ops runbook in
 [build-release.md](build-release.md).
 
-**Query API** (`/api/v1/vulns`, `/api/v1/vulns/products/search`, `/api/v1/cves/:id`,
+**Known applicability limitation:** NVD configuration trees are flattened to vulnerable
+application CPE matches. Walrus does not represent or fully evaluate node/configuration `AND`,
+`OR`, or `negate` environment predicates in `cve_affects`. This deliberately conservative model,
+inherited from VulnCheck, can over-report CVEs whose applicability depends on another product,
+operating system, or hardware condition.
+
+**Query API** (`/api/v1/vulns`, `/api/v1/vulns/products/search`,
+`/api/v1/vulns/products/:name`, `/api/v1/cves/:id`,
 `/api/v1/packages/:name/vulns`) — Zod schemas in `src/routes/schemas.ts`, registered in
 `openapi.ts`, `Schema.parse()` before send. The `/packages/:name/vulns` endpoint is the
 headline walrus-native feature (join CVEs against cached `versions`); it powers the per-version
 CVE badges in the admin UI. Every response carries a standing disclaimer and `data_freshness`.
-`/health` gains a nullable `vuln_data_freshness`. Golden tests ported from vulncheck prove
-behavioural parity.
+`/health` gains nullable `vuln_data_freshness` (last successful runs) and per-source latest-attempt
+status. Golden tests ported from vulncheck prove behavioural parity.
 
 **Out of scope (v1):** authn/authz + rate limiting, tracking tools walrus doesn't serve,
 download-blocking of affected artifacts (v1 informs only).

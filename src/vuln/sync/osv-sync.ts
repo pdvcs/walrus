@@ -5,9 +5,14 @@
  * by the unique constraint). See plan §5, WAL-8.
  */
 import { Pool } from "pg";
-import { upsertCveStub, deleteAffectsForSource, insertAffects } from "../../db/queries/cves.js";
+import {
+  upsertCveStub,
+  deleteAffectsForPackageAndSource,
+  insertAffects,
+} from "../../db/queries/cves.js";
 import { listPackagesWithOsv } from "../../db/queries/package-aliases.js";
 import { setSyncState } from "../../db/queries/vuln-sync-state.js";
+import { config } from "../../config/index.js";
 
 const OSV_QUERY_URL = "https://api.osv.dev/v1/query";
 
@@ -50,6 +55,7 @@ export async function queryOsvPackage(
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(config.VULN_HTTP_TIMEOUT_MS),
     });
     if (!res.ok) throw new Error(`OSV query failed: HTTP ${res.status} for ${ecosystem}/${name}`);
     const data = (await res.json()) as { vulns?: OsvVuln[]; next_page_token?: string };
@@ -108,7 +114,7 @@ export async function applyOsvVulns(
   try {
     await client.query("BEGIN");
     // Rebuild this package's OSV affects so a re-run reflects removed advisories.
-    const seenCves = new Set<string>();
+    await deleteAffectsForPackageAndSource(client, packageName, "osv");
     for (const vuln of vulns) {
       const cveId = cveIdOf(vuln);
       if (!cveId) {
@@ -125,11 +131,6 @@ export async function applyOsvVulns(
         description: vuln.summary ?? vuln.details?.slice(0, 500) ?? null,
         raw: { osvStub: true, osv: vuln },
       });
-
-      if (!seenCves.has(cveId)) {
-        await deleteAffectsForSource(client, cveId, "osv");
-        seenCves.add(cveId);
-      }
 
       for (const aff of vuln.affected ?? []) {
         if (aff.package && (aff.package.ecosystem !== ecosystem || aff.package.name !== name))

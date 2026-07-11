@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vitest";
 import { setupServer } from "msw/node";
 import { http, HttpResponse } from "msw";
 import { readFileSync } from "fs";
@@ -14,7 +14,7 @@ import {
   listAffectsWithCveForPackage,
 } from "../../../src/db/queries/cves.js";
 import { getSyncCursor } from "../../../src/db/queries/vuln-sync-state.js";
-import { osvSyncAll, type OsvVuln } from "../../../src/vuln/sync/osv-sync.js";
+import { osvSyncAll, queryOsvPackage, type OsvVuln } from "../../../src/vuln/sync/osv-sync.js";
 
 const TEST_DB_URL =
   process.env.DATABASE_URL ?? "postgresql://walrus:walrus@localhost:5432/walrus_test";
@@ -26,6 +26,7 @@ const osvCveIds = osvFixture.vulns
   .filter((x): x is string => Boolean(x));
 
 const PKG = "test-go-osv";
+const PKG2 = "test-go-osv-2";
 const BOTH = "CVE-2023-39318"; // present in the OSV fixture
 const OSV_ONLY = "CVE-2023-39319"; // present in the OSV fixture, not pre-ingested
 
@@ -42,14 +43,14 @@ describe("osv-sync", () => {
   afterAll(async () => {
     server.close();
     await pool.query(`DELETE FROM cves WHERE id = ANY($1)`, [osvCveIds]);
-    await pool.query(`DELETE FROM packages WHERE name = $1`, [PKG]);
+    await pool.query(`DELETE FROM packages WHERE name = ANY($1)`, [[PKG, PKG2]]);
     await pool.end();
   });
 
   beforeEach(async () => {
     server.resetHandlers();
     await pool.query(`DELETE FROM cves WHERE id = ANY($1)`, [osvCveIds]);
-    await pool.query(`DELETE FROM packages WHERE name = $1`, [PKG]);
+    await pool.query(`DELETE FROM packages WHERE name = ANY($1)`, [[PKG, PKG2]]);
     await pool.query(`DELETE FROM vuln_sync_state WHERE source = 'osv'`);
     await upsertPackage(pool, {
       name: PKG,
@@ -88,6 +89,17 @@ describe("osv-sync", () => {
     expect((stub!.raw as { osvStub?: boolean }).osvStub).toBe(true);
 
     expect(await getSyncCursor(pool, "osv")).not.toBeNull();
+  });
+
+  it("applies an abort timeout to OSV requests", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ vulns: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    await queryOsvPackage("Go", "stdlib", fetchFn);
+    expect((fetchFn.mock.calls[0][1] as RequestInit).signal).toBeInstanceOf(AbortSignal);
   });
 
   it("merges sources for a CVE present in both NVD and OSV", async () => {
@@ -135,12 +147,66 @@ describe("osv-sync", () => {
     const after = await osvAffectsCount(pool, PKG);
     expect(after).toBe(before);
   });
+
+  it("retains OSV rows for two packages that share a CVE", async () => {
+    await upsertPackage(pool, {
+      name: PKG2,
+      display_name: "Go 2",
+      vendor: "Google",
+      description: null,
+      website: null,
+      config_hash: "h2",
+      enabled: true,
+    });
+    await reconcilePackageVuln(pool, {
+      packageName: PKG2,
+      aliases: ["go 2"],
+      cpes: [],
+      osvEcosystem: "Go",
+      osvName: "stdlib",
+    });
+
+    await osvSyncAll(pool);
+
+    expect(await osvAffectsCount(pool, PKG)).toBeGreaterThan(0);
+    expect(await osvAffectsCount(pool, PKG2)).toBe(await osvAffectsCount(pool, PKG));
+  });
+
+  it("removes an advisory omitted from a later package response", async () => {
+    await osvSyncAll(pool);
+    expect(await osvAffectsForCve(pool, PKG, BOTH)).toBeGreaterThan(0);
+
+    server.use(
+      http.post("https://api.osv.dev/v1/query", () =>
+        HttpResponse.json({ vulns: osvFixture.vulns.filter((v) => cveId(v) !== BOTH) }),
+      ),
+    );
+    await osvSyncAll(pool);
+
+    expect(await osvAffectsForCve(pool, PKG, BOTH)).toBe(0);
+    expect(await osvAffectsCount(pool, PKG)).toBeGreaterThan(0);
+  });
 });
+
+function cveId(vuln: OsvVuln): string | undefined {
+  return vuln.id.match(/^CVE-/)
+    ? vuln.id
+    : vuln.aliases?.find((alias) => /^CVE-\d{4}-\d+$/.test(alias));
+}
 
 async function osvAffectsCount(pool: Pool, pkg: string): Promise<number> {
   const { rows } = await pool.query<{ n: number }>(
     `SELECT count(*)::int AS n FROM cve_affects WHERE package_name = $1 AND source = 'osv'`,
     [pkg],
+  );
+  return rows[0].n;
+}
+
+async function osvAffectsForCve(pool: Pool, pkg: string, cveId: string): Promise<number> {
+  const { rows } = await pool.query<{ n: number }>(
+    `SELECT count(*)::int AS n FROM cve_affects
+     WHERE package_name = $1 AND source = 'osv' AND cve_id = $2`,
+    [pkg, cveId],
   );
   return rows[0].n;
 }

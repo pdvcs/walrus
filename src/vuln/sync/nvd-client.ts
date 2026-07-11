@@ -24,8 +24,11 @@ export interface NvdCveItem {
       }>
     >;
     configurations?: Array<{
+      operator?: string;
+      negate?: boolean;
       nodes: Array<{
         operator?: string;
+        negate?: boolean;
         cpeMatch?: Array<{
           criteria: string;
           vulnerable: boolean;
@@ -53,6 +56,7 @@ export interface NvdClientOptions {
   /** Base delay in ms for exponential backoff (tests shrink this). */
   backoffBaseMs?: number;
   maxRetries?: number;
+  requestTimeoutMs?: number;
   logger?: { info: (msg: string) => void; warn: (msg: string) => void };
 }
 
@@ -87,6 +91,7 @@ export class NvdClient {
   private readonly fetchFn: typeof fetch;
   private readonly backoffBaseMs: number;
   private readonly maxRetries: number;
+  private readonly requestTimeoutMs: number;
   private readonly limiter: RateLimiter;
   private readonly log: NonNullable<NvdClientOptions["logger"]>;
   private readonly sleepFn: (ms: number) => Promise<void>;
@@ -98,6 +103,7 @@ export class NvdClient {
     this.fetchFn = opts.fetchFn ?? fetch;
     this.backoffBaseMs = opts.backoffBaseMs ?? 2000;
     this.maxRetries = opts.maxRetries ?? 5;
+    this.requestTimeoutMs = opts.requestTimeoutMs ?? config.VULN_HTTP_TIMEOUT_MS;
     this.log = opts.logger ?? { info: () => {}, warn: () => {} };
     this.sleepFn = sleepFn ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.limiter = new RateLimiter(this.apiKey ? 45 : 4, 30_000, this.sleepFn);
@@ -114,7 +120,10 @@ export class NvdClient {
       let res: Response | undefined;
       let networkErr: unknown;
       try {
-        res = await this.fetchFn(url, { headers });
+        res = await this.fetchFn(url, {
+          headers,
+          signal: AbortSignal.timeout(this.requestTimeoutMs),
+        });
       } catch (err) {
         networkErr = err;
       }

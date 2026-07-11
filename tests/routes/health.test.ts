@@ -20,5 +20,9 @@ describe("GET /health", () => {
     expect(f).toHaveProperty("nvd_last_sync");
     expect(f).toHaveProperty("kev_last_sync");
     expect(f).toHaveProperty("osv_last_sync");
+    expect(res.body).toHaveProperty("vuln_sync_status");
+    expect(res.body.vuln_sync_status).toHaveProperty("nvd.last_ok");
+    expect(res.body.vuln_sync_status).toHaveProperty("kev.last_failure");
+    expect(res.body.vuln_sync_status).toHaveProperty("osv.last_attempt");
   });
 });

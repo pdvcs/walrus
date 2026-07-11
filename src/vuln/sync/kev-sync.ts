@@ -7,6 +7,7 @@
 import { Pool } from "pg";
 import { flagKev, clearKevExcept, knownCveIds } from "../../db/queries/cves.js";
 import { setSyncState } from "../../db/queries/vuln-sync-state.js";
+import { config } from "../../config/index.js";
 
 const KEV_URL =
   "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json";
@@ -52,7 +53,9 @@ export async function applyKev(pool: Pool, catalog: KevCatalog): Promise<KevResu
 
 export async function kevSync(pool: Pool, fetchFn: typeof fetch = fetch): Promise<KevResult> {
   try {
-    const res = await fetchFn(KEV_URL);
+    const res = await fetchFn(KEV_URL, {
+      signal: AbortSignal.timeout(config.VULN_HTTP_TIMEOUT_MS),
+    });
     if (!res.ok) throw new Error(`KEV download failed: HTTP ${res.status}`);
     const catalog = (await res.json()) as KevCatalog;
     const result = await applyKev(pool, catalog);

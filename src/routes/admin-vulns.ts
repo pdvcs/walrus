@@ -2,15 +2,23 @@ import { Router } from "express";
 import { renderSharedHtml, escHtml } from "./admin.js";
 import { VulnQueryResult, DataFreshness } from "../services/vuln-query.js";
 import { isVulnSyncSource, runVulnSync, SourceOutcome, VulnSyncImpls } from "../vuln/sync/index.js";
+import type { VulnSourceStatus, VulnSyncStatus } from "../db/queries/vuln-sync-state.js";
+import type { VulnBackfillJobRow } from "../db/queries/vuln-backfill-jobs.js";
+import { buildPublicationWindows } from "../vuln/sync/nvd-sync.js";
 
 export interface AdminVulnsRouteDeps {
   /** Bound /vulns query (same code path as the public API). */
   queryVulns: (product: string, version?: string) => Promise<VulnQueryResult>;
   getDataFreshness: () => Promise<DataFreshness>;
+  getSyncStatus: () => Promise<VulnSyncStatus>;
   vulnSyncImpls: VulnSyncImpls;
   logAdminAction: (details: Record<string, unknown>) => Promise<void>;
   /** Operator hints (e.g. "run vuln:backfill") shown above the freshness panel. */
   getHints?: () => Promise<string[]>;
+  startVulnBackfill: (
+    since?: string,
+  ) => Promise<{ job?: VulnBackfillJobRow; alreadyRunning?: boolean }>;
+  getVulnBackfill: (id: string) => Promise<VulnBackfillJobRow | null>;
 }
 
 /**
@@ -26,13 +34,28 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
       const product = optionalString(req.query.product);
       const version = optionalString(req.query.version);
       const synced = optionalString(req.query.synced);
+      const syncError = optionalString(req.query.sync_error);
 
-      const freshness = await deps.getDataFreshness();
+      const [freshness, syncStatus] = await Promise.all([
+        deps.getDataFreshness(),
+        deps.getSyncStatus(),
+      ]);
       const hints = deps.getHints ? await deps.getHints() : [];
       const result = product ? await deps.queryVulns(product, version) : null;
 
       res.setHeader("Content-Type", "text/html; charset=utf-8");
-      res.send(renderExplorer({ product, version, synced, freshness, hints, result }));
+      res.send(
+        renderExplorer({
+          product,
+          version,
+          synced,
+          syncError,
+          freshness,
+          syncStatus,
+          hints,
+          result,
+        }),
+      );
     } catch (err) {
       next(err);
     }
@@ -48,14 +71,51 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
       const outcomes = await runVulnSync(source, deps.vulnSyncImpls);
       await deps.logAdminAction({ action: "vuln-sync", source, outcomes });
       const wantsHtml = req.headers.accept?.includes("text/html");
+      const alreadyRunning = source !== "all" && outcomes[0]?.code === "already_running";
       if (wantsHtml) {
-        res.redirect(`/admin/v1/vulns?synced=${encodeURIComponent(source)}`);
+        res.redirect(
+          alreadyRunning
+            ? `/admin/v1/vulns?sync_error=${encodeURIComponent(`${source} sync is already running`)}`
+            : `/admin/v1/vulns?synced=${encodeURIComponent(source)}`,
+        );
         return;
       }
       const allOk = outcomes.every((o: SourceOutcome) => o.ok);
-      res.status(allOk ? 200 : 207).json({ source, outcomes });
+      res.status(allOk ? 200 : alreadyRunning ? 409 : 207).json({ source, outcomes });
     } catch (err) {
       next(err);
+    }
+  });
+
+  router.post("/vuln-backfill", async (req, res, next) => {
+    try {
+      const body = (req.body ?? {}) as { since?: unknown };
+      const since = optionalString(body.since);
+      if (since) buildPublicationWindows(since);
+      const result = await deps.startVulnBackfill(since);
+      if (result.alreadyRunning)
+        return void res
+          .status(409)
+          .json({ code: "already_running", ...(result.job ? { job: result.job } : {}) });
+      if (!result.job) throw new Error("Backfill launcher did not return a job");
+      await deps.logAdminAction({ action: "vuln-backfill", since, job_id: result.job.id });
+      res
+        .status(202)
+        .json({ job: result.job, status_url: `/admin/v1/vuln-backfill/${result.job.id}` });
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("since"))
+        return void res.status(400).json({ error: error.message });
+      next(error);
+    }
+  });
+
+  router.get("/vuln-backfill/:id", async (req, res, next) => {
+    try {
+      const job = await deps.getVulnBackfill(req.params.id);
+      if (!job) return void res.status(404).json({ error: "Backfill job not found" });
+      res.json({ job });
+    } catch (error) {
+      next(error);
     }
   });
 
@@ -66,7 +126,9 @@ function renderExplorer(ctx: {
   product?: string;
   version?: string;
   synced?: string;
+  syncError?: string;
   freshness: DataFreshness;
+  syncStatus: VulnSyncStatus;
   hints: string[];
   result: VulnQueryResult | null;
 }): string {
@@ -81,16 +143,20 @@ function renderExplorer(ctx: {
   const freshnessPanel = `
     <div class="freshness">
       <strong>Data freshness</strong>
-      <span>NVD: ${fmtTs(ctx.freshness.nvd_last_sync)}</span>
-      <span>KEV: ${fmtTs(ctx.freshness.kev_last_sync)}</span>
-      <span>OSV: ${fmtTs(ctx.freshness.osv_last_sync)}</span>
+      <span>NVD: ${fmtTs(ctx.freshness.nvd_last_sync)} ${fmtSourceStatus(ctx.syncStatus.nvd)}</span>
+      <span>KEV: ${fmtTs(ctx.freshness.kev_last_sync)} ${fmtSourceStatus(ctx.syncStatus.kev)}</span>
+      <span>OSV: ${fmtTs(ctx.freshness.osv_last_sync)} ${fmtSourceStatus(ctx.syncStatus.osv)}</span>
       <form method="post" action="/admin/v1/vuln-sync/nvd" style="display:inline"><button class="btn btn-sm btn-secondary">Sync NVD now</button></form>
       <form method="post" action="/admin/v1/vuln-sync/kev" style="display:inline"><button class="btn btn-sm btn-secondary">Sync KEV now</button></form>
       <form method="post" action="/admin/v1/vuln-sync/osv" style="display:inline"><button class="btn btn-sm btn-secondary">Sync OSV now</button></form>
+      <form method="post" action="/admin/v1/vuln-backfill" style="display:inline"><button class="btn btn-sm btn-secondary">Start NVD backfill</button></form>
     </div>`;
 
   const syncedBanner = ctx.synced
     ? `<div class="note note-ok">Triggered ${esc(ctx.synced)} sync. Freshness updates once ingestion completes.</div>`
+    : "";
+  const syncErrorBanner = ctx.syncError
+    ? `<div class="note note-warn">${esc(ctx.syncError)}</div>`
     : "";
 
   const form = `
@@ -112,6 +178,7 @@ function renderExplorer(ctx: {
     ${hintsBanner}
     ${freshnessPanel}
     ${syncedBanner}
+    ${syncErrorBanner}
     ${form}
     ${results}`;
 
@@ -223,6 +290,12 @@ function fmtTs(ts: string | null): string {
   if (!ts) return "never";
   const d = new Date(ts);
   return isNaN(d.getTime()) ? "never" : d.toISOString().replace("T", " ").slice(0, 16) + " UTC";
+}
+
+function fmtSourceStatus(status: VulnSourceStatus): string {
+  if (status.last_ok === null) return "(never attempted)";
+  if (status.last_ok) return "(last attempt succeeded)";
+  return `(last attempt failed ${fmtTs(status.last_failure)})`;
 }
 
 function optionalString(value: unknown): string | undefined {

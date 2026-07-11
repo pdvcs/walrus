@@ -12,6 +12,7 @@ import { generateSortKey } from "../../src/common/version-utils.js";
 import { createAdminVulnsRouter } from "../../src/routes/admin-vulns.js";
 import { createApp } from "../../src/main.js";
 import type { VulnQueryResult } from "../../src/services/vuln-query.js";
+import { VulnSyncAlreadyRunningError } from "../../src/vuln/sync/lock.js";
 
 const TEST_DB_URL =
   process.env.DATABASE_URL ?? "postgresql://walrus:walrus@localhost:5432/walrus_test";
@@ -81,12 +82,21 @@ describe("admin vuln explorer + sync (isolated)", () => {
     app.use(
       "/admin/v1",
       createAdminVulnsRouter({
+        startVulnBackfill: async () => {
+          throw new Error("unused");
+        },
+        getVulnBackfill: async () => null,
         queryVulns: async (product) =>
           product === "asdfgh" ? unresolvedResult() : resolvedResult(),
         getDataFreshness: async () => ({
           nvd_last_sync: null,
           kev_last_sync: null,
           osv_last_sync: null,
+        }),
+        getSyncStatus: async () => ({
+          nvd: { last_attempt: null, last_success: null, last_failure: null, last_ok: null },
+          kev: { last_attempt: null, last_success: null, last_failure: null, last_ok: null },
+          osv: { last_attempt: null, last_success: null, last_failure: null, last_ok: null },
         }),
         vulnSyncImpls: { kev: async () => ({ flagged: 3, cleared: 0, skippedUnknown: 0 }) },
         logAdminAction: (details) => insertAdminAction(pool, { action_type: "vuln-sync", details }),
@@ -103,6 +113,34 @@ describe("admin vuln explorer + sync (isolated)", () => {
     expect(res.text).toMatch(/Vulnerability explorer/);
     expect(res.text).toMatch(/Data freshness/);
     expect(res.text).toMatch(/Sync KEV now/);
+    expect(res.text).toMatch(/never attempted/);
+  });
+
+  it("renders a failed latest attempt without advancing displayed freshness", async () => {
+    const success = "2026-07-09T10:00:00.000Z";
+    const failure = "2026-07-10T10:00:00.000Z";
+    const res = await request(
+      buildApp({
+        getDataFreshness: async () => ({
+          nvd_last_sync: success,
+          kev_last_sync: null,
+          osv_last_sync: null,
+        }),
+        getSyncStatus: async () => ({
+          nvd: {
+            last_attempt: failure,
+            last_success: success,
+            last_failure: failure,
+            last_ok: false,
+          },
+          kev: { last_attempt: null, last_success: null, last_failure: null, last_ok: null },
+          osv: { last_attempt: null, last_success: null, last_failure: null, last_ok: null },
+        }),
+      }),
+    ).get("/admin/v1/vulns");
+
+    expect(res.text).toContain("2026-07-09 10:00 UTC");
+    expect(res.text).toContain("last attempt failed 2026-07-10 10:00 UTC");
   });
 
   it("renders a CVE table for a resolved query", async () => {
@@ -140,6 +178,24 @@ describe("admin vuln explorer + sync (isolated)", () => {
   it("unknown sync source → 400", async () => {
     const res = await request(buildApp()).post("/admin/v1/vuln-sync/bogus");
     expect(res.status).toBe(400);
+  });
+
+  it("returns 409 JSON and a clear HTML banner when a sync is already running", async () => {
+    const app = buildApp({
+      vulnSyncImpls: {
+        kev: async () => {
+          throw new VulnSyncAlreadyRunningError("kev");
+        },
+      },
+    });
+    const json = await request(app).post("/admin/v1/vuln-sync/kev");
+    expect(json.status).toBe(409);
+    expect(json.body.outcomes[0].code).toBe("already_running");
+
+    const html = await request(app).post("/admin/v1/vuln-sync/kev").set("Accept", "text/html");
+    expect(html.status).toBe(302);
+    const page = await request(app).get(html.headers.location);
+    expect(page.text).toContain("kev sync is already running");
   });
 });
 

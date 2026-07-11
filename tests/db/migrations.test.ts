@@ -55,6 +55,18 @@ describe("migrations", () => {
     expect(rows.map((r) => r.column_name).sort()).toEqual(["osv_ecosystem", "osv_name"]);
   });
 
+  it("adds separate vulnerability sync outcome timestamps", async () => {
+    const { rows } = await pool.query<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns
+       WHERE table_name = 'vuln_sync_state'
+         AND column_name IN ('last_success_at', 'last_failure_at')`,
+    );
+    expect(rows.map((row) => row.column_name).sort()).toEqual([
+      "last_failure_at",
+      "last_success_at",
+    ]);
+  });
+
   it("creates the pg_trgm extension and the trigram + affects indexes", async () => {
     const { rows: ext } = await pool.query<{ extname: string }>(
       `SELECT extname FROM pg_extension WHERE extname = 'pg_trgm'`,

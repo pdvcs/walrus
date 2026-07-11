@@ -133,6 +133,18 @@ export async function deleteAffectsForSource(
   await q.query(`DELETE FROM cve_affects WHERE cve_id = $1 AND source = $2`, [cveId, source]);
 }
 
+/** Drop all affects rows for one package/source before replacing a feed snapshot. */
+export async function deleteAffectsForPackageAndSource(
+  q: Queryable,
+  packageName: string,
+  source: "nvd" | "osv",
+): Promise<void> {
+  await q.query(`DELETE FROM cve_affects WHERE package_name = $1 AND source = $2`, [
+    packageName,
+    source,
+  ]);
+}
+
 /** Insert one affects row, deduped by the UNIQUE NULLS NOT DISTINCT constraint. */
 export async function insertAffects(q: Queryable, row: AffectsInsert): Promise<number> {
   const res = await q.query(

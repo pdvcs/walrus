@@ -115,6 +115,23 @@ export const DataFreshnessSchema = z
   })
   .openapi("DataFreshness");
 
+export const VulnSourceStatusSchema = z
+  .object({
+    last_attempt: z.string().nullable(),
+    last_success: z.string().nullable(),
+    last_failure: z.string().nullable(),
+    last_ok: z.boolean().nullable(),
+  })
+  .openapi("VulnSourceStatus");
+
+export const VulnSyncStatusSchema = z
+  .object({
+    nvd: VulnSourceStatusSchema,
+    kev: VulnSourceStatusSchema,
+    osv: VulnSourceStatusSchema,
+  })
+  .openapi("VulnSyncStatus");
+
 export const MatchCandidateSchema = z
   .object({
     slug: z.string().openapi({ description: "Walrus package name" }),
@@ -187,6 +204,27 @@ export const ProductSearchResponseSchema = z
   })
   .openapi("ProductSearchResponse");
 
+export const VulnProductResponseSchema = z
+  .object({
+    name: z.string(),
+    display_name: z.string(),
+    vendor: z.string(),
+    description: z.string().nullable(),
+    website: z.string().nullable(),
+    tracked: z.boolean(),
+    aliases: z.array(z.object({ alias: z.string(), source: z.string() })),
+    cpes: z.array(
+      z.object({
+        cpe_vendor: z.string(),
+        cpe_product: z.string(),
+        is_primary: z.boolean(),
+      }),
+    ),
+    osv: z.object({ ecosystem: z.string(), name: z.string() }).nullable(),
+    cve_count: z.number().int().nonnegative(),
+  })
+  .openapi("VulnProductResponse");
+
 // GET /api/v1/cves/:cveId
 export const CveAffectedProductSchema = z
   .object({
@@ -253,6 +291,7 @@ export const HealthResponseSchema = z
     status: z.string().openapi({ example: "ok" }),
     service: z.string().openapi({ example: "walrus" }),
     vuln_data_freshness: DataFreshnessSchema.nullable(),
+    vuln_sync_status: VulnSyncStatusSchema.nullable(),
   })
   .openapi("HealthResponse");
 

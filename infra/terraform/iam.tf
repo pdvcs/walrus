@@ -22,6 +22,15 @@ resource "google_project_iam_member" "walrus_api_cloudsql" {
   member  = "serviceAccount:${google_service_account.walrus_api.email}"
 }
 
+# walrus-api may launch the dedicated long-running vulnerability backfill job.
+resource "google_cloud_run_v2_job_iam_member" "walrus_api_backfill_runner" {
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_job.vuln_backfill.name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_service_account.walrus_api.email}"
+}
+
 # walrus-api: Secret Accessor for DATABASE_URL
 resource "google_secret_manager_secret_iam_member" "walrus_api_secret" {
   secret_id = google_secret_manager_secret.database_url.secret_id

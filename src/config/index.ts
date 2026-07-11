@@ -7,6 +7,8 @@ const configSchema = z.object({
   DATABASE_URL: z.string().optional(),
   GCS_BUCKET: z.string().optional(),
   GCP_PROJECT: z.string().optional(),
+  GCP_REGION: z.string().default("us-central1"),
+  VULN_BACKFILL_JOB: z.string().optional(),
   STORAGE_BACKEND: z.enum(["gcs", "local"]).default("local"),
   LOCAL_STORAGE_PATH: z.string().default("./data/artifacts"),
   SYNC_CONCURRENCY: z.coerce.number().default(4),
@@ -15,6 +17,7 @@ const configSchema = z.object({
   DISCOVERY_HTTP_TIMEOUT_MS: z.coerce.number().default(15000),
   DISCOVERY_HTTP_MAX_RETRIES: z.coerce.number().default(2),
   DISCOVERY_HTTP_RETRY_BASE_DELAY_MS: z.coerce.number().default(300),
+  VULN_HTTP_TIMEOUT_MS: z.coerce.number().positive().default(30000),
   // Optional upstream credential for the NVD API 2.0 (raises the rate limit from
   // 5 to 50 req/30s). Unrelated to walrus authn/authz. Lives in .env.secrets.
   NVD_API_KEY: z.string().optional(),

@@ -217,6 +217,60 @@ curl -s -X POST http://localhost:8080/admin/v1/sync | jq .
 
 Returns a list of `job_id`s, one per package. Each can be tracked individually.
 
+### 8. Bootstrap vulnerability data from an empty database
+
+No manual package or CPE inserts are required. On startup, Walrus applies every database migration
+and reconciles the `[vulnerabilities]` sections from `packages/*.toml` into `packages`,
+`package_cpes`, and `package_aliases`. The HTTP server does not begin listening until that bootstrap
+has completed.
+
+For a new production deployment:
+
+1. Deploy Walrus and wait for the service health check to succeed:
+
+   ```bash
+   export WALRUS_URL="https://<walrus-cloud-run-service-url>"
+   curl -fsS "$WALRUS_URL/health" | jq .
+   ```
+
+2. Start the full-history NVD backfill:
+
+   ```bash
+   curl -fsS -X POST "$WALRUS_URL/internal/vuln-backfill" \
+     -H 'Content-Type: application/json' \
+     -d '{}' | tee /tmp/walrus-backfill.json | jq .
+   ```
+
+   The response is `202 Accepted` and includes a durable job ID and `status_url`. The request only
+   launches the dedicated Cloud Run Job; it does not wait for the backfill to finish.
+
+3. Poll the returned status URL until the job reaches `succeeded` or `failed`:
+
+   ```bash
+   STATUS_URL=$(jq -r '.status_url' /tmp/walrus-backfill.json)
+   curl -fsS "$WALRUS_URL$STATUS_URL" | jq '.job | {
+     status, cpe_pairs_done, cpe_pairs_total, started_at, finished_at, error_message
+   }'
+   ```
+
+The Cloud Run Job defensively runs migrations and package/CPE reconciliation again before it reads
+the configured CPE pairs. This makes the job safe to launch immediately after the first healthy
+service startup, including when the database was initially empty. An empty `cpe_pairs_total` after
+startup means no valid `[vulnerabilities].cpes` entries were loaded; inspect the service startup
+logs before retrying.
+
+For local development, the same HTTP endpoint runs the durable job asynchronously inside the local
+Walrus process; no GCP credentials are required. Start `npm run dev`, submit the same POST request
+against `http://localhost:8080`, and poll its returned status URL. Keep that dev process running
+until the job finishes. The development-only CLI remains available for lower-level debugging, but
+is not required for this workflow:
+
+```bash
+npm run vuln:backfill
+# Or limit history:
+npm run vuln:backfill -- --since 2015-01-01
+```
+
 ---
 
 ## API schema architecture

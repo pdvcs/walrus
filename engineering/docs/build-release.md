@@ -147,12 +147,30 @@ Populate historical CVEs for every configured CPE pair. Run once after first dep
 adding new packages/CPEs):
 
 ```bash
-npm run vuln:backfill                        # full history for all CPE pairs
-npm run vuln:backfill -- --since 2015-01-01  # limit to CVEs published on/after a date
+curl -X POST "$WALRUS_URL/internal/vuln-backfill" -H 'Content-Type: application/json' -d '{}'
+curl -X POST "$WALRUS_URL/internal/vuln-backfill" -H 'Content-Type: application/json' -d '{"since":"2015-01-01"}'
 ```
 
-The script pages the NVD `virtualMatchString` API per CPE pair, writes `cves` + `cve_affects`,
-and advances the `nvd-cve` cursor. Verify:
+The dated form sends paired `pubStartDate`/`pubEndDate` parameters in adjacent windows no longer
+than the NVD API's 120-day maximum. Invalid, impossible, and future dates are rejected before the
+backfill starts.
+
+Removing a CPE pair or OSV mapping from a package's TOML deletes the derived `cve_affects` rows at
+the next boot reconciliation. Re-adding a previously removed CPE pair therefore requires re-running
+`npm run vuln:backfill` to restore its historical NVD associations (incremental sync only covers
+recently modified CVEs).
+
+Production requests return `202 Accepted` immediately with a durable job and `status_url`. Poll
+that URL for `queued`, `running`, `succeeded`, or `failed`; progress is reported as
+`cpe_pairs_done` / `cpe_pairs_total`. A concurrent NVD backfill returns `409 already_running`.
+The API launches the dedicated `walrus-vuln-backfill` Cloud Run Job, whose 24-hour task timeout
+avoids the serving service's 3,600-second request deadline. The keyless NVD limit makes a full
+history run potentially take hours; configure `NVD_API_KEY` in production. The local
+`npm run vuln:backfill` command remains available for development only and shares the ingestion
+implementation with the job runner.
+
+The job pages the NVD `virtualMatchString` API per CPE pair, writes `cves` + `cve_affects`, and
+advances the `nvd-cve` cursor. Verify:
 
 ```sql
 SELECT count(*) FROM cve_affects ca JOIN packages p ON p.name = ca.package_name WHERE p.name = 'openjdk';
@@ -177,6 +195,22 @@ cursor) an incremental run bootstraps a 119-day lookback — run the backfill fo
 
 Operators can also trigger a sync from the admin UI (`/admin/v1/vulns` → "Sync … now"), which is
 recorded in `admin_actions`.
+
+Upstream vulnerability requests have a 30-second per-request timeout by default (override with
+`VULN_HTTP_TIMEOUT_MS`). A non-blocking PostgreSQL advisory lock permits only one invocation of a
+given source across Walrus instances. A direct overlapping trigger returns `409` with
+`code: "already_running"`; `all` continues the other sources and returns `207` with the contended
+source represented in its outcomes.
+
+The Cloud Run service request timeout is 3,600 seconds. Incremental NVD runs are expected to fit
+when an NVD API key is configured, but full backfills do not: even one request per configured CPE
+pair at the keyless 4–5 requests/30-second rate, multiplied by pagination and historical date
+windows, can exceed an hour. Full backfills therefore always use the asynchronous Cloud Run Job;
+the job's 24-hour timeout is the overall watchdog and its database advisory lock prevents overlap.
+
+Freshness timestamps represent the **last successful** source run. `/health` and the admin panel
+also expose the latest attempt outcome and failure time, so a failed refresh cannot make stale data
+appear current.
 
 ### Data-source attribution
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vitest";
 import { setupServer } from "msw/node";
 import { http, HttpResponse } from "msw";
 import { readFileSync } from "fs";
@@ -9,7 +9,12 @@ import { upsertPackage } from "../../../src/db/queries/packages.js";
 import { reconcilePackageVuln } from "../../../src/db/queries/package-aliases.js";
 import { getSyncCursor } from "../../../src/db/queries/vuln-sync-state.js";
 import { NvdClient, type NvdCveItem } from "../../../src/vuln/sync/nvd-client.js";
-import { ingestCveItems, incrementalNvdSync } from "../../../src/vuln/sync/nvd-sync.js";
+import {
+  backfillNvd,
+  extractAffects,
+  ingestCveItems,
+  incrementalNvdSync,
+} from "../../../src/vuln/sync/nvd-sync.js";
 
 const TEST_DB_URL =
   process.env.DATABASE_URL ?? "postgresql://walrus:walrus@localhost:5432/walrus_test";
@@ -125,6 +130,40 @@ describe("nvd-sync ingestion", () => {
     expect(b).toBe(a);
   });
 
+  it("uses paired bounded publication windows for a dated backfill", async () => {
+    const cvesForCpe = vi.fn().mockResolvedValue([]);
+    const nvd = { cvesForCpe } as unknown as NvdClient;
+
+    await backfillNvd(pool, nvd, {
+      since: "2024-01-01",
+      now: new Date("2024-07-01T12:00:00.000Z"),
+    });
+
+    expect(cvesForCpe).toHaveBeenCalledTimes(2);
+    for (const [, params] of cvesForCpe.mock.calls) {
+      expect(params).toHaveProperty("pubStartDate");
+      expect(params).toHaveProperty("pubEndDate");
+    }
+    expect(cvesForCpe.mock.calls[0][1].pubStartDate).toBe("2024-01-01T00:00:00.000Z");
+    expect(cvesForCpe.mock.calls[1][1].pubEndDate).toBe("2024-07-01T12:00:00.000Z");
+  });
+
+  it("deliberately flattens NVD AND configurations to vulnerable application CPEs", () => {
+    const andItem = items.find((item) =>
+      item.cve.configurations?.some((configuration) =>
+        configuration.nodes.some((node) => node.operator === "OR"),
+      ),
+    )!;
+    expect(
+      andItem.cve.configurations?.some((configuration) => configuration.operator === "AND"),
+    ).toBe(true);
+
+    const result = extractAffects(andItem, new Map([["mh-nexus:hex_editor", [PKG]]]));
+
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({ package_name: PKG, exact_version: "0.9.5" });
+  });
+
   describe("incrementalNvdSync + cursor (msw)", () => {
     const server = setupServer();
     beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
@@ -151,6 +190,33 @@ describe("nvd-sync ingestion", () => {
       expect(counts.affects).toBeGreaterThan(0);
       const cursor = await getSyncCursor(pool, "nvd-cve");
       expect(cursor).not.toBeNull();
+    });
+
+    it("removes obsolete affects for a known CVE that no longer matches a tracked CPE", async () => {
+      const original = items.find((item) => item.cve.id === "CVE-2019-16294")!;
+      await ingestCveItems(pool, [original]);
+      expect(await affectsCount(pool, PKG)).toBeGreaterThan(0);
+
+      const modified: NvdCveItem = {
+        cve: { ...original.cve, configurations: [] },
+      };
+      server.use(
+        http.get("https://services.nvd.nist.gov/rest/json/cves/2.0", ({ request }) => {
+          const startIndex = Number(new URL(request.url).searchParams.get("startIndex"));
+          return HttpResponse.json({
+            resultsPerPage: startIndex === 0 ? 1 : 0,
+            startIndex,
+            totalResults: 1,
+            vulnerabilities: startIndex === 0 ? [modified] : [],
+          });
+        }),
+      );
+
+      const nvd = new NvdClient({ apiKey: "k", backoffBaseMs: 1 }, async () => {});
+      const counts = await incrementalNvdSync(pool, nvd);
+
+      expect(counts.cves).toBe(1);
+      expect(await affectsCount(pool, PKG)).toBe(0);
     });
 
     it("leaves last_ok=false and preserves the old cursor on failure", async () => {

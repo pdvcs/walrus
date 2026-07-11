@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vitest";
 import { setupServer } from "msw/node";
 import { http, HttpResponse } from "msw";
 import { readFileSync } from "fs";
@@ -100,6 +100,20 @@ describe("kev-sync", () => {
       const res = await kevSync(pool);
       expect(res.flagged).toBe(1);
       expect(await getSyncCursor(pool, "kev")).toBe(catalog.catalogVersion);
+    });
+
+    it("applies an abort timeout to the KEV request", async () => {
+      await seedCve(pool, TRACKED);
+      const fetchFn = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(catalog), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+
+      await kevSync(pool, fetchFn);
+
+      expect((fetchFn.mock.calls[0][1] as RequestInit).signal).toBeInstanceOf(AbortSignal);
     });
   });
 });

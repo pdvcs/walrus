@@ -88,6 +88,21 @@ describe("NvdClient (injected fetch)", () => {
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
+  it("supplies an abort timeout and retries timed-out requests", async () => {
+    const timeout = Object.assign(new Error("timed out"), { name: "TimeoutError" });
+    const fetchFn = vi.fn().mockRejectedValue(timeout);
+    const client = new NvdClient(
+      { apiKey: "k", fetchFn, backoffBaseMs: 1, maxRetries: 2, requestTimeoutMs: 25 },
+      noSleep,
+    );
+
+    await expect(client.cvesForCpe("cpe:2.3:a:x:y")).rejects.toThrow(/after 2 retries/);
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+    for (const call of fetchFn.mock.calls) {
+      expect((call[1] as RequestInit).signal).toBeInstanceOf(AbortSignal);
+    }
+  });
+
   it("rate limiter waits once the keyless window budget is used", async () => {
     vi.useFakeTimers();
     try {

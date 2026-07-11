@@ -4,7 +4,11 @@ import request from "supertest";
 import { Pool } from "pg";
 import { runMigrations } from "../../src/db/client.js";
 import { upsertPackage } from "../../src/db/queries/packages.js";
-import { reconcilePackageVuln, searchAliases } from "../../src/db/queries/package-aliases.js";
+import {
+  getVulnProductMetadata,
+  reconcilePackageVuln,
+  searchAliases,
+} from "../../src/db/queries/package-aliases.js";
 import { listAffectsWithCveForPackage } from "../../src/db/queries/cves.js";
 import { getDataFreshness } from "../../src/db/queries/vuln-sync-state.js";
 import { logUnresolvedQuery } from "../../src/db/queries/unresolved-queries.js";
@@ -53,6 +57,7 @@ describe("GET /api/v1/vulns/products/search", () => {
         getDataFreshness: () => getDataFreshness(pool),
         logUnresolved: (q, top) => logUnresolvedQuery(pool, q, top),
         searchAliases: (q) => searchAliases(pool, q),
+        getProductMetadata: (name) => getVulnProductMetadata(pool, name),
       }),
     );
   });

@@ -1,5 +1,6 @@
 import { Pool } from "pg";
 import { Queryable } from "../queryable.js";
+import { parseCpe } from "../../vuln/cpe.js";
 
 // ── Shapes ──────────────────────────────────────────────────────────────────
 
@@ -27,6 +28,19 @@ export interface OsvPackageRow {
   package_name: string;
   osv_ecosystem: string;
   osv_name: string;
+}
+
+export interface VulnProductMetadata {
+  name: string;
+  display_name: string;
+  vendor: string;
+  description: string | null;
+  website: string | null;
+  tracked: boolean;
+  aliases: AliasRow[];
+  cpes: CpePair[];
+  osv: { ecosystem: string; name: string } | null;
+  cve_count: number;
 }
 
 // ── Reconciliation (TOML → DB, boot; plan §2) ───────────────────────────────
@@ -89,12 +103,56 @@ export async function reconcilePackageVuln(pool: Pool, input: VulnConfigInput): 
       input.osvName,
     ]);
 
+    // Affects rows must derive from the current config: without an OSV mapping
+    // the package is never visited by osvSyncAll, and incremental NVD sync only
+    // rebuilds CVEs modified upstream — so rows from removed mappings/pairs
+    // would otherwise persist as false positives forever (WAL-26).
+    if (!input.osvEcosystem || !input.osvName) {
+      await client.query(`DELETE FROM cve_affects WHERE package_name = $1 AND source = 'osv'`, [
+        input.packageName,
+      ]);
+    }
+    await deleteNvdAffectsForRemovedCpes(client, input.packageName, input.cpes);
+
     await client.query("COMMIT");
   } catch (err) {
     await client.query("ROLLBACK");
     throw err;
   } finally {
     client.release();
+  }
+}
+
+/**
+ * Delete a package's 'nvd' affects rows whose CPE pair is no longer configured.
+ * Rows are attributed to pairs by parsing raw_cpe (criteria plus optional
+ * `|range` suffix, exactly as extractAffects builds it); a row we cannot
+ * attribute to any current pair cannot be rebuilt by the NVD sync, so it goes.
+ */
+async function deleteNvdAffectsForRemovedCpes(
+  q: Queryable,
+  packageName: string,
+  cpes: CpePair[],
+): Promise<void> {
+  const { rows } = await q.query<{ raw_cpe: string }>(
+    `SELECT DISTINCT raw_cpe FROM cve_affects
+     WHERE package_name = $1 AND source = 'nvd' AND raw_cpe IS NOT NULL`,
+    [packageName],
+  );
+  const current = new Set(cpes.map((c) => `${c.cpe_vendor}:${c.cpe_product}`));
+  const stale = rows
+    .map((r) => r.raw_cpe)
+    .filter((rawCpe) => {
+      const sep = rawCpe.lastIndexOf("|");
+      const parsed = parseCpe(sep >= 0 ? rawCpe.slice(0, sep) : rawCpe) ?? parseCpe(rawCpe);
+      return !parsed || !current.has(`${parsed.vendor}:${parsed.product}`);
+    });
+  if (stale.length > 0) {
+    await q.query(
+      `DELETE FROM cve_affects
+       WHERE package_name = $1 AND source = 'nvd' AND raw_cpe = ANY($2)`,
+      [packageName, stale],
+    );
   }
 }
 
@@ -112,6 +170,8 @@ export async function clearPackageVulnConfig(pool: Pool, packageName: string): P
       `UPDATE packages SET osv_ecosystem = NULL, osv_name = NULL WHERE name = $1`,
       [packageName],
     );
+    // No mappings remain, so no sync will ever revisit these rows (WAL-26).
+    await client.query(`DELETE FROM cve_affects WHERE package_name = $1`, [packageName]);
     await client.query("COMMIT");
   } catch (err) {
     await client.query("ROLLBACK");
@@ -209,4 +269,53 @@ export async function isPackageTracked(pool: Pool, packageName: string): Promise
     [packageName],
   );
   return rows[0]?.tracked ?? false;
+}
+
+/** Product metadata equivalent to VulnCheck's product-detail API. */
+export async function getVulnProductMetadata(
+  pool: Pool,
+  packageName: string,
+): Promise<VulnProductMetadata | null> {
+  const { rows } = await pool.query<{
+    name: string;
+    display_name: string;
+    vendor: string;
+    description: string | null;
+    website: string | null;
+    osv_ecosystem: string | null;
+    osv_name: string | null;
+    cve_count: number;
+  }>(
+    `SELECT p.name, p.display_name, p.vendor, p.description, p.website,
+            p.osv_ecosystem, p.osv_name,
+            count(DISTINCT ca.cve_id)::int AS cve_count
+     FROM packages p
+     LEFT JOIN cve_affects ca ON ca.package_name = p.name
+     WHERE p.name = $1
+     GROUP BY p.name, p.display_name, p.vendor, p.description, p.website,
+              p.osv_ecosystem, p.osv_name`,
+    [packageName],
+  );
+  const pkg = rows[0];
+  if (!pkg) return null;
+  const [aliases, cpes, tracked] = await Promise.all([
+    getPackageAliases(pool, packageName),
+    getPackageCpes(pool, packageName),
+    isPackageTracked(pool, packageName),
+  ]);
+  return {
+    name: pkg.name,
+    display_name: pkg.display_name,
+    vendor: pkg.vendor,
+    description: pkg.description,
+    website: pkg.website,
+    tracked,
+    aliases,
+    cpes,
+    osv:
+      pkg.osv_ecosystem && pkg.osv_name
+        ? { ecosystem: pkg.osv_ecosystem, name: pkg.osv_name }
+        : null,
+    cve_count: pkg.cve_count,
+  };
 }

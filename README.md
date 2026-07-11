@@ -51,6 +51,7 @@ mapping, aliases); see [package-config.md](engineering/docs/package-config.md).
 
 - `GET /api/v1/vulns?product=&version=` — resolve a name/alias and list known CVEs.
 - `GET /api/v1/vulns/products/search?q=` — autocomplete.
+- `GET /api/v1/vulns/products/:name` — vulnerability metadata, aliases, CPEs, and CVE count.
 - `GET /api/v1/cves/:cveId` — CVE detail.
 - `GET /api/v1/packages/:name/vulns` — CVEs affecting each cached version.
 - Admin explorer + per-version CVE badges at `/admin/v1/vulns`.
@@ -61,6 +62,8 @@ plus a one-time `npm run vuln:backfill` — see the ops runbook in
 
 > **Disclaimer:** Absence of results does not imply a product/version is safe. Vulnerability data
 > comes from public sources (NVD, CISA KEV, OSV) which may lag or be incomplete.
+> NVD configuration trees are flattened to vulnerable application CPEs; environment predicates
+> (`AND`, `OR`, and `negate`) are not fully evaluated and can cause conservative false positives.
 
 **Attribution:** This product uses data from the NVD API but is not endorsed or certified by the
 NVD. Exploited-in-the-wild data from the CISA Known Exploited Vulnerabilities Catalog (public

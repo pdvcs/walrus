@@ -31,8 +31,8 @@ import {
   getCveById,
   listAffectedPackagesForCve,
 } from "./db/queries/cves.js";
-import { searchAliases } from "./db/queries/package-aliases.js";
-import { getDataFreshness } from "./db/queries/vuln-sync-state.js";
+import { getVulnProductMetadata, searchAliases } from "./db/queries/package-aliases.js";
+import { getDataFreshness, getVulnSyncStatus } from "./db/queries/vuln-sync-state.js";
 import { logUnresolvedQuery } from "./db/queries/unresolved-queries.js";
 import { createOpenApiRouter } from "./routes/openapi.js";
 import { HealthResponseSchema } from "./routes/schemas.js";
@@ -62,9 +62,21 @@ import {
   updateArtifactStatus,
 } from "./db/queries/artifacts.js";
 import { getRecentSyncJob, getJobWithArtifacts, listSyncJobs } from "./db/queries/sync-jobs.js";
+import {
+  createVulnBackfillJob,
+  getActiveVulnBackfillJob,
+  getVulnBackfillJob,
+  updateVulnBackfillJob,
+} from "./db/queries/vuln-backfill-jobs.js";
+import { CloudRunBackfillLauncher, LocalBackfillLauncher } from "./vuln/backfill-launcher.js";
+import { isVulnSyncRunning } from "./vuln/sync/lock.js";
 
 const storage = createStorageBackend();
 const vulnSyncImpls = createVulnSyncImpls(pool);
+const backfillLauncher =
+  config.NODE_ENV === "production"
+    ? new CloudRunBackfillLauncher()
+    : new LocalBackfillLauncher(pool);
 const packageRegistry = loadAllPackages();
 if (packageRegistry.errors.length > 0) {
   for (const error of packageRegistry.errors) {
@@ -139,6 +151,34 @@ async function startSyncAsync(
   return service.startAsync(opts);
 }
 
+async function startVulnBackfill(since?: string) {
+  const active = await getActiveVulnBackfillJob(pool);
+  if (active) return { job: active, alreadyRunning: true };
+  if (await isVulnSyncRunning(pool, "nvd")) return { alreadyRunning: true };
+  let job;
+  try {
+    job = await createVulnBackfillJob(pool, since);
+  } catch (error) {
+    if ((error as { code?: string }).code === "23505") {
+      const raced = await getActiveVulnBackfillJob(pool);
+      if (raced) return { job: raced, alreadyRunning: true };
+    }
+    throw error;
+  }
+  try {
+    const executionName = await backfillLauncher.launch(job.id);
+    await updateVulnBackfillJob(pool, job.id, { execution_name: executionName });
+    return { job: (await getVulnBackfillJob(pool, job.id)) ?? job };
+  } catch (error) {
+    await updateVulnBackfillJob(pool, job.id, {
+      status: "failed",
+      finished_at: new Date(),
+      error_message: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+}
+
 export function createApp(): express.Express {
   const app = express();
   app.set("json spaces", 2);
@@ -155,9 +195,17 @@ export function createApp(): express.Express {
 
   app.get("/health", async (_req, res, next) => {
     try {
-      const vuln_data_freshness = await getDataFreshness(pool).catch(() => null);
+      const [vuln_data_freshness, vuln_sync_status] = await Promise.all([
+        getDataFreshness(pool).catch(() => null),
+        getVulnSyncStatus(pool).catch(() => null),
+      ]);
       res.json(
-        HealthResponseSchema.parse({ status: "ok", service: "walrus", vuln_data_freshness }),
+        HealthResponseSchema.parse({
+          status: "ok",
+          service: "walrus",
+          vuln_data_freshness,
+          vuln_sync_status,
+        }),
       );
     } catch (err) {
       next(err);
@@ -179,6 +227,7 @@ export function createApp(): express.Express {
     createVulnsRouter({
       ...vulnQueryDeps,
       searchAliases: (q) => searchAliases(pool, q),
+      getProductMetadata: (name) => getVulnProductMetadata(pool, name),
     }),
   );
 
@@ -187,9 +236,12 @@ export function createApp(): express.Express {
     createAdminVulnsRouter({
       queryVulns: (product, version) => queryVulns(vulnQueryDeps, { product, version }),
       getDataFreshness: () => getDataFreshness(pool),
+      getSyncStatus: () => getVulnSyncStatus(pool),
       getHints: () => getVulnHints(pool),
       vulnSyncImpls,
       logAdminAction: (details) => insertAdminAction(pool, { action_type: "vuln-sync", details }),
+      startVulnBackfill,
+      getVulnBackfill: (id) => getVulnBackfillJob(pool, id),
     }),
   );
 
@@ -402,6 +454,8 @@ export function createApp(): express.Express {
       runSyncAll: (opts) => runSyncAll(opts),
       vulnSync: vulnSyncImpls,
       vulnHints: () => getVulnHints(pool),
+      startVulnBackfill,
+      getVulnBackfill: (id) => getVulnBackfillJob(pool, id),
     }),
   );
 

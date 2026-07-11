@@ -6,6 +6,7 @@
  * no NVD client or network is constructed here. See plan §5.
  */
 import { log } from "../../common/log.js";
+import { VulnSyncAlreadyRunningError } from "./lock.js";
 
 export type VulnSyncSource = "nvd" | "kev" | "osv" | "all";
 export const SYNC_SOURCES: VulnSyncSource[] = ["nvd", "kev", "osv", "all"];
@@ -15,6 +16,7 @@ export interface SourceOutcome {
   ok: boolean;
   summary?: Record<string, number>;
   error?: string;
+  code?: "already_running" | "unavailable" | "failed";
 }
 
 /**
@@ -33,13 +35,24 @@ export function isVulnSyncSource(s: string): s is VulnSyncSource {
 
 async function runOne(source: "nvd" | "kev" | "osv", impls: VulnSyncImpls): Promise<SourceOutcome> {
   const impl = impls[source];
-  if (!impl) return { source, ok: false, error: `sync source '${source}' is not available` };
+  if (!impl)
+    return {
+      source,
+      ok: false,
+      code: "unavailable",
+      error: `sync source '${source}' is not available`,
+    };
   try {
     const summary = await impl();
     return { source, ok: true, summary };
   } catch (err) {
     log.error({ source, err }, "vuln sync failed");
-    return { source, ok: false, error: err instanceof Error ? err.message : String(err) };
+    return {
+      source,
+      ok: false,
+      code: err instanceof VulnSyncAlreadyRunningError ? "already_running" : "failed",
+      error: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 

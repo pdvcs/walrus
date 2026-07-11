@@ -12,6 +12,7 @@ import {
   SyncingResponseSchema,
   VulnsResponseSchema,
   ProductSearchResponseSchema,
+  VulnProductResponseSchema,
   CveDetailResponseSchema,
   PackageVulnsResponseSchema,
 } from "./schemas.js";
@@ -226,6 +227,25 @@ registry.registerPath({
     },
     400: {
       description: "Missing `q` parameter",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/v1/vulns/products/{name}",
+  summary: "Get vulnerability product metadata",
+  operationId: "getVulnProduct",
+  tags: ["Vulnerabilities"],
+  request: { params: packageNameParam },
+  responses: {
+    200: {
+      description: "Package metadata, aliases, CPEs, OSV mapping, and distinct CVE count",
+      content: { "application/json": { schema: VulnProductResponseSchema } },
+    },
+    404: {
+      description: "Unknown package",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },

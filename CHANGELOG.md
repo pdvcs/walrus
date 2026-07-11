@@ -49,6 +49,42 @@ Add CVE-lookup capability into walrus, keyed to walrus packages. Also add an adm
 
 New deps: `fuzzball`, `semver` (runtime); `fast-check` (dev). `pg_trgm` extension required.
 
+**Wave 6 — Vulnerability remediation**
+
+- **WAL-19 / WAL-20 (Fixed):** OSV refreshes now replace affects per package transactionally, and
+  incremental NVD sync rebuilds locally known CVEs whose tracked CPE associations were removed.
+- **WAL-21 (Fixed):** dated NVD backfills use paired, adjacent publication windows within the
+  120-day API limit and reject invalid or future dates.
+- **WAL-22 (Fixed):** vulnerability freshness now reports the last successful sync separately from
+  the latest attempt/failure status via migration `0003_vuln_sync_outcomes.sql`.
+- **WAL-23 (Added):** `GET /api/v1/vulns/products/:name` returns package vulnerability metadata,
+  aliases, CPEs, OSV mapping, tracking state, and a distinct CVE count.
+- **WAL-24 (Security):** NVD, KEV, and OSV requests have bounded timeouts; per-source PostgreSQL
+  advisory locks reject overlapping syncs with an explicit `already_running` outcome.
+- **WAL-25 (Changed):** NVD configuration-tree flattening is documented as a conservative
+  applicability limitation and pinned with regression coverage.
+
+**Wave 7 — Review follow-up**
+
+- **WAL-26 (Fixed):** removing a package's OSV mapping or CPE pairs from its TOML config now
+  deletes the derived `cve_affects` rows during boot reconciliation, instead of leaving permanent
+  false positives no sync path would ever revisit.
+- **WAL-26 (Fixed):** `withVulnSyncLock` no longer masks the sync's original error or leaks its
+  pool client when advisory unlock fails on a dead connection.
+- **WAL-27 (Changed):** long-running production NVD backfills use a dedicated Cloud Run Job with a
+  24-hour task timeout; fast incremental NVD/KEV/OSV endpoints remain synchronous within the
+  Cloud Run service's 3,600-second request deadline.
+- **WAL-28 (Added):** migration `0004_vuln_backfill_jobs.sql` adds durable backfill lifecycle and
+  per-CPE-pair progress. `POST /internal/vuln-backfill` and its admin equivalent return `202` with
+  a job reference; status is available from `GET /internal/vuln-backfill/:id`, and overlapping
+  backfills or incremental NVD syncs return `409`.
+- **WAL-28 (Added):** production Terraform provisions the backfill Cloud Run Job and launcher IAM;
+  local development uses the same shared backfill service through an in-process asynchronous
+  launcher. The CLI remains available for development and shares the orchestration path.
+- **WAL-28 (Verified locally):** a clean-database, full-history HTTP backfill completed all 10 CPE
+  pairs successfully. GCP Terraform/application and Cloud Run launch validation remain deployment
+  gates.
+
 ## Version 0.1.0: Initial Release
 
 Initial Walrus release: a configuration-driven package ingress engine that discovers, caches, and

@@ -6,7 +6,11 @@ import { join } from "path";
 import { Pool } from "pg";
 import { runMigrations } from "../../src/db/client.js";
 import { upsertPackage } from "../../src/db/queries/packages.js";
-import { reconcilePackageVuln } from "../../src/db/queries/package-aliases.js";
+import {
+  getVulnProductMetadata,
+  reconcilePackageVuln,
+  searchAliases,
+} from "../../src/db/queries/package-aliases.js";
 import { listAffectsWithCveForPackage, flagKev } from "../../src/db/queries/cves.js";
 import { getDataFreshness, setSyncState } from "../../src/db/queries/vuln-sync-state.js";
 import { logUnresolvedQuery } from "../../src/db/queries/unresolved-queries.js";
@@ -34,6 +38,8 @@ function buildApp(pool: Pool) {
       listAffectsForPackage: (name) => listAffectsWithCveForPackage(pool, name),
       getDataFreshness: () => getDataFreshness(pool),
       logUnresolved: (query, top) => logUnresolvedQuery(pool, query, top),
+      searchAliases: (query) => searchAliases(pool, query),
+      getProductMetadata: (name) => getVulnProductMetadata(pool, name),
     }),
   );
   return app;
