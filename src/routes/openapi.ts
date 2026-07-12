@@ -169,6 +169,10 @@ registry.registerPath({
       description: "Artifact not found or not available",
       content: { "application/json": { schema: ErrorSchema } },
     },
+    403: {
+      description: "Version is blocked due to a known critical vulnerability",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
     423: {
       description: "Artifact is within the cooling-off period and not yet released",
       headers: {

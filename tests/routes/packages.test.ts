@@ -14,8 +14,10 @@ function baseDeps(): PackagesRouteDeps {
     listEnabledPackages: vi.fn().mockResolvedValue([]),
     getPackage: vi.fn().mockResolvedValue(null),
     listVersionGroups: vi.fn().mockResolvedValue([]),
+    listAvailableVersionsByGroup: vi.fn().mockResolvedValue([]),
+    listAffectsForPackage: vi.fn().mockResolvedValue([]),
     listVersions: vi.fn().mockResolvedValue([]),
-    getLatestVersionInGroup: vi.fn().mockResolvedValue(null),
+    listAvailableVersionsInGroup: vi.fn().mockResolvedValue([]),
     listArtifactsForVersion: vi.fn().mockResolvedValue([]),
     getRecentSyncJob: vi.fn().mockResolvedValue(null),
     triggerOnDemandSync: vi.fn().mockResolvedValue(undefined),
@@ -63,6 +65,67 @@ describe("packages routes", () => {
     ]);
   });
 
+  it("lists version groups with the critical-CVE gate applied", async () => {
+    const deps = baseDeps();
+    deps.getPackage = vi.fn().mockResolvedValue({
+      name: "openjdk",
+      display_name: "OpenJDK",
+      vendor: "Temurin",
+      description: null,
+      website: null,
+      config_hash: "x",
+      enabled: true,
+      created_at: new Date(),
+      updated_at: new Date(),
+    });
+    const listAvailableVersionsByGroup = vi.fn().mockResolvedValue([
+      { version: "21.0.3", version_group: "21", is_lts: true },
+      { version: "21.0.2", version_group: "21", is_lts: true },
+      { version: "17.0.11", version_group: "17", is_lts: true },
+    ]);
+    deps.listAvailableVersionsByGroup = listAvailableVersionsByGroup;
+    deps.listAffectsForPackage = vi.fn().mockResolvedValue([
+      {
+        cve_id: "CVE-2026-0001",
+        version_start: null,
+        version_start_excl: false,
+        version_end: null,
+        version_end_excl: false,
+        exact_version: "21.0.3",
+        fixed_in: null,
+        source: "nvd",
+        severity: "CRITICAL",
+        cvss_v3_score: "9.8",
+        description: null,
+        is_kev: false,
+        raw: null,
+      },
+    ]);
+    const app = createTestApp(deps);
+
+    const response = await request(app).get("/api/v1/packages/openjdk/groups?os=linux");
+    const body = response.body as {
+      package: string;
+      groups: Array<{ group: string; is_lts: boolean; latest_available: string | null }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(listAvailableVersionsByGroup).toHaveBeenCalledWith("openjdk", {
+      os: "linux",
+      arch: undefined,
+    });
+    expect(body.groups).toEqual([
+      { group: "21", is_lts: true, latest_available: "21.0.2" },
+      { group: "17", is_lts: true, latest_available: "17.0.11" },
+    ]);
+  });
+
+  it("returns 404 for groups of an unknown package", async () => {
+    const app = createTestApp(baseDeps());
+    const response = await request(app).get("/api/v1/packages/nope/groups");
+    expect(response.status).toBe(404);
+  });
+
   it("lists versions with optional lts filter", async () => {
     const listVersions = vi.fn().mockResolvedValue([
       {
@@ -90,6 +153,23 @@ describe("packages routes", () => {
     });
     deps.listVersionGroups = vi.fn().mockResolvedValue(["21", "17"]);
     deps.listVersions = listVersions;
+    deps.listAffectsForPackage = vi.fn().mockResolvedValue([
+      {
+        cve_id: "CVE-2026-0002",
+        version_start: null,
+        version_start_excl: false,
+        version_end: null,
+        version_end_excl: false,
+        exact_version: "21.0.5+11",
+        fixed_in: null,
+        source: "nvd",
+        severity: "CRITICAL",
+        cvss_v3_score: "9.8",
+        description: null,
+        is_kev: false,
+        raw: null,
+      },
+    ]);
     deps.listArtifactsForVersion = vi.fn().mockResolvedValue([
       {
         id: 10,
@@ -115,12 +195,16 @@ describe("packages routes", () => {
     const response = await request(app).get("/api/v1/packages/openjdk/versions?lts=true");
     const body = response.body as {
       version_groups: string[];
-      versions: Array<{ platforms: Array<{ os: string; arch: string; status: string }> }>;
+      versions: Array<{
+        status: string;
+        platforms: Array<{ os: string; arch: string; status: string }>;
+      }>;
     };
 
     expect(response.status).toBe(200);
     expect(listVersions).toHaveBeenCalledWith("openjdk", { lts: true });
     expect(body.version_groups).toEqual(["21", "17"]);
+    expect(body.versions[0].status).toBe("blocked");
     expect(body.versions[0].platforms[0]).toEqual({
       os: "linux",
       arch: "x86-64",
@@ -141,15 +225,43 @@ describe("packages routes", () => {
       created_at: new Date(),
       updated_at: new Date(),
     });
-    deps.getLatestVersionInGroup = vi.fn().mockResolvedValue({
-      id: 2,
-      package_name: "uv",
-      version: "0.6.2",
-      version_group: "0.6",
-      is_lts: false,
-      discovered_at: new Date(),
-      version_sort: "0000.0006.0002",
-    });
+    deps.listAvailableVersionsInGroup = vi.fn().mockResolvedValue([
+      {
+        id: 3,
+        package_name: "uv",
+        version: "0.6.3",
+        version_group: "0.6",
+        is_lts: false,
+        discovered_at: new Date(),
+        version_sort: "0000.0006.0003",
+      },
+      {
+        id: 2,
+        package_name: "uv",
+        version: "0.6.2",
+        version_group: "0.6",
+        is_lts: false,
+        discovered_at: new Date(),
+        version_sort: "0000.0006.0002",
+      },
+    ]);
+    deps.listAffectsForPackage = vi.fn().mockResolvedValue([
+      {
+        cve_id: "CVE-CRIT",
+        version_start: null,
+        version_start_excl: false,
+        version_end: null,
+        version_end_excl: false,
+        exact_version: "0.6.3",
+        fixed_in: null,
+        source: "nvd",
+        severity: "CRITICAL",
+        cvss_v3_score: "9.8",
+        description: null,
+        is_kev: false,
+        raw: null,
+      },
+    ]);
     deps.listArtifactsForVersion = vi.fn().mockResolvedValue([
       {
         id: 20,
@@ -181,6 +293,56 @@ describe("packages routes", () => {
     expect(body.artifact.download_url).toBe("/download/uv/0.6.2/linux/x86-64");
   });
 
+  it("returns 404 when every available version in the group is blocked", async () => {
+    const deps = baseDeps();
+    deps.getPackage = vi.fn().mockResolvedValue({
+      name: "uv",
+      display_name: "uv",
+      vendor: "Astral",
+      description: null,
+      website: null,
+      config_hash: "x",
+      enabled: true,
+      created_at: new Date(),
+      updated_at: new Date(),
+    });
+    deps.listAvailableVersionsInGroup = vi.fn().mockResolvedValue([
+      {
+        id: 3,
+        package_name: "uv",
+        version: "0.6.3",
+        version_group: "0.6",
+        is_lts: false,
+        discovered_at: new Date(),
+        version_sort: "0000.0006.0003",
+      },
+    ]);
+    deps.listAffectsForPackage = vi.fn().mockResolvedValue([
+      {
+        cve_id: "CVE-CRIT",
+        version_start: null,
+        version_start_excl: false,
+        version_end: "1",
+        version_end_excl: false,
+        exact_version: null,
+        fixed_in: null,
+        source: "nvd",
+        severity: "CRITICAL",
+        cvss_v3_score: "9.8",
+        description: null,
+        is_kev: false,
+        raw: null,
+      },
+    ]);
+    const app = createTestApp(deps);
+
+    const response = await request(app).get("/api/v1/packages/uv/versions/0.6/latest");
+
+    expect(response.status).toBe(404);
+    expect(response.body).toEqual({ error: "No safe version found for group 0.6" });
+    expect(deps.triggerOnDemandSync).not.toHaveBeenCalled();
+  });
+
   it("triggers on-demand sync and returns 202 when latest is missing", async () => {
     const triggerOnDemandSync = vi.fn().mockResolvedValue(undefined);
 
@@ -196,7 +358,7 @@ describe("packages routes", () => {
       created_at: new Date(),
       updated_at: new Date(),
     });
-    deps.getLatestVersionInGroup = vi.fn().mockResolvedValue(null);
+    deps.listAvailableVersionsInGroup = vi.fn().mockResolvedValue([]);
     deps.getRecentSyncJob = vi.fn().mockResolvedValue(null);
     deps.triggerOnDemandSync = triggerOnDemandSync;
     const app = createTestApp(deps);

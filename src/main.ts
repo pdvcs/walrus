@@ -45,13 +45,13 @@ import {
 import {
   deleteAllVersionsForPackage,
   deleteVersionGroup,
-  getLatestVersionInGroup,
   getMaxAvailableVersionSort,
   getVersion,
   listAllArtifactsForPackage,
   listArtifactsInGroup,
+  listAvailableVersionsInGroup,
+  listAvailableVersionsByGroup,
   listVersionGroups,
-  listVersionGroupSummaries,
   listVersions,
 } from "./db/queries/versions.js";
 import {
@@ -275,11 +275,12 @@ export function createApp(): express.Express {
       listEnabledPackages: () => listPackages(pool, true),
       getPackage: (name) => getPackage(pool, name),
       listVersionGroups: (packageName) => listVersionGroups(pool, packageName),
-      listVersionGroupSummaries: (packageName, opts) =>
-        listVersionGroupSummaries(pool, packageName, opts),
+      listAvailableVersionsByGroup: (packageName, opts) =>
+        listAvailableVersionsByGroup(pool, packageName, opts),
+      listAffectsForPackage: (name) => listAffectsWithCveForPackage(pool, name),
       listVersions: (packageName, opts) => listVersions(pool, packageName, opts),
-      getLatestVersionInGroup: (packageName, group, opts) =>
-        getLatestVersionInGroup(pool, packageName, group, opts),
+      listAvailableVersionsInGroup: (packageName, group, opts) =>
+        listAvailableVersionsInGroup(pool, packageName, group, opts),
       listArtifactsForVersion: (versionId) => listArtifactsForVersion(pool, versionId),
       getRecentSyncJob: (packageName, withinMinutes) =>
         getRecentSyncJob(pool, packageName, withinMinutes),
@@ -293,6 +294,7 @@ export function createApp(): express.Express {
     "/download",
     createDownloadRouter({
       getVersion: (packageName, version) => getVersion(pool, packageName, version),
+      listAffectsForPackage: (packageName) => listAffectsWithCveForPackage(pool, packageName),
       getArtifact: (versionId, os, arch) => getArtifact(pool, versionId, os, arch),
       streamFromStorage: (key) => storage.stream(key),
     }),

@@ -40,6 +40,13 @@ List all enabled packages. [Try it](/api/v1/packages/)
 Version groups for a package, optionally filtered to groups that have artifacts for a given platform.
 Examples: [openjdk](/api/v1/packages/openjdk/groups), [golang](/api/v1/packages/golang/groups), [uv](/api/v1/packages/uv/groups)
 
+`latest_available` is the latest cached version in the group that is free of known
+critical CVEs (CVSS v3 score >= 9.0, or a score-less CVE labeled CRITICAL). When every
+cached version in a group carries a critical CVE it is `null` — meaning nothing safe to
+recommend, **not** nothing cached. Walrus never points this field at a version it knows
+to be critically vulnerable. Per-version CVE detail is available from
+[`/api/v1/packages/:name/vulns`](#get-apiv1packagesnamevulns).
+
 **Query parameters**
 
 | Name | Type   | Description                            |
@@ -67,8 +74,13 @@ Examples: [openjdk](/api/v1/packages/openjdk/groups), [golang](/api/v1/packages/
 
 ### GET /api/v1/packages/:name/versions
 
-All versions for a package, with platform availability.
+All versions for a package, with platform availability and a version-level security status.
 Examples: [openjdk](/api/v1/packages/openjdk/versions), [golang](/api/v1/packages/golang/versions), [uv](/api/v1/packages/uv/versions)
+
+`status` is `blocked` when the version concretely matches a known critical CVE (CVSS v3
+score >= 9.0, or a score-less CVE labeled CRITICAL); otherwise it is `available`.
+Range-uncomparable matches remain visible through the package vulnerability endpoint but
+do not block the version.
 
 **Query parameters**
 
@@ -87,6 +99,7 @@ Examples: [openjdk](/api/v1/packages/openjdk/versions), [golang](/api/v1/package
       "version": "21.0.3",
       "version_group": "21",
       "is_lts": true,
+      "status": "available",
       "platforms": [
         { "os": "linux", "arch": "x86-64", "status": "available" },
         { "os": "mac", "arch": "aarch64", "status": "available" }
@@ -104,7 +117,10 @@ Examples: [openjdk](/api/v1/packages/openjdk/versions), [golang](/api/v1/package
 
 ### GET /api/v1/packages/:name/versions/:group/latest
 
-Latest available artifact for a version group and platform.
+Latest available artifact for a version group and platform, excluding versions with a
+concrete known-critical CVE match. If the newest version is blocked, Walrus returns the
+next safe version; if every compatible cached version is blocked, it returns `404` and no
+download URL.
 Example: [openjdk group 21, linux/x86-64](/api/v1/packages/openjdk/versions/21/latest?os=linux&arch=x86-64)
 
 **Query parameters**
@@ -145,6 +161,9 @@ Example: [openjdk group 21, linux/x86-64](/api/v1/packages/openjdk/versions/21/l
 
 Download a binary. Streams directly from storage.
 
+Downloads are refused when the requested version concretely matches a known critical CVE
+(CVSS v3 >= 9.0, or a score-less CVE labeled CRITICAL).
+
 **Response headers** `200`
 
 | Header              | Description                         |
@@ -157,6 +176,7 @@ Download a binary. Streams directly from storage.
 **Status codes**
 
 - `200` — binary stream
+- `403` — version is blocked due to a known critical vulnerability
 - `404` — artifact not found or not available
 - `423` + `Retry-After` — artifact is within the cooling-off period; body includes `available_at`
 

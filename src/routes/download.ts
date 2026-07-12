@@ -1,10 +1,13 @@
 import { pipeline } from "stream/promises";
 import { Readable } from "stream";
 import { Router } from "express";
+import { AffectsWithCveRow } from "../db/queries/cves.js";
+import { getVersionAvailabilityStatus } from "../services/vuln-service.js";
 import { ArtifactRow, VersionRow } from "../types/db.js";
 
 export interface DownloadRouteDeps {
   getVersion: (packageName: string, version: string) => Promise<VersionRow | null>;
+  listAffectsForPackage: (packageName: string) => Promise<AffectsWithCveRow[]>;
   getArtifact: (versionId: number, os: string, arch: string) => Promise<ArtifactRow | null>;
   streamFromStorage: (key: string) => Readable;
 }
@@ -22,6 +25,12 @@ export function createDownloadRouter(deps: DownloadRouteDeps): Router {
       const versionRow = await deps.getVersion(packageName, version);
       if (!versionRow) {
         res.status(404).json({ error: "Version not found" });
+        return;
+      }
+
+      const affects = await deps.listAffectsForPackage(packageName);
+      if (getVersionAvailabilityStatus(versionRow.version, affects) === "blocked") {
+        res.status(403).json({ error: "Version blocked due to a critical vulnerability" });
         return;
       }
 

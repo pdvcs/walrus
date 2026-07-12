@@ -20,10 +20,19 @@ function renderMarkdownToHtml(md: string): string {
       .replace(/>/g, "&gt;")
       .replace(/`([^`]+)`/g, "<code>$1</code>")
       .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-      .replace(
-        /\[([^\]]+)\]\(([^)]+)\)/g,
-        '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>',
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, text: string, href: string) =>
+        href.startsWith("#")
+          ? `<a href="${href}">${text}</a>`
+          : `<a href="${href}" target="_blank" rel="noopener noreferrer">${text}</a>`,
       );
+
+  // GitHub-style heading slug, so in-page #anchors written in the markdown resolve.
+  const slug = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, "")
+      .trim()
+      .replace(/\s+/g, "-");
 
   const flushPara = () => {
     if (paraLines.length > 0) {
@@ -60,12 +69,12 @@ function renderMarkdownToHtml(md: string): string {
 
     if (line.startsWith("### ")) {
       flushBlock();
-      out.push(`<h3>${inline(line.slice(4))}</h3>`);
+      out.push(`<h3 id="${slug(line.slice(4))}">${inline(line.slice(4))}</h3>`);
       continue;
     }
     if (line.startsWith("## ")) {
       flushBlock();
-      out.push(`<h2>${inline(line.slice(3))}</h2>`);
+      out.push(`<h2 id="${slug(line.slice(3))}">${inline(line.slice(3))}</h2>`);
       continue;
     }
     if (line.startsWith("# ")) {
@@ -171,6 +180,7 @@ function renderApiDocsHtml(markdown: string): string {
     a { color: #1d4ed8; text-decoration: none; }
     p a, li a { background: #aa80ff; border: 1px solid #2a0080; color: #fff; padding: 1px 8px; border-radius: 4px; font-size: 12px; font-weight: 500; white-space: nowrap; }
     p a:hover, li a:hover { color: #444; background: #dbeafe; border-color: #93c5fd; }
+    p a code, li a code { background: none; color: inherit; padding: 0; }
   </style>
 </head>
 <body>

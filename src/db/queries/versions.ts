@@ -65,6 +65,17 @@ export async function getLatestVersionInGroup(
   group: string,
   opts: { os?: string; arch?: string } = {},
 ): Promise<VersionRow | null> {
+  const versions = await listAvailableVersionsInGroup(pool, packageName, group, opts);
+  return versions[0] ?? null;
+}
+
+/** All versions in a group with a matching available artifact, newest first. */
+export async function listAvailableVersionsInGroup(
+  pool: Pool,
+  packageName: string,
+  group: string,
+  opts: { os?: string; arch?: string } = {},
+): Promise<VersionRow[]> {
   const params: unknown[] = [packageName, group];
   const artifactConditions: string[] = ["a.status = 'available'"];
 
@@ -84,11 +95,10 @@ export async function getLatestVersionInGroup(
          SELECT 1 FROM artifacts a
          WHERE a.version_id = v.id AND ${artifactConditions.join(" AND ")}
        )
-     ORDER BY v.version_sort DESC
-     LIMIT 1`,
+     ORDER BY v.version_sort DESC`,
     params,
   );
-  return rows[0] ?? null;
+  return rows;
 }
 
 export async function listVersionGroups(pool: Pool, packageName: string): Promise<string[]> {
@@ -103,17 +113,25 @@ export async function listVersionGroups(pool: Pool, packageName: string): Promis
   return rows.map((r) => r.version_group);
 }
 
-export interface VersionGroupSummary {
-  group: string;
+export interface GroupVersionRow {
+  version: string;
+  version_group: string;
   is_lts: boolean;
-  latest_available: string | null;
 }
 
-export async function listVersionGroupSummaries(
+/**
+ * All versions with at least one matching available artifact, newest first.
+ * Candidate list for the groups endpoint: the per-group "latest free of
+ * critical CVEs" selection happens in TS (summarizeGroupsWithVulnGate), where
+ * the CVE range-matching core lives. Ordering by version_sort DESC means the
+ * first row seen for each group is its newest version, so first-appearance
+ * group order equals ordering groups by max version_sort.
+ */
+export async function listAvailableVersionsByGroup(
   pool: Pool,
   packageName: string,
   opts: { os?: string; arch?: string } = {},
-): Promise<VersionGroupSummary[]> {
+): Promise<GroupVersionRow[]> {
   const params: unknown[] = [packageName];
   const artifactConditions: string[] = ["a.status = 'available'"];
 
@@ -126,35 +144,15 @@ export async function listVersionGroupSummaries(
     artifactConditions.push(`a.arch = $${params.length}`);
   }
 
-  const artifactWhere = artifactConditions.join(" AND ");
-
-  const { rows } = await pool.query<VersionGroupSummary>(
-    `SELECT
-       v.version_group                    AS group,
-       bool_or(v.is_lts)                  AS is_lts,
-       (
-         SELECT v2.version
-         FROM versions v2
-         WHERE v2.package_name = v.package_name
-           AND v2.version_group = v.version_group
-           AND EXISTS (
-             SELECT 1 FROM artifacts a
-             WHERE a.version_id = v2.id AND ${artifactWhere}
-           )
-         ORDER BY v2.version_sort DESC
-         LIMIT 1
-       )                                  AS latest_available
+  const { rows } = await pool.query<GroupVersionRow>(
+    `SELECT v.version, v.version_group, v.is_lts
      FROM versions v
      WHERE v.package_name = $1
-     GROUP BY v.package_name, v.version_group
-     HAVING EXISTS (
-       SELECT 1 FROM versions v3
-       JOIN artifacts a ON a.version_id = v3.id
-       WHERE v3.package_name = v.package_name
-         AND v3.version_group = v.version_group
-         AND ${artifactWhere}
-     )
-     ORDER BY MAX(v.version_sort) DESC`,
+       AND EXISTS (
+         SELECT 1 FROM artifacts a
+         WHERE a.version_id = v.id AND ${artifactConditions.join(" AND ")}
+       )
+     ORDER BY v.version_sort DESC`,
     params,
   );
   return rows;

@@ -82,6 +82,78 @@ export function crossReferenceVersions(
   });
 }
 
+export interface GroupVersionInput {
+  version: string;
+  version_group: string;
+  is_lts: boolean;
+}
+
+export interface VersionGroupSummary {
+  group: string;
+  is_lts: boolean;
+  latest_available: string | null;
+}
+
+export type VersionAvailabilityStatus = "available" | "blocked";
+
+/**
+ * Classify whether a version may be served/recommended under the critical-CVE
+ * gate shared by the groups and versions endpoints.
+ */
+export function getVersionAvailabilityStatus(
+  version: string,
+  affects: AffectsWithCveRow[],
+): VersionAvailabilityStatus {
+  return hasConcreteCriticalMatch(version, affects.filter(isKnownCritical))
+    ? "blocked"
+    : "available";
+}
+
+/**
+ * Per-group summaries with the critical-CVE gate (WAL-29): latest_available is
+ * the newest version in the group with no concrete match against a
+ * known-critical CVE — cvss_v3_score >= 9.0, or severity CRITICAL when NVD
+ * ships no score. Fail-open matches (range-uncomparable) do NOT gate: they are
+ * uncertainty, not knowledge, and one unparseable range must not null out a
+ * whole package; they stay visible via /packages/:name/vulns. When every
+ * version in a group is critical-affected, latest_available is null — never a
+ * vulnerable fallback (PO directive 2026-07-12).
+ *
+ * `versions` must be ordered newest first; group order follows first
+ * appearance, i.e. groups sorted by their max version_sort.
+ */
+export function summarizeGroupsWithVulnGate(
+  versions: GroupVersionInput[],
+  affects: AffectsWithCveRow[],
+): VersionGroupSummary[] {
+  const critical = affects.filter(isKnownCritical);
+  const groups = new Map<string, { is_lts: boolean; latest_available: string | null }>();
+  for (const v of versions) {
+    let group = groups.get(v.version_group);
+    if (!group) {
+      group = { is_lts: false, latest_available: null };
+      groups.set(v.version_group, group);
+    }
+    group.is_lts ||= v.is_lts;
+    if (group.latest_available === null && !hasConcreteCriticalMatch(v.version, critical)) {
+      group.latest_available = v.version;
+    }
+  }
+  return [...groups.entries()].map(([group, summary]) => ({ group, ...summary }));
+}
+
+function isKnownCritical(row: AffectsWithCveRow): boolean {
+  if (row.cvss_v3_score !== null) return Number(row.cvss_v3_score) >= 9.0;
+  return row.severity === "CRITICAL";
+}
+
+function hasConcreteCriticalMatch(version: string, criticalRows: AffectsWithCveRow[]): boolean {
+  return criticalRows.some((row) => {
+    const result = evaluateRange(version, toRange(row));
+    return result.matched && result.reason !== "range-uncomparable";
+  });
+}
+
 function countBySeverity(vulns: VersionVuln[]): VersionCounts {
   return {
     total: vulns.length,

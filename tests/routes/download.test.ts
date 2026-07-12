@@ -13,6 +13,7 @@ function createTestApp(deps: Parameters<typeof createDownloadRouter>[0]): expres
 function baseDeps(): DownloadRouteDeps {
   return {
     getVersion: vi.fn().mockResolvedValue(null),
+    listAffectsForPackage: vi.fn().mockResolvedValue([]),
     getArtifact: vi.fn().mockResolvedValue(null),
     streamFromStorage: vi.fn().mockReturnValue(Readable.from(Buffer.from(""))),
   };
@@ -99,6 +100,38 @@ describe("download routes", () => {
     expect(response.status).toBe(404);
     const body = response.body as { error: string };
     expect(body.error).toBe("Artifact not found");
+  });
+
+  it("returns 403 without reading storage when the version has a critical CVE", async () => {
+    const deps = baseDeps();
+    deps.getVersion = vi.fn().mockResolvedValue(makeVersionRow());
+    deps.listAffectsForPackage = vi.fn().mockResolvedValue([
+      {
+        cve_id: "CVE-CRIT",
+        version_start: null,
+        version_start_excl: false,
+        version_end: null,
+        version_end_excl: false,
+        exact_version: "0.10.10",
+        fixed_in: null,
+        source: "nvd",
+        severity: "CRITICAL",
+        cvss_v3_score: "9.8",
+        description: null,
+        is_kev: false,
+        raw: null,
+      },
+    ]);
+    const app = createTestApp(deps);
+
+    const response = await request(app).get("/download/uv/0.10.10/linux/x86-64");
+
+    expect(response.status).toBe(403);
+    expect(response.body).toEqual({
+      error: "Version blocked due to a critical vulnerability",
+    });
+    expect(deps.getArtifact).not.toHaveBeenCalled();
+    expect(deps.streamFromStorage).not.toHaveBeenCalled();
   });
 
   describe("cooling off period", () => {

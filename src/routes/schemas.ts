@@ -29,10 +29,10 @@ export const VersionGroupSummarySchema = z
   .object({
     group: z.string().openapi({ description: "Version group label (e.g. `21`)" }),
     is_lts: z.boolean(),
-    latest_available: z
-      .string()
-      .nullable()
-      .openapi({ description: "Latest available version string, or null if none cached" }),
+    latest_available: z.string().nullable().openapi({
+      description:
+        "Latest cached version free of known critical (CVSS >= 9.0) CVEs. Null means no version in the group is free of them — nothing safe to recommend, not nothing cached. Per-version CVE detail: /packages/{name}/vulns.",
+    }),
   })
   .openapi("VersionGroupSummary");
 
@@ -58,6 +58,10 @@ export const VersionSchema = z
     version: z.string(),
     version_group: z.string(),
     is_lts: z.boolean(),
+    status: z.enum(["available", "blocked"]).openapi({
+      description:
+        "Version eligibility under the critical-CVE gate. Blocked means a concrete match to a known critical CVE (CVSS >= 9.0, or score-less CRITICAL).",
+    }),
     platforms: z.array(PlatformSchema),
   })
   .openapi("Version");

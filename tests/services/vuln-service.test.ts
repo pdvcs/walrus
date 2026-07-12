@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { crossReferenceVersions } from "../../src/services/vuln-service.js";
+import {
+  crossReferenceVersions,
+  getVersionAvailabilityStatus,
+  summarizeGroupsWithVulnGate,
+} from "../../src/services/vuln-service.js";
 import type { AffectsWithCveRow } from "../../src/db/queries/cves.js";
 
 function affects(overrides: Partial<AffectsWithCveRow>): AffectsWithCveRow {
@@ -70,5 +74,131 @@ describe("crossReferenceVersions", () => {
     const res = crossReferenceVersions([{ version: "not-a-version", version_group: "x" }], rows);
     expect(res[0].counts.total).toBe(1);
     expect(res[0].vulns[0].matched_because).toBe("range-uncomparable");
+  });
+});
+
+describe("summarizeGroupsWithVulnGate", () => {
+  const v = (version: string, version_group: string, is_lts = false) => ({
+    version,
+    version_group,
+    is_lts,
+  });
+
+  it("returns the newest version per group when no affects rows exist (untracked)", () => {
+    const res = summarizeGroupsWithVulnGate(
+      [v("21.0.3", "21", true), v("21.0.2", "21", true), v("17.0.11", "17", true)],
+      [],
+    );
+    expect(res).toEqual([
+      { group: "21", is_lts: true, latest_available: "21.0.3" },
+      { group: "17", is_lts: true, latest_available: "17.0.11" },
+    ]);
+  });
+
+  it("skips past a critical-affected newest version to the next clean one", () => {
+    const rows = [
+      affects({
+        cve_id: "CVE-CRIT",
+        severity: "CRITICAL",
+        cvss_v3_score: "9.8",
+        exact_version: "21.0.3",
+        version_end: null,
+      }),
+    ];
+    const res = summarizeGroupsWithVulnGate([v("21.0.3", "21"), v("21.0.2", "21")], rows);
+    expect(res[0].latest_available).toBe("21.0.2");
+  });
+
+  it("returns null when every version in the group is critical-affected", () => {
+    const rows = [affects({ cve_id: "CVE-CRIT", cvss_v3_score: "9.1", version_end: "22" })];
+    const res = summarizeGroupsWithVulnGate([v("21.0.3", "21"), v("21.0.2", "21")], rows);
+    expect(res).toEqual([{ group: "21", is_lts: false, latest_available: null }]);
+  });
+
+  it("ignores non-critical CVEs (score < 9)", () => {
+    const rows = [
+      affects({ cve_id: "CVE-HIGH", severity: "HIGH", cvss_v3_score: "8.9", version_end: "22" }),
+    ];
+    const res = summarizeGroupsWithVulnGate([v("21.0.3", "21")], rows);
+    expect(res[0].latest_available).toBe("21.0.3");
+  });
+
+  it("treats a score-less severity=CRITICAL CVE as known-critical", () => {
+    const rows = [
+      affects({
+        cve_id: "CVE-NOSCORE",
+        severity: "CRITICAL",
+        cvss_v3_score: null,
+        version_end: "22",
+      }),
+    ];
+    const res = summarizeGroupsWithVulnGate([v("23.0.0", "23"), v("21.0.3", "21")], rows);
+    expect(res).toEqual([
+      { group: "23", is_lts: false, latest_available: "23.0.0" },
+      { group: "21", is_lts: false, latest_available: null },
+    ]);
+  });
+
+  it("does not gate on fail-open (range-uncomparable) matches", () => {
+    const rows = [
+      affects({
+        cve_id: "CVE-CRIT",
+        cvss_v3_score: "9.8",
+        exact_version: "not-a-version",
+        version_end: null,
+      }),
+    ];
+    const res = summarizeGroupsWithVulnGate([v("21.0.3", "21")], rows);
+    expect(res[0].latest_available).toBe("21.0.3");
+  });
+
+  it("gates on a concrete critical match even when the cached version is odd elsewhere", () => {
+    // Same range shape the /vulns endpoint fails open on, but here the version IS comparable.
+    const rows = [
+      affects({
+        cve_id: "CVE-CRIT",
+        cvss_v3_score: "10.0",
+        version_end: "9",
+        version_end_excl: true,
+      }),
+    ];
+    const res = summarizeGroupsWithVulnGate([v("8.5", "8")], rows);
+    expect(res[0].latest_available).toBeNull();
+  });
+
+  it("preserves newest-first group ordering and bool_or LTS semantics", () => {
+    const res = summarizeGroupsWithVulnGate(
+      [v("21.0.3", "21", false), v("21.0.2", "21", true), v("17.0.11", "17", true)],
+      [],
+    );
+    expect(res.map((g) => g.group)).toEqual(["21", "17"]);
+    expect(res[0].is_lts).toBe(true);
+  });
+});
+
+describe("getVersionAvailabilityStatus", () => {
+  it("blocks a concrete CVSS >= 9 match", () => {
+    const rows = [
+      affects({
+        cve_id: "CVE-CRIT",
+        cvss_v3_score: "9.0",
+        exact_version: "1.24.13",
+        version_end: null,
+      }),
+    ];
+    expect(getVersionAvailabilityStatus("1.24.13", rows)).toBe("blocked");
+    expect(getVersionAvailabilityStatus("1.24.12", rows)).toBe("available");
+  });
+
+  it("does not block a range-uncomparable match", () => {
+    const rows = [
+      affects({
+        cve_id: "CVE-CRIT",
+        cvss_v3_score: "9.8",
+        exact_version: "not-a-version",
+        version_end: null,
+      }),
+    ];
+    expect(getVersionAvailabilityStatus("1.24.13", rows)).toBe("available");
   });
 });

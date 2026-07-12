@@ -7,7 +7,9 @@ import {
   getVersion,
   listVersions,
   getLatestVersionInGroup,
+  listAvailableVersionsInGroup,
   listVersionGroups,
+  listAvailableVersionsByGroup,
   listVersionsOlderThanInGroup,
   getMaxAvailableVersionSort,
 } from "../../src/db/queries/versions.js";
@@ -150,6 +152,35 @@ describe("versions queries", () => {
     expect(latest!.version).toBe("1.2.4");
   });
 
+  it("listAvailableVersionsInGroup returns all platform candidates newest first", async () => {
+    for (const [version, sort] of [
+      ["1.2.3", "0001.0002.0003"],
+      ["1.2.4", "0001.0002.0004"],
+    ] as const) {
+      const row = await insertVersion(pool, {
+        package_name: PKG,
+        version,
+        version_group: "1.2",
+        is_lts: false,
+        version_sort: sort,
+      });
+      const artifact = await insertArtifact(pool, {
+        version_id: row.id,
+        os: "linux",
+        arch: "x86-64",
+        filename: `${version}.tar.gz`,
+        upstream_url: `https://example.test/${version}.tar.gz`,
+      });
+      await updateArtifactStatus(pool, artifact.id, { status: "available" });
+    }
+
+    const versions = await listAvailableVersionsInGroup(pool, PKG, "1.2", {
+      os: "linux",
+      arch: "x86-64",
+    });
+    expect(versions.map((row) => row.version)).toEqual(["1.2.4", "1.2.3"]);
+  });
+
   it("listVersionGroups returns distinct groups", async () => {
     await insertVersion(pool, {
       package_name: PKG,
@@ -227,6 +258,60 @@ describe("versions queries", () => {
     const prunable = await listVersionsOlderThanInGroup(pool, PKG, "1.2", 2);
     expect(prunable).toHaveLength(1);
     expect(prunable[0].version).toBe("1.2.1");
+  });
+
+  describe("listAvailableVersionsByGroup", () => {
+    async function insertWithArtifact(
+      version: string,
+      group: string,
+      sort: string,
+      opts: { os?: string; status?: string; is_lts?: boolean } = {},
+    ) {
+      const v = await insertVersion(pool, {
+        package_name: PKG,
+        version,
+        version_group: group,
+        is_lts: opts.is_lts ?? false,
+        version_sort: sort,
+      });
+      const art = await insertArtifact(pool, {
+        version_id: v.id,
+        os: opts.os ?? "linux",
+        arch: "x86-64",
+        filename: "pkg.tar.gz",
+        upstream_url: `https://example.test/${version}/pkg.tar.gz`,
+      });
+      if (opts.status !== "pending") {
+        await updateArtifactStatus(pool, art.id, { status: opts.status ?? "available" });
+      }
+    }
+
+    it("returns only versions with available artifacts, newest first", async () => {
+      await insertWithArtifact("1.2.3", "1.2", "0001.0002.0003");
+      await insertWithArtifact("1.2.4", "1.2", "0001.0002.0004");
+      await insertWithArtifact("1.3.0", "1.3", "0001.0003.0000", { status: "pending" });
+
+      const rows = await listAvailableVersionsByGroup(pool, PKG);
+      expect(rows.map((r) => r.version)).toEqual(["1.2.4", "1.2.3"]);
+      expect(rows[0].version_group).toBe("1.2");
+    });
+
+    it("filters by os", async () => {
+      await insertWithArtifact("1.2.3", "1.2", "0001.0002.0003", { os: "linux" });
+      await insertWithArtifact("1.2.4", "1.2", "0001.0002.0004", { os: "darwin" });
+
+      const rows = await listAvailableVersionsByGroup(pool, PKG, { os: "linux" });
+      expect(rows.map((r) => r.version)).toEqual(["1.2.3"]);
+    });
+
+    it("orders groups by first appearance = max version_sort", async () => {
+      await insertWithArtifact("0.9.0", "0.9", "0000.0009.0000");
+      await insertWithArtifact("0.10.0", "0.10", "0000.0010.0000", { is_lts: true });
+
+      const rows = await listAvailableVersionsByGroup(pool, PKG);
+      expect(rows[0]).toMatchObject({ version: "0.10.0", version_group: "0.10", is_lts: true });
+      expect(rows[1].version_group).toBe("0.9");
+    });
   });
 
   describe("getMaxAvailableVersionSort", () => {

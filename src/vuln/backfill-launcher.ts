@@ -14,13 +14,13 @@ export class LocalBackfillLauncher implements BackfillLauncher {
     private readonly run = runVulnBackfillJob,
   ) {}
 
-  async launch(jobId: string): Promise<string> {
+  launch(jobId: string): Promise<string> {
     setImmediate(() => {
       void this.run(this.pool, jobId).catch((error: unknown) => {
         log.error({ err: error, jobId }, "Local vulnerability backfill failed");
       });
     });
-    return `local:${jobId}`;
+    return Promise.resolve(`local:${jobId}`);
   }
 }
 

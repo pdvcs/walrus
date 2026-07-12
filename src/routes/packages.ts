@@ -1,6 +1,11 @@
 import { Router } from "express";
 import { ArtifactRow, PackageRow, SyncJobRow, VersionRow } from "../types/db.js";
-import { VersionGroupSummary } from "../db/queries/versions.js";
+import { AffectsWithCveRow } from "../db/queries/cves.js";
+import {
+  getVersionAvailabilityStatus,
+  GroupVersionInput,
+  summarizeGroupsWithVulnGate,
+} from "../services/vuln-service.js";
 import {
   LatestArtifactResponseSchema,
   ListGroupsResponseSchema,
@@ -13,16 +18,17 @@ export interface PackagesRouteDeps {
   listEnabledPackages: () => Promise<PackageRow[]>;
   getPackage: (name: string) => Promise<PackageRow | null>;
   listVersionGroups: (packageName: string) => Promise<string[]>;
-  listVersionGroupSummaries: (
+  listAvailableVersionsByGroup: (
     packageName: string,
     opts?: { os?: string; arch?: string },
-  ) => Promise<VersionGroupSummary[]>;
+  ) => Promise<GroupVersionInput[]>;
+  listAffectsForPackage: (packageName: string) => Promise<AffectsWithCveRow[]>;
   listVersions: (packageName: string, opts: { lts?: boolean }) => Promise<VersionRow[]>;
-  getLatestVersionInGroup: (
+  listAvailableVersionsInGroup: (
     packageName: string,
     group: string,
     opts?: { os?: string; arch?: string },
-  ) => Promise<VersionRow | null>;
+  ) => Promise<VersionRow[]>;
   listArtifactsForVersion: (versionId: number) => Promise<ArtifactRow[]>;
   getRecentSyncJob: (packageName: string, withinMinutes: number) => Promise<SyncJobRow | null>;
   triggerOnDemandSync: (packageName: string) => Promise<void>;
@@ -61,7 +67,11 @@ export function createPackagesRouter(deps: PackagesRouteDeps): Router {
 
       const os = optionalString(req.query.os);
       const arch = optionalString(req.query.arch);
-      const groups = await deps.listVersionGroupSummaries(packageName, { os, arch });
+      const [versions, affects] = await Promise.all([
+        deps.listAvailableVersionsByGroup(packageName, { os, arch }),
+        deps.listAffectsForPackage(packageName),
+      ]);
+      const groups = summarizeGroupsWithVulnGate(versions, affects);
       res.json(ListGroupsResponseSchema.parse({ package: packageName, groups }));
     } catch (err) {
       next(err);
@@ -78,9 +88,10 @@ export function createPackagesRouter(deps: PackagesRouteDeps): Router {
       }
 
       const lts = parseOptionalBoolean(req.query.lts);
-      const [versionGroups, versions] = await Promise.all([
+      const [versionGroups, versions, affects] = await Promise.all([
         deps.listVersionGroups(packageName),
         deps.listVersions(packageName, lts === undefined ? {} : { lts }),
+        deps.listAffectsForPackage(packageName),
       ]);
 
       const versionsWithArtifacts = await Promise.all(
@@ -90,6 +101,7 @@ export function createPackagesRouter(deps: PackagesRouteDeps): Router {
             version: version.version,
             version_group: version.version_group,
             is_lts: version.is_lts,
+            status: getVersionAvailabilityStatus(version.version, affects),
             platforms: artifacts.map((artifact) => ({
               os: artifact.os,
               arch: artifact.arch,
@@ -124,8 +136,14 @@ export function createPackagesRouter(deps: PackagesRouteDeps): Router {
 
       const os = optionalString(req.query.os);
       const arch = optionalString(req.query.arch);
-      const version = await deps.getLatestVersionInGroup(packageName, group, { os, arch });
-      if (!version) {
+      const [candidates, affects] = await Promise.all([
+        deps.listAvailableVersionsInGroup(packageName, group, { os, arch }),
+        deps.listAffectsForPackage(packageName),
+      ]);
+      const version = candidates.find(
+        (candidate) => getVersionAvailabilityStatus(candidate.version, affects) !== "blocked",
+      );
+      if (!version && candidates.length === 0) {
         const recent = await deps.getRecentSyncJob(packageName, 30);
         if (!recent) {
           deps.triggerOnDemandSync(packageName).catch(() => {
@@ -144,6 +162,11 @@ export function createPackagesRouter(deps: PackagesRouteDeps): Router {
         }
 
         res.status(404).json({ error: `No version found for group ${group}` });
+        return;
+      }
+
+      if (!version) {
+        res.status(404).json({ error: `No safe version found for group ${group}` });
         return;
       }
 

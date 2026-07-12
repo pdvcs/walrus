@@ -85,6 +85,17 @@ New deps: `fuzzball`, `semver` (runtime); `fast-check` (dev). `pg_trgm` extensio
   pairs successfully. GCP Terraform/application and Cloud Run launch validation remain deployment
   gates.
 
+**Wave 8 — Vulnerability-aware serving**
+
+- **WAL-30 (Changed):** `GET /api/v1/packages/:name/versions` now reports a version-level
+  `status` of `blocked` for concrete known-critical CVE matches and `available` otherwise,
+  using the same gate as the groups endpoint.
+- **WAL-31 (Security):** `GET /api/v1/packages/:name/versions/:group/latest` skips blocked
+  versions and never returns a download URL when all platform-compatible versions carry a
+  known critical CVE.
+- **WAL-32 (Security):** `GET /download/:package/:version/:os/:arch` returns `403` before
+  artifact lookup or storage access when the requested version carries a known critical CVE.
+
 ## Version 0.1.0: Initial Release
 
 Initial Walrus release: a configuration-driven package ingress engine that discovers, caches, and
