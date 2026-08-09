@@ -272,16 +272,33 @@ export async function deleteAllVersionsForPackage(
   }
 }
 
+/**
+ * Versions in a group beyond the newest `keepCount`, i.e. the ones retention should prune.
+ *
+ * With `exemptEmbargoed` (the default), versions still inside their release embargo are neither
+ * returned nor counted towards `keepCount`: keepCount is a quota of *servable* versions, so a
+ * cooling-off release must not displace the older version users are still downloading. Pass false
+ * to prune a group wholesale, where the embargo is irrelevant because the group itself is going.
+ */
 export async function listVersionsOlderThanInGroup(
   pool: Pool,
   packageName: string,
   group: string,
   keepCount: number,
+  exemptEmbargoed = true,
 ): Promise<VersionRow[]> {
+  const embargoFilter = exemptEmbargoed
+    ? `AND NOT EXISTS (
+         SELECT 1 FROM artifacts a
+         WHERE a.version_id = v.id AND a.cooling_off_until > now()
+       )`
+    : "";
+
   const { rows } = await pool.query<VersionRow>(
-    `SELECT * FROM versions
-     WHERE package_name = $1 AND version_group = $2
-     ORDER BY version_sort DESC
+    `SELECT v.* FROM versions v
+     WHERE v.package_name = $1 AND v.version_group = $2
+     ${embargoFilter}
+     ORDER BY v.version_sort DESC
      OFFSET $3`,
     [packageName, group, keepCount],
   );

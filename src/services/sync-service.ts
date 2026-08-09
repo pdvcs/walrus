@@ -2,9 +2,11 @@ import crypto from "crypto";
 import { Pool } from "pg";
 import { mapWithConcurrency } from "../common/async-utils.js";
 import { generateSortKey } from "../common/version-utils.js";
+import { computeCoolingOffUntil, selectRetentionWindow } from "../common/retention-window.js";
 import { log } from "../common/log.js";
 import { getStrategy } from "../discovery/index.js";
-import { DiscoveredVersion } from "../discovery/types.js";
+import { DiscoveredVersion, DiscoveryOptions } from "../discovery/types.js";
+import { SyncJobTrigger } from "../types/db.js";
 import { insertArtifact, updateArtifactStatus } from "../db/queries/artifacts.js";
 import { upsertPackage } from "../db/queries/packages.js";
 import { createSyncJob, incrementJobCounters, updateSyncJob } from "../db/queries/sync-jobs.js";
@@ -16,8 +18,9 @@ import { DownloadRequest, DownloadResult, DownloadService } from "./download-ser
 import { RetentionResult, RetentionService } from "./retention-service.js";
 
 export interface SyncRunOptions {
-  triggerType?: "scheduled" | "on-demand" | "admin";
+  triggerType?: SyncJobTrigger;
   dryRun?: boolean;
+  discovery?: DiscoveryOptions;
 }
 
 export interface SyncRunResult {
@@ -31,7 +34,10 @@ export interface SyncRunResult {
 }
 
 interface SyncDeps {
-  discoverVersions: (config: PackageConfig) => Promise<DiscoveredVersion[]>;
+  discoverVersions: (
+    config: PackageConfig,
+    options?: DiscoveryOptions,
+  ) => Promise<DiscoveredVersion[]>;
   upsertPackage: typeof upsertPackage;
   createSyncJob: typeof createSyncJob;
   updateSyncJob: typeof updateSyncJob;
@@ -70,7 +76,7 @@ export class SyncService {
     this.syncConcurrency = opts.syncConcurrency ?? 4;
     this.downloadConcurrency = opts.downloadConcurrency ?? 2;
     this.deps = {
-      discoverVersions: (config) => getStrategy(config).discoverVersions(config),
+      discoverVersions: (config, options) => getStrategy(config).discoverVersions(config, options),
       upsertPackage,
       createSyncJob,
       updateSyncJob,
@@ -90,8 +96,10 @@ export class SyncService {
     const dryRun = options.dryRun ?? false;
 
     if (dryRun) {
-      const allDiscovered = await this.deps.discoverVersions(this.packageConfig);
-      const discovered = this.applyRetentionWindow(allDiscovered);
+      const allDiscovered = await this.deps.discoverVersions(this.packageConfig, options.discovery);
+      const discovered = options.discovery?.historical
+        ? allDiscovered
+        : this.applyRetentionWindow(allDiscovered);
       const artifactsQueued = discovered.reduce((sum, v) => sum + v.artifacts.size, 0);
       return {
         dryRun: true,
@@ -158,9 +166,11 @@ export class SyncService {
         this.packageConfig.name,
       );
 
-      const allDiscovered = await this.deps.discoverVersions(this.packageConfig);
+      const allDiscovered = await this.deps.discoverVersions(this.packageConfig, options.discovery);
       const aboveMin = this.applyMinVersion(allDiscovered);
-      const discovered = this.applyRetentionWindow(aboveMin);
+      const discovered = options.discovery?.historical
+        ? aboveMin
+        : this.applyRetentionWindow(aboveMin, coolingOffThreshold);
       await this.deps.updateSyncJob(this.pool, job.id, {
         versions_found: discovered.length,
       });
@@ -311,42 +321,11 @@ export class SyncService {
     return versions.filter((v) => generateSortKey(v.version) >= minKey);
   }
 
-  private applyRetentionWindow(versions: DiscoveredVersion[]): DiscoveredVersion[] {
-    const { versions_per_group: versionsPerGroup, groups_to_keep: groupsToKeep } =
-      this.packageConfig.retention;
-
-    const byGroup = new Map<string, DiscoveredVersion[]>();
-    for (const v of versions) {
-      if (!byGroup.has(v.versionGroup)) byGroup.set(v.versionGroup, []);
-      byGroup.get(v.versionGroup)!.push(v);
-    }
-
-    // Sort groups newest-first via max version_sort (mirrors the DB query fix in listVersionGroups)
-    const sortedGroups = [...byGroup.keys()].sort((a, b) => {
-      const maxA = byGroup
-        .get(a)!
-        .map((v) => generateSortKey(v.version))
-        .sort()
-        .at(-1)!;
-      const maxB = byGroup
-        .get(b)!
-        .map((v) => generateSortKey(v.version))
-        .sort()
-        .at(-1)!;
-      return maxB.localeCompare(maxA);
-    });
-
-    const keptGroups =
-      groupsToKeep !== undefined ? sortedGroups.slice(0, groupsToKeep) : sortedGroups;
-
-    const result: DiscoveredVersion[] = [];
-    for (const group of keptGroups) {
-      const sorted = [...byGroup.get(group)!].sort((a, b) =>
-        generateSortKey(b.version).localeCompare(generateSortKey(a.version)),
-      );
-      result.push(...sorted.slice(0, versionsPerGroup));
-    }
-    return result;
+  private applyRetentionWindow(
+    versions: DiscoveredVersion[],
+    coolingOffThreshold: string | null = null,
+  ): DiscoveredVersion[] {
+    return selectRetentionWindow(versions, this.packageConfig.retention, coolingOffThreshold);
   }
 
   private async processVersion(
@@ -363,22 +342,11 @@ export class SyncService {
       version_sort: generateSortKey(version.version),
     });
 
-    const coolingOffDays = this.packageConfig.retention.cooling_off_days;
-    const versionSort = generateSortKey(version.version);
-    let coolingOffUntil: Date | null = null;
-
-    if (coolingOffDays && coolingOffDays > 0) {
-      if (version.releasedAt) {
-        // Upstream release date available — use it as anchor regardless of bootstrap.
-        // If the version was released recently enough that cooling off hasn't elapsed, block it.
-        const candidate = new Date(version.releasedAt.getTime() + coolingOffDays * 86_400_000);
-        coolingOffUntil = candidate > new Date() ? candidate : null;
-      } else if (coolingOffThreshold !== null && versionSort > coolingOffThreshold) {
-        // No upstream date — fall back to threshold-based logic: only block versions
-        // discovered for the first time above the pre-sync watermark.
-        coolingOffUntil = new Date(Date.now() + coolingOffDays * 86_400_000);
-      }
-    }
+    const coolingOffUntil = computeCoolingOffUntil(
+      version,
+      this.packageConfig.retention,
+      coolingOffThreshold,
+    );
 
     for (const [platform, artifact] of version.artifacts) {
       const [os, arch] = platform.split("/");

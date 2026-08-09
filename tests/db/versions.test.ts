@@ -260,6 +260,72 @@ describe("versions queries", () => {
     expect(prunable[0].version).toBe("1.2.1");
   });
 
+  describe("listVersionsOlderThanInGroup and the release embargo", () => {
+    async function insertWithEmbargo(version: string, sort: string, coolingOffUntil: Date | null) {
+      const v = await insertVersion(pool, {
+        package_name: PKG,
+        version,
+        version_group: "1.2",
+        is_lts: false,
+        version_sort: sort,
+      });
+      await insertArtifact(pool, {
+        version_id: v.id,
+        os: "linux",
+        arch: "x86-64",
+        filename: "pkg.tar.gz",
+        upstream_url: `https://example.test/${version}/pkg.tar.gz`,
+        cooling_off_until: coolingOffUntil,
+      });
+      return v;
+    }
+
+    const future = () => new Date(Date.now() + 2 * 86_400_000);
+    const past = () => new Date(Date.now() - 2 * 86_400_000);
+
+    // The bug this fixes: an embargoed 1.2.4 used to occupy a keep slot, so 1.2.2 was pruned and
+    // only 1.2.3 was left downloadable — one servable version despite keepCount = 2.
+    it("does not count an embargoed version towards keepCount", async () => {
+      await insertWithEmbargo("1.2.4", "0001.0002.0004", future());
+      await insertWithEmbargo("1.2.3", "0001.0002.0003", null);
+      await insertWithEmbargo("1.2.2", "0001.0002.0002", null);
+      await insertWithEmbargo("1.2.1", "0001.0002.0001", null);
+
+      const prunable = await listVersionsOlderThanInGroup(pool, PKG, "1.2", 2);
+
+      expect(prunable.map((v) => v.version)).toEqual(["1.2.1"]);
+    });
+
+    it("never returns an embargoed version, even below the keep window", async () => {
+      await insertWithEmbargo("1.2.3", "0001.0002.0003", null);
+      await insertWithEmbargo("1.2.2", "0001.0002.0002", null);
+      await insertWithEmbargo("1.2.1", "0001.0002.0001", future());
+
+      const prunable = await listVersionsOlderThanInGroup(pool, PKG, "1.2", 1);
+
+      expect(prunable.map((v) => v.version)).toEqual(["1.2.2"]);
+    });
+
+    it("counts a version whose embargo has elapsed", async () => {
+      await insertWithEmbargo("1.2.3", "0001.0002.0003", past());
+      await insertWithEmbargo("1.2.2", "0001.0002.0002", past());
+      await insertWithEmbargo("1.2.1", "0001.0002.0001", null);
+
+      const prunable = await listVersionsOlderThanInGroup(pool, PKG, "1.2", 2);
+
+      expect(prunable.map((v) => v.version)).toEqual(["1.2.1"]);
+    });
+
+    it("prunes embargoed versions too when the exemption is off", async () => {
+      await insertWithEmbargo("1.2.2", "0001.0002.0002", future());
+      await insertWithEmbargo("1.2.1", "0001.0002.0001", null);
+
+      const prunable = await listVersionsOlderThanInGroup(pool, PKG, "1.2", 0, false);
+
+      expect(prunable.map((v) => v.version)).toEqual(["1.2.2", "1.2.1"]);
+    });
+  });
+
   describe("listAvailableVersionsByGroup", () => {
     async function insertWithArtifact(
       version: string,

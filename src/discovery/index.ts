@@ -20,4 +20,10 @@ export function getStrategy(config: PackageConfig): DiscoveryStrategy {
   }
 }
 
-export { DiscoveryStrategy, DiscoveredVersion, ArtifactInfo, platformKey } from "./types.js";
+export {
+  DiscoveryStrategy,
+  DiscoveredVersion,
+  ArtifactInfo,
+  DiscoveryOptions,
+  platformKey,
+} from "./types.js";

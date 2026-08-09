@@ -19,7 +19,18 @@ export interface DiscoveredVersion {
 }
 
 export interface DiscoveryStrategy {
-  discoverVersions(config: PackageConfig): Promise<DiscoveredVersion[]>;
+  discoverVersions(config: PackageConfig, options?: DiscoveryOptions): Promise<DiscoveredVersion[]>;
+}
+
+export interface DiscoveryOptions {
+  /** Fetch a specific GitHub release page for an operator-triggered historical lookup. */
+  releasePage?: number;
+  /** Bound the number of releases in the page. */
+  maxReleases?: number;
+  /** Resolve candidates only from these version groups. */
+  versionGroups?: string[];
+  /** Resolve artifacts for every matching candidate, bypassing normal retention pre-filtering. */
+  historical?: boolean;
 }
 
 export function platformKey(platform: Platform): PlatformKey {

@@ -44,7 +44,7 @@ export interface ArtifactRow {
 }
 
 export type SyncJobStatus = "running" | "completed" | "failed";
-export type SyncJobTrigger = "scheduled" | "on-demand" | "admin";
+export type SyncJobTrigger = "scheduled" | "on-demand" | "admin" | "historical-backfill";
 
 export interface SyncJobRow {
   id: number;

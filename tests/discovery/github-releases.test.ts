@@ -450,3 +450,159 @@ describe("GitHubReleasesStrategy — asset_version_pattern mode", () => {
     expect(calledUrl).toContain("per_page=100");
   });
 });
+
+// The artifact-resolution pre-filter has to keep everything the sync service's retention window
+// keeps. When it trimmed to versions_per_group while the window also retained embargoed versions,
+// the extra servable version reached the database with an empty artifact map — a version row that
+// could never be downloaded or retried.
+describe("GitHubReleasesStrategy — pre-filter agrees with the retention window", () => {
+  const EMBARGO_CONFIG: PackageConfig = {
+    ...PYTHON_CONFIG,
+    retention: { versions_per_group: 2, cooling_off_days: 3 },
+  };
+
+  function release(tag: string, version: string, publishedAt: Date) {
+    const filename = `cpython-${version}+${tag}-x86_64-unknown-linux-gnu-install_only.tar.gz`;
+    return {
+      tag_name: tag,
+      prerelease: false,
+      draft: false,
+      published_at: publishedAt.toISOString(),
+      assets: [
+        {
+          name: filename,
+          browser_download_url: `https://example.test/${tag}/${filename}`,
+          size: 48000000,
+          digest: "sha256:abc123",
+        },
+      ],
+    };
+  }
+
+  const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000);
+
+  // Newest-first, as the GitHub API returns them. 3.13.15 is 1 day old, so still cooling off.
+  const RELEASES = [
+    release("20260807", "3.13.15", daysAgo(1)),
+    release("20260804", "3.13.14", daysAgo(30)),
+    release("20260603", "3.13.13", daysAgo(60)),
+  ];
+
+  function stubReleases() {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve(RELEASES),
+        text: () => Promise.resolve(""),
+      }),
+    );
+  }
+
+  it("resolves artifacts for the servable version an embargoed release would have displaced", async () => {
+    stubReleases();
+    const versions = await new GitHubReleasesStrategy().discoverVersions(EMBARGO_CONFIG);
+
+    const bySize = new Map(versions.map((v) => [v.version, v.artifacts.size]));
+    expect(bySize.get("3.13.15")).toBe(1); // embargoed — kept on top of the quota
+    expect(bySize.get("3.13.14")).toBe(1);
+    expect(bySize.get("3.13.13")).toBe(1); // the fallback that used to arrive empty
+  });
+
+  it("still skips resolution beyond the quota when nothing is cooling off", async () => {
+    stubReleases();
+    const versions = await new GitHubReleasesStrategy().discoverVersions({
+      ...EMBARGO_CONFIG,
+      retention: { versions_per_group: 2 },
+    });
+
+    const bySize = new Map(versions.map((v) => [v.version, v.artifacts.size]));
+    expect(bySize.get("3.13.15")).toBe(1);
+    expect(bySize.get("3.13.14")).toBe(1);
+    expect(bySize.get("3.13.13")).toBe(0);
+  });
+
+  it("historical mode resolves every targeted candidate on a requested page", async () => {
+    stubReleases();
+    const versions = await new GitHubReleasesStrategy().discoverVersions(EMBARGO_CONFIG, {
+      releasePage: 2,
+      maxReleases: 20,
+      versionGroups: ["3.13"],
+      historical: true,
+    });
+
+    expect(versions).toHaveLength(3);
+    expect(versions.every((version) => version.versionGroup === "3.13")).toBe(true);
+    expect(versions.every((version) => version.artifacts.size === 1)).toBe(true);
+    const calledUrl = (vi.mocked(fetch).mock.calls[0]?.[0] ?? "") as string;
+    expect(calledUrl).toContain("per_page=20");
+    expect(calledUrl).toContain("page=2");
+  });
+});
+
+// python-build-standalone re-ships every maintained line in every dated release, so the newest
+// release containing a version says nothing about when that version came out. Dating a version by
+// the latest rebuild made months-old patches look brand new, and — because rebuilds land more
+// often than a 3-day embargo elapses — kept those lines permanently in cooling-off.
+describe("GitHubReleasesStrategy — asset_version_pattern release dating", () => {
+  function release(tag: string, versions: string[], publishedAt: Date) {
+    return {
+      tag_name: tag,
+      prerelease: false,
+      draft: false,
+      published_at: publishedAt.toISOString(),
+      assets: versions.map((v) => {
+        const name = `cpython-${v}+${tag}-x86_64-unknown-linux-gnu-install_only.tar.gz`;
+        return {
+          name,
+          browser_download_url: `https://example.test/${tag}/${name}`,
+          size: 48000000,
+          digest: "sha256:abc123",
+        };
+      }),
+    };
+  }
+
+  const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000);
+
+  // 3.11.15 rides along in all three releases; 3.13.15 is genuinely new in the latest one.
+  const RELEASES = [
+    release("20260807", ["3.11.15", "3.13.15"], daysAgo(1)),
+    release("20260804", ["3.11.15", "3.13.14"], daysAgo(30)),
+    release("20260603", ["3.11.15", "3.13.13"], daysAgo(90)),
+  ];
+
+  beforeEach(() => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve(RELEASES),
+        text: () => Promise.resolve(""),
+      }),
+    );
+  });
+
+  it("dates a rebuilt version by its first appearance, not the latest release carrying it", async () => {
+    const versions = await new GitHubReleasesStrategy().discoverVersions(PYTHON_CONFIG);
+
+    const v = versions.find((x) => x.version === "3.11.15");
+    expect(v?.releasedAt?.toISOString()).toBe(RELEASES[2].published_at);
+  });
+
+  it("still dates a genuinely new version by the release that introduced it", async () => {
+    const versions = await new GitHubReleasesStrategy().discoverVersions(PYTHON_CONFIG);
+
+    const v = versions.find((x) => x.version === "3.13.15");
+    expect(v?.releasedAt?.toISOString()).toBe(RELEASES[0].published_at);
+  });
+
+  it("still builds artifact URLs from the newest release carrying the version", async () => {
+    const versions = await new GitHubReleasesStrategy().discoverVersions(PYTHON_CONFIG);
+
+    const art = versions.find((x) => x.version === "3.11.15")?.artifacts.get("linux/x86-64");
+    expect(art?.filename).toBe(
+      "cpython-3.11.15+20260807-x86_64-unknown-linux-gnu-install_only.tar.gz",
+    );
+  });
+});

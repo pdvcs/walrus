@@ -3,15 +3,12 @@ import {
   DiscoveryStrategy,
   DiscoveredVersion,
   ArtifactInfo,
+  DiscoveryOptions,
   PlatformKey,
   platformKey,
 } from "./types.js";
-import {
-  applyTagPattern,
-  parseVersion,
-  extractVersionGroup,
-  sortVersionsDesc,
-} from "../common/version-utils.js";
+import { applyTagPattern, parseVersion, extractVersionGroup } from "../common/version-utils.js";
+import { RetainableVersion, selectRetentionWindow } from "../common/retention-window.js";
 import { log } from "../common/log.js";
 import { fetchJsonWithRetry } from "../common/http.js";
 
@@ -34,14 +31,21 @@ const GITHUB_API_BASE = "https://api.github.com";
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 
 export class GitHubReleasesStrategy implements DiscoveryStrategy {
-  async discoverVersions(config: PackageConfig): Promise<DiscoveredVersion[]> {
+  async discoverVersions(
+    config: PackageConfig,
+    options: DiscoveryOptions = {},
+  ): Promise<DiscoveredVersion[]> {
     if (config.discovery.type !== "github-releases") {
       throw new Error('GitHubReleasesStrategy requires discovery.type = "github-releases"');
     }
     const { repo, include_prereleases, tag_pattern, asset_version_pattern, max_releases } =
       config.discovery;
 
-    const releases = await this.fetchReleases(repo, max_releases);
+    const releases = await this.fetchReleases(
+      repo,
+      options.maxReleases ?? max_releases,
+      options.releasePage,
+    );
     const ltsGroups = this.extractLtsGroups(config, releases);
 
     if (asset_version_pattern) {
@@ -51,6 +55,7 @@ export class GitHubReleasesStrategy implements DiscoveryStrategy {
         asset_version_pattern,
         include_prereleases,
         ltsGroups,
+        options,
       );
     }
 
@@ -96,14 +101,20 @@ export class GitHubReleasesStrategy implements DiscoveryStrategy {
       });
     }
 
-    // Resolve artifacts only for versions that survive retention; pruned versions get empty maps.
-    // This avoids "asset not found" noise for old releases that predate certain platforms.
+    const targeted = options.versionGroups?.length
+      ? candidates.filter((candidate) => options.versionGroups!.includes(candidate.versionGroup))
+      : candidates;
     const retainedVersions = new Set(
-      this.applyRetentionPreFilter(candidates, config).map((c) => c.version),
+      (options.historical ? targeted : this.applyRetentionPreFilter(targeted, config)).map(
+        (c) => c.version,
+      ),
     );
 
+    // Resolve artifacts only for versions that survive retention; historical backfills resolve
+    // every explicitly targeted candidate so an older fallback is not silently discarded.
+    // This avoids "asset not found" noise for old releases that predate certain platforms.
     const discovered: DiscoveredVersion[] = [];
-    for (const c of candidates) {
+    for (const c of targeted) {
       const artifacts = retainedVersions.has(c.version)
         ? this.resolveArtifacts(config, c.release, c.version)
         : new Map<PlatformKey, ArtifactInfo>();
@@ -130,14 +141,19 @@ export class GitHubReleasesStrategy implements DiscoveryStrategy {
     assetVersionPattern: string,
     includePrereleases: boolean,
     ltsGroups: Set<string>,
+    options: DiscoveryOptions,
   ): DiscoveredVersion[] {
     const include_prereleases = includePrereleases;
     const regex = new RegExp(assetVersionPattern);
     const minVersion = config.versioning.min_version;
 
-    // Collect candidate (version → most-recent release that contains it)
-    // GitHub returns releases newest-first; first time we see a version wins.
+    // Two mappings per version, because in this mode a version is rebuilt into many releases:
+    //   versionToRelease  → most-recent release containing it, used for {tag} in artifact URLs
+    //   versionFirstSeen  → oldest release containing it, used as the release date
+    // GitHub returns releases newest-first, so the first sighting is the newest and the last
+    // sighting is the oldest.
     const versionToRelease = new Map<string, GitHubRelease>();
+    const versionFirstSeen = new Map<string, GitHubRelease>();
 
     for (const release of releases) {
       if (release.draft) continue;
@@ -158,6 +174,7 @@ export class GitHubReleasesStrategy implements DiscoveryStrategy {
         if (!versionToRelease.has(version)) {
           versionToRelease.set(version, release);
         }
+        versionFirstSeen.set(version, release);
       }
     }
 
@@ -177,21 +194,34 @@ export class GitHubReleasesStrategy implements DiscoveryStrategy {
         log.debug({ version }, "Could not extract version group, skipping");
         continue;
       }
+      // Date the version by when it *first* appeared, not by the latest rebuild that shipped it.
+      // Upstreams like python-build-standalone re-ship every maintained line in every dated
+      // release, so the newest release's date would make a months-old patch look brand new — and
+      // with cooling off enabled, a line that gets rebuilt more often than the embargo is long
+      // would never become servable. Bounded by the fetched window: a version present in every
+      // release we pulled is dated to the oldest one, which is an upper bound on its true age and
+      // therefore errs towards "old enough to serve".
+      const firstSeen = versionFirstSeen.get(version) ?? release;
       candidates.push({
         version,
         versionGroup,
         isLts: ltsGroups.has(versionGroup),
-        releasedAt: release.published_at ? new Date(release.published_at) : undefined,
+        releasedAt: firstSeen.published_at ? new Date(firstSeen.published_at) : undefined,
         release,
       });
     }
 
+    const targeted = options.versionGroups?.length
+      ? candidates.filter((candidate) => options.versionGroups!.includes(candidate.versionGroup))
+      : candidates;
     const retainedVersions = new Set(
-      this.applyRetentionPreFilter(candidates, config).map((c) => c.version),
+      (options.historical ? targeted : this.applyRetentionPreFilter(targeted, config)).map(
+        (c) => c.version,
+      ),
     );
 
     const discovered: DiscoveredVersion[] = [];
-    for (const c of candidates) {
+    for (const c of targeted) {
       const artifacts = retainedVersions.has(c.version)
         ? this.resolveArtifacts(config, c.release, c.version, c.release.tag_name)
         : new Map<PlatformKey, ArtifactInfo>();
@@ -207,31 +237,26 @@ export class GitHubReleasesStrategy implements DiscoveryStrategy {
     return discovered;
   }
 
-  private applyRetentionPreFilter<T extends { version: string; versionGroup: string }>(
+  /**
+   * Which candidates are worth resolving artifact URLs for. Must keep everything the sync service
+   * will keep — a version that survives the sync window but was skipped here reaches the database
+   * with an empty artifact map, so it is neither downloadable nor retryable.
+   *
+   * Passing a null cooling-off threshold is exact for this strategy: every release carries a
+   * published_at, so the embargo is always date-anchored and never falls back to the watermark.
+   */
+  private applyRetentionPreFilter<T extends RetainableVersion>(
     candidates: T[],
     config: PackageConfig,
   ): T[] {
-    const { versions_per_group, groups_to_keep } = config.retention;
-
-    // Group candidates — GitHub API returns newest-first so order within each group is preserved
-    const byGroup = new Map<string, T[]>();
-    for (const c of candidates) {
-      if (!byGroup.has(c.versionGroup)) byGroup.set(c.versionGroup, []);
-      byGroup.get(c.versionGroup)!.push(c);
-    }
-
-    const sortedGroups = sortVersionsDesc([...byGroup.keys()]);
-    const kept: T[] = [];
-
-    for (let i = 0; i < sortedGroups.length; i++) {
-      if (groups_to_keep !== undefined && i >= groups_to_keep) break;
-      kept.push(...byGroup.get(sortedGroups[i])!.slice(0, versions_per_group));
-    }
-
-    return kept;
+    return selectRetentionWindow(candidates, config.retention);
   }
 
-  private async fetchReleases(repo: string, maxReleases?: number): Promise<GitHubRelease[]> {
+  private async fetchReleases(
+    repo: string,
+    maxReleases?: number,
+    releasePage?: number,
+  ): Promise<GitHubRelease[]> {
     const headers: Record<string, string> = {
       Accept: "application/vnd.github.v3+json",
       "User-Agent": "walrus/1.0",
@@ -241,7 +266,8 @@ export class GitHubReleasesStrategy implements DiscoveryStrategy {
     }
 
     const perPage = Math.min(maxReleases ?? 100, 100);
-    const url = `${GITHUB_API_BASE}/repos/${repo}/releases?per_page=${perPage}`;
+    const page = releasePage ?? 1;
+    const url = `${GITHUB_API_BASE}/repos/${repo}/releases?per_page=${perPage}&page=${page}`;
     return fetchJsonWithRetry<GitHubRelease[]>(url, { headers });
   }
 

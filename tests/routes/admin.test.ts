@@ -37,7 +37,106 @@ function baseDeps(): AdminRouteDeps {
   };
 }
 
+/** One pending linux artifact for python 3.13.15, as the package detail page sees it. */
+function artifact(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: 1,
+    version_id: 1,
+    os: "linux",
+    arch: "x86-64",
+    filename: "cpython.tar.gz",
+    gcs_path: null,
+    file_size: null,
+    checksum: null,
+    checksum_type: null,
+    upstream_url: "https://example.test/cpython.tar.gz",
+    status: "pending",
+    error_message: null,
+    download_started_at: null,
+    download_completed_at: null,
+    removed_at: null,
+    created_at: new Date(),
+    cooling_off_until: null,
+    ...overrides,
+  };
+}
+
+function depsFor(
+  artifacts: ReturnType<typeof artifact>[],
+  vulnBadges: { tracked: boolean; byVersion: Record<string, unknown> } = {
+    tracked: false,
+    byVersion: {},
+  },
+): AdminRouteDeps {
+  const deps = baseDeps();
+  deps.listConfiguredPackages = vi.fn().mockReturnValue(["python"]);
+  deps.listAllPackages = vi.fn().mockResolvedValue([]);
+  deps.listVersionGroupNamesForPackage = vi.fn().mockResolvedValue(["3.13"]);
+  deps.listVersionsInGroup = vi
+    .fn()
+    .mockResolvedValue([{ id: 1, version: "3.13.15", is_lts: false }]);
+  deps.listArtifactsForVersionId = vi.fn().mockResolvedValue(artifacts);
+  deps.getPackageVulnBadges = vi.fn().mockResolvedValue(vulnBadges);
+  return deps;
+}
+
+function badges(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    tracked: true,
+    byVersion: {
+      "3.13.15": { total: 2, critical: 0, high: 2, kev: 0, blocked: false, ...overrides },
+    },
+  };
+}
+
 describe("admin routes", () => {
+  it("starts a targeted historical backfill", async () => {
+    const deps = baseDeps();
+    deps.listConfiguredPackages = vi.fn().mockReturnValue(["python"]);
+    deps.isPackageEnabled = vi.fn().mockResolvedValue(true);
+    deps.startHistoricalBackfill = vi.fn().mockResolvedValue(42);
+    const app = createTestApp(deps);
+
+    const response = await request(app)
+      .post("/admin/v1/historical-backfill/python")
+      .send({
+        version_groups: ["3.11", "3.12"],
+        release_page: 2,
+        max_releases: 20,
+      });
+
+    expect(response.status).toBe(202);
+    expect(response.body).toMatchObject({
+      package: "python",
+      job_id: 42,
+      version_groups: ["3.11", "3.12"],
+      release_page: 2,
+      max_releases: 20,
+    });
+    expect(deps.startHistoricalBackfill).toHaveBeenCalledWith("python", {
+      triggerType: "historical-backfill",
+      discovery: {
+        releasePage: 2,
+        maxReleases: 20,
+        versionGroups: ["3.11", "3.12"],
+        historical: true,
+      },
+    });
+  });
+
+  it("rejects an unbounded historical backfill request", async () => {
+    const deps = baseDeps();
+    deps.listConfiguredPackages = vi.fn().mockReturnValue(["python"]);
+    const app = createTestApp(deps);
+
+    const response = await request(app).post("/admin/v1/historical-backfill/python").send({
+      version_groups: [],
+      max_releases: 1000,
+    });
+
+    expect(response.status).toBe(400);
+  });
+
   it("runs package sync in dry-run mode", async () => {
     const runSync = vi.fn().mockResolvedValue({
       dryRun: true,
@@ -190,174 +289,255 @@ describe("admin routes", () => {
   });
 
   describe("GET /admin/v1/jobs/:id — cooling off display", () => {
-    function makeJobDetail(overrides: {
-      cooling_off_days?: number;
-      cooling_off_threshold: string | null;
-      artifactStatus?: string;
-      artifactVersionSort?: string;
-      artifactCreatedAt?: Date;
-    }) {
-      const {
-        cooling_off_days,
-        cooling_off_threshold,
-        artifactStatus = "pending",
-        artifactVersionSort = "000000.000010.000010~",
-        artifactCreatedAt = new Date(Date.now() - 6 * 3600_000), // 6 hours ago
-      } = overrides;
+    interface TestArtifact {
+      version: string;
+      version_sort: string;
+      status?: string;
+      cooling_off_until: Date | null;
+    }
+
+    function makeJobDetail(artifacts: TestArtifact[], cooling_off_days = 3) {
       return {
         job: {
           id: 99,
-          package_name: "uv",
+          package_name: "python",
           trigger_type: "scheduled",
           status: "completed",
-          versions_found: 1,
-          artifacts_queued: 1,
+          versions_found: artifacts.length,
+          artifacts_queued: 0,
           artifacts_downloaded: 0,
           artifacts_failed: 0,
           error_message: null,
           started_at: new Date(),
           completed_at: new Date(),
         },
-        artifacts: [
-          {
-            id: 1,
-            version: "0.10.10",
-            version_sort: artifactVersionSort,
-            os: "linux",
-            arch: "x86-64",
-            filename: "uv.tar.gz",
-            status: artifactStatus,
-            error_message: null,
-            download_started_at: null,
-            download_completed_at: null,
-            created_at: artifactCreatedAt,
-          },
-        ],
+        artifacts: artifacts.map((a, i) => ({
+          id: i + 1,
+          version: a.version,
+          version_sort: a.version_sort,
+          os: "linux",
+          arch: "x86-64",
+          filename: `cpython-${a.version}.tar.gz`,
+          status: a.status ?? "pending",
+          error_message: null,
+          download_started_at: null,
+          download_completed_at: null,
+          created_at: new Date(Date.now() - 6 * 3600_000),
+          cooling_off_until: a.cooling_off_until,
+        })),
         elapsed_ms: 500,
         cooling_off_days,
-        cooling_off_threshold,
       };
     }
 
-    it("returns cooling_off_until = null when threshold is null (bootstrap)", async () => {
+    async function getJobBody(detail: ReturnType<typeof makeJobDetail>) {
       const deps = baseDeps();
-      deps.getJob = vi
-        .fn()
-        .mockResolvedValue(makeJobDetail({ cooling_off_days: 3, cooling_off_threshold: null }));
-      const app = createTestApp(deps);
-
-      const res = await request(app).get("/admin/v1/jobs/99").set("Accept", "application/json");
-      const body = res.body as {
-        artifacts: Array<{ cooling_off_until: string | null }>;
+      deps.getJob = vi.fn().mockResolvedValue(detail);
+      const res = await request(createTestApp(deps))
+        .get("/admin/v1/jobs/99")
+        .set("Accept", "application/json");
+      expect(res.status).toBe(200);
+      return res.body as {
+        artifacts: Array<{ status: string; cooling_off_until: string | null }>;
         artifacts_cooling_off: number;
       };
+    }
 
-      expect(res.status).toBe(200);
-      expect(body.artifacts[0].cooling_off_until).toBeNull();
-      expect(body.artifacts_cooling_off).toBe(0);
-    });
-
-    it("returns cooling_off_until = null when artifact version_sort is at the threshold", async () => {
-      const threshold = "000000.000010.000010~";
-      const deps = baseDeps();
-      deps.getJob = vi.fn().mockResolvedValue(
-        makeJobDetail({
-          cooling_off_days: 3,
-          cooling_off_threshold: threshold,
-          artifactVersionSort: threshold, // exactly at threshold — not above
-        }),
+    it("reports the cooling_off_until recorded at sync time", async () => {
+      const until = new Date(Date.now() + 2.75 * 86_400_000);
+      const body = await getJobBody(
+        makeJobDetail([
+          { version: "3.14.7", version_sort: "000003.000014.000007~", cooling_off_until: until },
+        ]),
       );
-      const app = createTestApp(deps);
 
-      const res = await request(app).get("/admin/v1/jobs/99").set("Accept", "application/json");
-      const body = res.body as {
-        artifacts: Array<{ cooling_off_until: string | null }>;
-        artifacts_cooling_off: number;
-      };
-
-      expect(res.status).toBe(200);
-      expect(body.artifacts[0].cooling_off_until).toBeNull();
-      expect(body.artifacts_cooling_off).toBe(0);
-    });
-
-    it("returns cooling_off_until set when artifact is above threshold and within the window", async () => {
-      const threshold = "000000.000010.000009~"; // 0.10.9
-      const sixHoursAgo = new Date(Date.now() - 6 * 3600_000);
-      const deps = baseDeps();
-      deps.getJob = vi.fn().mockResolvedValue(
-        makeJobDetail({
-          cooling_off_days: 3,
-          cooling_off_threshold: threshold,
-          artifactVersionSort: "000000.000010.000010~", // 0.10.10 — above threshold
-          artifactCreatedAt: sixHoursAgo,
-        }),
-      );
-      const app = createTestApp(deps);
-
-      const res = await request(app).get("/admin/v1/jobs/99").set("Accept", "application/json");
-      const body = res.body as {
-        artifacts: Array<{ cooling_off_until: string | null }>;
-        artifacts_cooling_off: number;
-      };
-
-      expect(res.status).toBe(200);
-      expect(body.artifacts[0].cooling_off_until).not.toBeNull();
-      // available_at should be ~3 days from created_at
-      const availableAt = new Date(body.artifacts[0].cooling_off_until!);
-      const expectedAt = new Date(sixHoursAgo.getTime() + 3 * 86_400_000);
-      expect(Math.abs(availableAt.getTime() - expectedAt.getTime())).toBeLessThan(1000);
+      expect(new Date(body.artifacts[0].cooling_off_until!).getTime()).toBe(until.getTime());
       expect(body.artifacts_cooling_off).toBe(1);
     });
 
-    it("returns cooling_off_until = null when the cooling off window has elapsed", async () => {
-      const threshold = "000000.000010.000009~";
-      const fourDaysAgo = new Date(Date.now() - 4 * 86_400_000);
-      const deps = baseDeps();
-      deps.getJob = vi.fn().mockResolvedValue(
-        makeJobDetail({
-          cooling_off_days: 3,
-          cooling_off_threshold: threshold,
-          artifactVersionSort: "000000.000010.000010~",
-          artifactCreatedAt: fourDaysAgo, // window has passed
-        }),
+    it("returns cooling_off_until = null when no embargo was recorded", async () => {
+      const body = await getJobBody(
+        makeJobDetail([
+          { version: "3.14.6", version_sort: "000003.000014.000006~", cooling_off_until: null },
+        ]),
       );
-      const app = createTestApp(deps);
 
-      const res = await request(app).get("/admin/v1/jobs/99").set("Accept", "application/json");
-      const body = res.body as {
-        artifacts: Array<{ cooling_off_until: string | null }>;
-        artifacts_cooling_off: number;
-      };
-
-      expect(res.status).toBe(200);
       expect(body.artifacts[0].cooling_off_until).toBeNull();
       expect(body.artifacts_cooling_off).toBe(0);
     });
 
-    it("does not mark non-pending artifacts as cooling off", async () => {
-      const threshold = "000000.000010.000009~";
-      const sixHoursAgo = new Date(Date.now() - 6 * 3600_000);
-      const deps = baseDeps();
-      deps.getJob = vi.fn().mockResolvedValue(
-        makeJobDetail({
-          cooling_off_days: 3,
-          cooling_off_threshold: threshold,
-          artifactVersionSort: "000000.000010.000010~",
-          artifactCreatedAt: sixHoursAgo,
-          artifactStatus: "available", // already downloaded
-        }),
+    it("returns cooling_off_until = null once the window has elapsed", async () => {
+      const body = await getJobBody(
+        makeJobDetail([
+          {
+            version: "3.14.6",
+            version_sort: "000003.000014.000006~",
+            cooling_off_until: new Date(Date.now() - 86_400_000),
+          },
+        ]),
       );
-      const app = createTestApp(deps);
 
-      const res = await request(app).get("/admin/v1/jobs/99").set("Accept", "application/json");
-      const body = res.body as {
-        artifacts: Array<{ cooling_off_until: string | null }>;
-        artifacts_cooling_off: number;
-      };
-
-      expect(res.status).toBe(200);
       expect(body.artifacts[0].cooling_off_until).toBeNull();
       expect(body.artifacts_cooling_off).toBe(0);
+    });
+
+    it("does not let a stale embargo mask a failed artifact", async () => {
+      const body = await getJobBody(
+        makeJobDetail([
+          {
+            version: "3.14.7",
+            version_sort: "000003.000014.000007~",
+            status: "failed",
+            cooling_off_until: new Date(Date.now() + 86_400_000),
+          },
+        ]),
+      );
+
+      expect(body.artifacts[0].cooling_off_until).toBeNull();
+      expect(body.artifacts_cooling_off).toBe(0);
+    });
+
+    // Regression: a release that lands on several version lines at once (python-build-standalone
+    // ships 3.11-3.14 in one dated release) put every line under embargo, but the old display
+    // logic compared each artifact against a package-wide max version_sort and only labelled the
+    // newest line — the older lines rendered as bare "pending".
+    it("marks cooling off artifacts on older version lines, not just the newest", async () => {
+      const until = new Date(Date.now() + 2.75 * 86_400_000);
+      const body = await getJobBody(
+        makeJobDetail([
+          { version: "3.14.7", version_sort: "000003.000014.000007~", cooling_off_until: until },
+          {
+            version: "3.14.6",
+            version_sort: "000003.000014.000006~",
+            status: "available",
+            cooling_off_until: null,
+          },
+          { version: "3.13.15", version_sort: "000003.000013.000015~", cooling_off_until: until },
+          { version: "3.11.15", version_sort: "000003.000011.000015~", cooling_off_until: until },
+        ]),
+      );
+
+      expect(body.artifacts_cooling_off).toBe(3);
+      expect(body.artifacts.map((a) => a.cooling_off_until !== null)).toEqual([
+        true,
+        false,
+        true,
+        true,
+      ]);
+    });
+  });
+
+  describe("GET /admin/v1/packages/:name — cooling off display", () => {
+    it("shows an embargoed pending artifact as cooling off, with its available-at date", async () => {
+      const until = new Date(Date.now() + 2 * 86_400_000);
+      const res = await request(createTestApp(depsFor([artifact({ cooling_off_until: until })])))
+        .get("/admin/v1/packages/python")
+        .set("Accept", "text/html");
+
+      expect(res.status).toBe(200);
+      expect(res.text).toContain("cooling-off");
+      expect(res.text).toContain(`title="available ${until.toISOString()}"`);
+      expect(res.text).not.toContain(">○ pending<");
+    });
+
+    it("leaves a pending artifact with no embargo as pending", async () => {
+      const res = await request(createTestApp(depsFor([artifact()])))
+        .get("/admin/v1/packages/python")
+        .set("Accept", "text/html");
+
+      expect(res.status).toBe(200);
+      expect(res.text).toContain("○ pending");
+      expect(res.text).not.toContain('class="status-cooling-off"');
+    });
+
+    it("leaves a pending artifact whose embargo has elapsed as pending", async () => {
+      const res = await request(
+        createTestApp(
+          depsFor([artifact({ cooling_off_until: new Date(Date.now() - 86_400_000) })]),
+        ),
+      )
+        .get("/admin/v1/packages/python")
+        .set("Accept", "text/html");
+
+      expect(res.status).toBe(200);
+      expect(res.text).toContain("○ pending");
+      expect(res.text).not.toContain('class="status-cooling-off"');
+    });
+
+    it("does not let a stale embargo mask a failed artifact", async () => {
+      const res = await request(
+        createTestApp(
+          depsFor([
+            artifact({ status: "failed", cooling_off_until: new Date(Date.now() + 86_400_000) }),
+          ]),
+        ),
+      )
+        .get("/admin/v1/packages/python")
+        .set("Accept", "text/html");
+
+      expect(res.status).toBe(200);
+      expect(res.text).toContain("✗ failed");
+      expect(res.text).not.toContain('class="status-cooling-off"');
+    });
+  });
+
+  describe("GET /admin/v1/packages/:name — CVE-blocked display", () => {
+    async function fetchPage(deps: AdminRouteDeps) {
+      const res = await request(createTestApp(deps))
+        .get("/admin/v1/packages/python")
+        .set("Accept", "text/html");
+      expect(res.status).toBe(200);
+      return res.text;
+    }
+
+    it("badges a blocked version and links it to the CVE list", async () => {
+      const html = await fetchPage(
+        depsFor([artifact({ status: "available" })], badges({ blocked: true })),
+      );
+
+      expect(html).toContain('class="badge badge-blocked"');
+      expect(html).toContain("/admin/v1/vulns?product=python&version=3.13.15");
+    });
+
+    it("dims an available artifact of a blocked version without hiding its status", async () => {
+      const html = await fetchPage(
+        depsFor([artifact({ status: "available" })], badges({ blocked: true })),
+      );
+
+      expect(html).toContain('class="status-available cell-gated"');
+      expect(html).toContain("✓ available");
+      expect(html).toContain("blocked: downloads return 403");
+    });
+
+    it("does not dim artifacts that were never fetched", async () => {
+      const html = await fetchPage(
+        depsFor([artifact({ status: "pending" })], badges({ blocked: true })),
+      );
+
+      expect(html).toContain("○ pending");
+      expect(html).not.toContain('cell-gated"');
+    });
+
+    // The count badge and the download gate are different predicates: fail-open range matches
+    // count but do not gate, so red CVE styling must not imply blocked on its own.
+    it("does not mark a version blocked just because it has critical CVEs", async () => {
+      const html = await fetchPage(
+        depsFor(
+          [artifact({ status: "available" })],
+          badges({ total: 3, critical: 2, high: 1, blocked: false }),
+        ),
+      );
+
+      expect(html).toContain("3 CVE");
+      expect(html).not.toContain('class="badge badge-blocked"');
+      expect(html).not.toContain('cell-gated"');
+    });
+
+    it("renders no vuln badges when the package is not tracked", async () => {
+      const html = await fetchPage(depsFor([artifact({ status: "available" })]));
+
+      expect(html).not.toContain('class="badge badge-blocked"');
+      expect(html).not.toContain("CVE<");
     });
   });
 

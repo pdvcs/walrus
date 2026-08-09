@@ -15,6 +15,7 @@ import { sortVersionsDesc } from "../src/common/version-utils.js";
 import { PackageConfig } from "../src/types/package-config.js";
 import { DiscoveredVersion } from "../src/discovery/types.js";
 import { computeVulnInput } from "../src/services/vuln-config.js";
+import { selectRetentionWindow } from "../src/common/retention-window.js";
 
 const PACKAGES_DIR = path.join(process.cwd(), "packages");
 const SPOT_CHECK_PLATFORM = { os: "linux", arch: "x86-64" } as const;
@@ -36,35 +37,25 @@ interface RetentionPlan {
   pruned: string[];
 }
 
+/**
+ * Reuses the sync service's own window selection rather than reimplementing it, so what this
+ * previews is exactly what a sync would keep — including the release-embargo exemption, which a
+ * second copy of the rule would inevitably drift from.
+ *
+ * There is no DB here, so the cooling-off threshold is null: sources that expose an upstream
+ * release date (the ones cooling off is meaningful for) are unaffected, while for date-less
+ * sources this reports the post-bootstrap steady state.
+ */
 function computeRetentionPlan(versions: DiscoveredVersion[], config: PackageConfig): RetentionPlan {
-  const byGroup = new Map<string, string[]>();
+  const keptVersions = new Set(
+    selectRetentionWindow(versions, config.retention).map((v) => v.version),
+  );
 
-  for (const v of versions) {
-    const group = v.versionGroup;
-    if (!byGroup.has(group)) byGroup.set(group, []);
-    byGroup.get(group)!.push(v.version);
-  }
-
-  // Sort groups newest-first using the same numeric sort applied to versions
-  const sortedGroups = sortVersionsDesc([...byGroup.keys()]);
-
-  const kept: string[] = [];
-  const pruned: string[] = [];
-  const limit = config.retention.versions_per_group;
-  const groupsToKeep = config.retention.groups_to_keep;
-
-  for (let i = 0; i < sortedGroups.length; i++) {
-    const group = sortedGroups[i];
-    const sorted = sortVersionsDesc(byGroup.get(group)!);
-    if (groupsToKeep !== undefined && i >= groupsToKeep) {
-      pruned.push(...sorted);
-    } else {
-      kept.push(...sorted.slice(0, limit));
-      pruned.push(...sorted.slice(limit));
-    }
-  }
-
-  return { kept, pruned };
+  const allVersions = sortVersionsDesc(versions.map((v) => v.version));
+  return {
+    kept: allVersions.filter((v) => keptVersions.has(v)),
+    pruned: allVersions.filter((v) => !keptVersions.has(v)),
+  };
 }
 
 // ── HEAD request helper ───────────────────────────────────────────────────────

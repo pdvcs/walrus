@@ -56,11 +56,13 @@ export class RetentionService {
       const droppedGroups = groups.slice(groupsToKeep);
 
       for (const group of droppedGroups) {
+        // The whole group is going, so a live embargo earns no reprieve.
         const allVersions = await this.versionsRepo.listVersionsOlderThanInGroup(
           this.pool,
           packageName,
           group,
           0,
+          false,
         );
         prunable.push(...allVersions);
       }

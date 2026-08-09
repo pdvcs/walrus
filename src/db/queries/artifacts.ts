@@ -11,8 +11,9 @@ export async function insertArtifact(
   const { rows } = await pool.query<ArtifactRow>(
     `INSERT INTO artifacts (version_id, os, arch, filename, upstream_url, sync_job_id, cooling_off_until)
      VALUES ($1, $2, $3, $4, $5, $6, $7)
-     ON CONFLICT (version_id, os, arch) DO UPDATE
-       SET sync_job_id = EXCLUDED.sync_job_id
+    ON CONFLICT (version_id, os, arch) DO UPDATE
+       SET sync_job_id = EXCLUDED.sync_job_id,
+           cooling_off_until = EXCLUDED.cooling_off_until
        WHERE artifacts.status IN ('pending', 'failed')
      RETURNING *`,
     [

@@ -236,6 +236,59 @@ describe("SyncService", () => {
     expect(insertedVersions).not.toContain("0.6.2");
   });
 
+  // Regression: with versions_per_group = 2 and the newest release still cooling off, the window
+  // used to keep {3.14.7 embargoed, 3.14.6}, leaving exactly one downloadable version. The
+  // embargoed release must be retained on top of the quota, not against it.
+  it("keeps versions_per_group servable versions plus any still cooling off", async () => {
+    const pkgWithCoolingOff: PackageConfig = {
+      ...pkg,
+      retention: { versions_per_group: 2, cooling_off_days: 3 },
+    };
+
+    const justReleased = new Date(Date.now() - 86_400_000); // 1 day ago — inside a 3-day embargo
+    const old = new Date(Date.now() - 30 * 86_400_000);
+
+    const deps = {
+      discoverVersions: vi.fn().mockResolvedValue([
+        discovered("0.10.10", "0.10", justReleased), // embargoed
+        discovered("0.10.9", "0.10", old),
+        discovered("0.10.8", "0.10", old),
+        discovered("0.10.7", "0.10", old), // beyond the quota
+      ]),
+      upsertPackage: vi.fn().mockResolvedValue({}),
+      createSyncJob: vi.fn().mockResolvedValue({ id: 400 }),
+      updateSyncJob: vi.fn().mockResolvedValue({}),
+      insertVersion: vi.fn().mockResolvedValue({ id: 1 }),
+      insertArtifact: vi
+        .fn()
+        .mockResolvedValue({ id: 1, status: "pending", cooling_off_until: null }),
+      updateArtifactStatus: vi.fn().mockResolvedValue({}),
+      incrementJobCounters: vi.fn().mockResolvedValue(undefined),
+      downloadArtifact: vi.fn().mockResolvedValue({ status: "available", attempts: 1 }),
+      enforceRetention: vi
+        .fn()
+        .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
+      getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+    };
+
+    const service = new SyncService(
+      {} as Pool,
+      pkgWithCoolingOff,
+      {} as DownloadService,
+      {} as RetentionService,
+      { deps },
+    );
+
+    const result = await service.run();
+
+    const kept = vi
+      .mocked(deps.insertVersion)
+      .mock.calls.map((call) => (call[1] as { version: string }).version);
+
+    expect(kept).toEqual(["0.10.10", "0.10.9", "0.10.8"]);
+    expect(result.versionsFound).toBe(3);
+  });
+
   it("skips binary download for artifacts within the cooling off window", async () => {
     const pkgWithCoolingOff: PackageConfig = {
       ...pkg,

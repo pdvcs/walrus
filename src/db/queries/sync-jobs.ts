@@ -13,6 +13,7 @@ export interface ArtifactSummary {
   download_started_at: Date | null;
   download_completed_at: Date | null;
   created_at: Date;
+  cooling_off_until: Date | null;
 }
 
 export interface JobDetail {
@@ -20,8 +21,6 @@ export interface JobDetail {
   artifacts: ArtifactSummary[];
   elapsed_ms: number;
   cooling_off_days?: number;
-  /** Highest version_sort with an available artifact at display time; null = no baseline yet. */
-  cooling_off_threshold: string | null;
 }
 
 export async function createSyncJob(
@@ -139,7 +138,8 @@ export async function getJobWithArtifacts(pool: Pool, id: number): Promise<JobDe
   const artifactRes = await pool.query<ArtifactSummary>(
     `SELECT a.id, v.version, v.version_sort, a.os, a.arch, a.filename,
             a.status, a.error_message,
-            a.download_started_at, a.download_completed_at, a.created_at
+            a.download_started_at, a.download_completed_at, a.created_at,
+            a.cooling_off_until
      FROM artifacts a
      JOIN versions v ON a.version_id = v.id
      WHERE a.sync_job_id = $1
@@ -150,7 +150,7 @@ export async function getJobWithArtifacts(pool: Pool, id: number): Promise<JobDe
   const endMs = job.completed_at ? job.completed_at.getTime() : Date.now();
   const elapsed_ms = endMs - job.started_at.getTime();
 
-  return { job, artifacts: artifactRes.rows, elapsed_ms, cooling_off_threshold: null };
+  return { job, artifacts: artifactRes.rows, elapsed_ms };
 }
 
 export async function listSyncJobs(pool: Pool, opts: ListSyncJobsOpts = {}): Promise<SyncJobRow[]> {

@@ -2,7 +2,7 @@ import { Router } from "express";
 import { buildArtifactPath } from "../storage/types.js";
 import { ArtifactRow, PackageRow, SyncJobRow, VersionRow } from "../types/db.js";
 import { FailedArtifactRow, PendingArtifactRow } from "../db/queries/artifacts.js";
-import { ArtifactSummary, JobDetail } from "../db/queries/sync-jobs.js";
+import { JobDetail } from "../db/queries/sync-jobs.js";
 import { DownloadResult } from "../services/download-service.js";
 import { SyncRunOptions, SyncRunResult } from "../services/sync-service.js";
 import TOML from "@iarna/toml";
@@ -34,6 +34,18 @@ export interface AdminRouteDeps {
     triggerType: "admin";
   }) => Promise<Array<{ package: string; result: SyncRunResult }>>;
   startSyncAsync: (packageName: string, opts: { triggerType: "admin" }) => Promise<number>;
+  startHistoricalBackfill?: (
+    packageName: string,
+    opts: {
+      triggerType: "historical-backfill";
+      discovery: {
+        releasePage: number;
+        maxReleases: number;
+        versionGroups: string[];
+        historical: true;
+      };
+    },
+  ) => Promise<number>;
   getArtifactByPackageVersionPlatform: (
     packageName: string,
     version: string,
@@ -83,14 +95,21 @@ export interface AdminRouteDeps {
    */
   getPackageVulnBadges: (
     name: string,
-  ) => Promise<{ tracked: boolean; byVersion: Record<string, VulnBadgeCounts> }>;
+  ) => Promise<{ tracked: boolean; byVersion: Record<string, VersionVulnBadge> }>;
 }
 
-export interface VulnBadgeCounts {
+export interface VersionVulnBadge {
   total: number;
   critical: number;
   high: number;
   kev: number;
+  /**
+   * True when GET /download returns 403 for this version. This is the gate itself
+   * (getVersionAvailabilityStatus), not a threshold over the counts above — the counts include
+   * fail-open range matches that do not gate, and the gate keys off cvss_v3_score rather than the
+   * severity label. Deriving one from the other would misreport in both directions.
+   */
+  blocked: boolean;
 }
 
 export function createAdminRouter(deps: AdminRouteDeps): Router {
@@ -149,6 +168,57 @@ export function createAdminRouter(deps: AdminRouteDeps): Router {
         jobs.push({ package: packageName, job_id: jobId, status_url: `/admin/v1/jobs/${jobId}` });
       }
       res.status(202).json({ jobs });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.post("/historical-backfill/:package", async (req, res, next) => {
+    try {
+      const packageName = req.params.package;
+      if (!deps.listConfiguredPackages().includes(packageName)) {
+        res.status(404).json({ error: `Unknown package: ${packageName}` });
+        return;
+      }
+      if ((await deps.isPackageEnabled(packageName)) === false) {
+        res.status(409).json({ error: `Package '${packageName}' is disabled` });
+        return;
+      }
+
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const groups = parseVersionGroups(body.version_groups);
+      const releasePage = parseBoundedInteger(body.release_page, 2, 1, 1000);
+      const maxReleases = parseBoundedInteger(body.max_releases, 20, 1, 100);
+      if (groups.length === 0) {
+        res.status(400).json({ error: "version_groups must contain at least one group" });
+        return;
+      }
+      if (releasePage === null || maxReleases === null) {
+        res.status(400).json({ error: "release_page and max_releases must be bounded integers" });
+        return;
+      }
+
+      if (!deps.startHistoricalBackfill) {
+        res.status(501).json({ error: "Historical backfill is not configured" });
+        return;
+      }
+      const jobId = await deps.startHistoricalBackfill(packageName, {
+        triggerType: "historical-backfill",
+        discovery: {
+          releasePage,
+          maxReleases,
+          versionGroups: groups,
+          historical: true,
+        },
+      });
+      res.status(202).json({
+        package: packageName,
+        job_id: jobId,
+        status_url: `/admin/v1/jobs/${jobId}`,
+        version_groups: groups,
+        release_page: releasePage,
+        max_releases: maxReleases,
+      });
     } catch (err) {
       next(err);
     }
@@ -650,21 +720,28 @@ export function createAdminRouter(deps: AdminRouteDeps): Router {
   return router;
 }
 
-function coolingOffUntil(
-  artifact: ArtifactSummary,
-  coolingOffDays: number | undefined,
-  threshold: string | null,
-): Date | null {
-  if (!coolingOffDays || artifact.status !== "pending" || threshold === null) return null;
-  if (artifact.version_sort <= threshold) return null;
-  const until = new Date(artifact.created_at.getTime() + coolingOffDays * 86_400_000);
-  return until > new Date() ? until : null;
+/**
+ * An artifact is displayed as cooling off when the release embargo recorded at sync time has not
+ * yet elapsed. This is the same value `GET /download` enforces, so the admin views and the download
+ * endpoint can never disagree. Failed/removed artifacts keep their own status — a stale embargo
+ * date must not mask a failure.
+ *
+ * Structurally typed so the job view (ArtifactSummary) and the package view (ArtifactRow) share
+ * one rule.
+ */
+function coolingOffUntil(artifact: {
+  status: string;
+  cooling_off_until: Date | null;
+}): Date | null {
+  if (artifact.status === "failed" || artifact.status === "removed") return null;
+  if (artifact.cooling_off_until === null || artifact.cooling_off_until <= new Date()) return null;
+  return artifact.cooling_off_until;
 }
 
 function buildJobResponse(detail: JobDetail): Record<string, unknown> {
-  const { job, artifacts, elapsed_ms, cooling_off_days, cooling_off_threshold } = detail;
+  const { job, artifacts, elapsed_ms, cooling_off_days } = detail;
   const enrichedArtifacts = artifacts.map((a) => {
-    const until = coolingOffUntil(a, cooling_off_days, cooling_off_threshold);
+    const until = coolingOffUntil(a);
     return { ...a, cooling_off_until: until?.toISOString() ?? null };
   });
   const artifacts_cooling_off = enrichedArtifacts.filter(
@@ -878,6 +955,8 @@ export function renderSharedHtml(
     .badge-vuln-crit { background: #fee2e2; color: #b91c1c; }
     .badge-vuln-high { background: #fef3c7; color: #92400e; }
     .badge-vuln-none { background: #f3f4f6; color: #6b7280; }
+    .badge-blocked   { background: #b91c1c; color: #fff; }
+    .cell-gated      { opacity: 0.45; }
     .badge-kev      { background: #7f1d1d; color: #fff; }
     table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; margin-top: 12px; }
     th { background: #f9fafb; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7280; padding: 9px 12px; text-align: left; border-bottom: 1px solid #e5e7eb; }
@@ -895,6 +974,7 @@ export function renderSharedHtml(
     .status-failed      { color: #b91c1c; font-weight: 600; }
     .status-downloading { color: #1d4ed8; font-weight: 600; }
     .status-pending     { color: #92400e; font-weight: 600; }
+    .status-cooling-off { color: #6d28d9; font-weight: 600; }
     .status-removed     { color: #9ca3af; }
     .group-section { margin-top: 28px; }
     .group-header { display: flex; align-items: center; gap: 10px; padding-bottom: 8px; border-bottom: 2px solid #e5e7eb; }
@@ -1201,7 +1281,7 @@ function renderPackageDetailPage(
   pkg: PackageRow | null,
   lastJob: SyncJobRow | null,
   groups: GroupDetail[],
-  vulnBadges: { tracked: boolean; byVersion: Record<string, VulnBadgeCounts> },
+  vulnBadges: { tracked: boolean; byVersion: Record<string, VersionVulnBadge> },
 ): string {
   const esc = escHtml;
   const displayName = pkg ? esc(pkg.display_name) : esc(packageName);
@@ -1297,10 +1377,14 @@ function renderPackageDetailPage(
   return renderSharedHtml(displayName, "packages", body, scripts);
 }
 
+function vulnsHref(packageName: string, version: string): string {
+  return `/admin/v1/vulns?product=${encodeURIComponent(packageName)}&version=${encodeURIComponent(version)}`;
+}
+
 function renderVulnBadge(
   packageName: string,
   version: string,
-  counts: VulnBadgeCounts | undefined,
+  counts: VersionVulnBadge | undefined,
 ): string {
   if (!counts || counts.total === 0) return "";
   const cls =
@@ -1310,14 +1394,26 @@ function renderVulnBadge(
         ? "badge-vuln-high"
         : "badge-vuln-none";
   const label = counts.kev > 0 ? `${counts.total} CVE · KEV` : `${counts.total} CVE`;
-  const href = `/admin/v1/vulns?product=${encodeURIComponent(packageName)}&version=${encodeURIComponent(version)}`;
-  return ` <a href="${href}" title="${counts.critical} critical, ${counts.high} high${counts.kev > 0 ? `, ${counts.kev} KEV` : ""}" class="badge ${cls}" style="text-decoration:none">${label}</a>`;
+  return ` <a href="${vulnsHref(packageName, version)}" title="${counts.critical} critical, ${counts.high} high${counts.kev > 0 ? `, ${counts.kev} KEV` : ""}" class="badge ${cls}" style="text-decoration:none">${label}</a>`;
+}
+
+/**
+ * Links to the CVE list rather than just asserting "blocked" — the reason the gate fired must be
+ * one click away, otherwise the badge is a claim with no evidence behind it.
+ */
+function renderBlockedBadge(
+  packageName: string,
+  version: string,
+  badge: VersionVulnBadge | undefined,
+): string {
+  if (!badge?.blocked) return "";
+  return ` <a href="${vulnsHref(packageName, version)}" title="Downloads return 403 — critical CVE affects this version" class="badge badge-blocked" style="text-decoration:none">blocked</a>`;
 }
 
 function renderGroupSection(
   packageName: string,
   g: GroupDetail,
-  vulnBadges: { tracked: boolean; byVersion: Record<string, VulnBadgeCounts> },
+  vulnBadges: { tracked: boolean; byVersion: Record<string, VersionVulnBadge> },
 ): string {
   const esc = escHtml;
   const hasLts = g.versions.some((v) => v.isLts);
@@ -1339,6 +1435,8 @@ function renderGroupSection(
   const platHeaders = platforms.map((p) => `<th>${esc(p)}</th>`).join("");
   const rows = g.versions
     .map((v) => {
+      const vuln = vulnBadges.tracked ? vulnBadges.byVersion[v.version] : undefined;
+      const blocked = vuln?.blocked ?? false;
       const byPlatform = new Map(v.artifacts.map((a) => [`${a.os}/${a.arch}`, a]));
       const cells = platforms
         .map((p) => {
@@ -1349,21 +1447,33 @@ function renderGroupSection(
             failed: "✗",
             downloading: "↓",
             pending: "○",
+            "cooling-off": "◷",
             removed: "–",
           };
-          const cls = `status-${a.status}`;
+          // An artifact inside its release embargo is waiting on purpose, not stuck mid-pipeline.
+          const cooling = coolingOffUntil(a);
+          const display = cooling ? "cooling-off" : a.status;
+          // The bytes really are in storage and retention/re-download still act on them, so keep
+          // the status readable and only dim it — replacing it with "blocked" would erase the
+          // difference between "held back" and "never fetched".
+          const gated = blocked && display === "available";
+          const notes: string[] = [];
+          if (cooling) notes.push(`available ${cooling.toISOString()}`);
+          if (gated) notes.push("blocked: downloads return 403 — critical CVE");
+          const title = notes.length > 0 ? ` title="${esc(notes.join(" · "))}"` : "";
+          const cls = gated ? `status-${display} cell-gated` : `status-${display}`;
           const [os, arch] = p.split("/");
           const redownloadBtn =
             a.status === "failed" || a.status === "available"
               ? ` <button class="btn btn-sm btn-secondary" title="Re-download" onclick="redownload('${esc(packageName)}','${esc(v.version)}','${esc(os)}','${esc(arch)}')">↺</button>`
               : "";
-          return `<td><span class="${cls}">${icon[a.status] ?? "?"} ${esc(a.status)}</span>${redownloadBtn}</td>`;
+          return `<td><span class="${cls}"${title}>${icon[display] ?? "?"} ${esc(display)}</span>${redownloadBtn}</td>`;
         })
         .join("");
-      const badge = vulnBadges.tracked
-        ? renderVulnBadge(packageName, v.version, vulnBadges.byVersion[v.version])
-        : "";
-      return `<tr><td><strong>${esc(v.version)}</strong>${badge}</td>${cells}</tr>`;
+      const badges =
+        renderBlockedBadge(packageName, v.version, vuln) +
+        renderVulnBadge(packageName, v.version, vuln);
+      return `<tr><td><strong>${esc(v.version)}</strong>${badges}</td>${cells}</tr>`;
     })
     .join("");
 
@@ -1451,6 +1561,28 @@ function optionalInteger(value: unknown): number | undefined {
   const parsed = Number(str);
   if (!Number.isInteger(parsed) || parsed <= 0) return undefined;
   return parsed;
+}
+
+function parseVersionGroups(value: unknown): string[] {
+  const values = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
+  return [
+    ...new Set(
+      values
+        .filter((v): v is string => typeof v === "string")
+        .map((v) => v.trim())
+        .filter(Boolean),
+    ),
+  ];
+}
+
+function parseBoundedInteger(
+  value: unknown,
+  defaultValue: number,
+  min: number,
+  max: number,
+): number | null {
+  const parsed = value === undefined ? defaultValue : Number(value);
+  return Number.isInteger(parsed) && parsed >= min && parsed <= max ? parsed : null;
 }
 
 function optionalStatus(value: unknown): SyncJobRow["status"] | undefined {

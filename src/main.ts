@@ -21,7 +21,7 @@ import { createPackageVulnsRouter } from "./routes/package-vulns.js";
 import { createAdminVulnsRouter } from "./routes/admin-vulns.js";
 import { createApiDocsRouter } from "./routes/api-docs.js";
 import { isPackageTracked } from "./db/queries/package-aliases.js";
-import { crossReferenceVersions } from "./services/vuln-service.js";
+import { crossReferenceVersions, getVersionAvailabilityStatus } from "./services/vuln-service.js";
 import { queryVulns, VulnQueryDeps } from "./services/vuln-query.js";
 import { getVulnHints } from "./services/vuln-hints.js";
 import { insertAdminAction } from "./db/queries/admin-actions.js";
@@ -45,7 +45,6 @@ import {
 import {
   deleteAllVersionsForPackage,
   deleteVersionGroup,
-  getMaxAvailableVersionSort,
   getVersion,
   listAllArtifactsForPackage,
   listArtifactsInGroup,
@@ -142,10 +141,7 @@ async function runSyncAll(
   return results;
 }
 
-async function startSyncAsync(
-  packageName: string,
-  opts: { triggerType: "admin" },
-): Promise<number> {
+async function startSyncAsync(packageName: string, opts: SyncRunOptions): Promise<number> {
   const service = syncServices.get(packageName);
   if (!service) throw new Error(`Unknown package: ${packageName}`);
   return service.startAsync(opts);
@@ -309,6 +305,7 @@ export function createApp(): express.Express {
       runSync: (packageName, opts) => runSync(packageName, opts),
       runSyncAll: (opts) => runSyncAll(opts),
       startSyncAsync,
+      startHistoricalBackfill: (packageName, opts) => startSyncAsync(packageName, opts),
       getArtifactByPackageVersionPlatform: async (packageName, version, os, arch) => {
         const versionRow = await getVersion(pool, packageName, version);
         if (!versionRow) return null;
@@ -353,14 +350,9 @@ export function createApp(): express.Express {
         const pkgConfig = packageRegistry.configs.find(
           (e) => e.config.name === detail.job.package_name,
         )?.config;
-        const cooling_off_threshold = await getMaxAvailableVersionSort(
-          pool,
-          detail.job.package_name,
-        );
         return {
           ...detail,
           cooling_off_days: pkgConfig?.retention.cooling_off_days,
-          cooling_off_threshold,
         };
       },
       removeAllVersionGroups: async (packageName) => {
@@ -434,7 +426,7 @@ export function createApp(): express.Express {
         );
         const byVersion: Record<
           string,
-          { total: number; critical: number; high: number; kev: number }
+          { total: number; critical: number; high: number; kev: number; blocked: boolean }
         > = {};
         for (const v of perVersion) {
           byVersion[v.version] = {
@@ -442,6 +434,8 @@ export function createApp(): express.Express {
             critical: v.counts.critical,
             high: v.counts.high,
             kev: v.counts.kev,
+            // Same predicate the download route enforces, over the affects rows already loaded.
+            blocked: getVersionAvailabilityStatus(v.version, affects) === "blocked",
           };
         }
         return { tracked: true, byVersion };

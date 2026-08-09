@@ -115,9 +115,10 @@ describe("RetentionService", () => {
     const result = await service.enforceRetention("uv", 2, false, 3);
 
     expect(result.versionsPruned).toBe(6); // 3 + 2 + 1
-    // Dropped groups called with offset=0; kept groups called with offset=versionsPerGroup
-    expect(listVersionsOlderThanInGroup).toHaveBeenNthCalledWith(1, pool, "uv", "0.7", 0);
-    expect(listVersionsOlderThanInGroup).toHaveBeenNthCalledWith(2, pool, "uv", "0.6", 0);
+    // Dropped groups go wholesale: offset=0 and no embargo exemption. Kept groups trim to
+    // offset=versionsPerGroup with embargoed versions exempt.
+    expect(listVersionsOlderThanInGroup).toHaveBeenNthCalledWith(1, pool, "uv", "0.7", 0, false);
+    expect(listVersionsOlderThanInGroup).toHaveBeenNthCalledWith(2, pool, "uv", "0.6", 0, false);
     expect(listVersionsOlderThanInGroup).toHaveBeenNthCalledWith(3, pool, "uv", "0.10", 2);
   });
 
