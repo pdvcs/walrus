@@ -355,6 +355,19 @@ describe("admin routes", () => {
       expect(body.artifacts_cooling_off).toBe(1);
     });
 
+    it("renders the shared admin navigation on the HTML detail page", async () => {
+      const deps = baseDeps();
+      deps.getJob = vi.fn().mockResolvedValue(makeJobDetail([]));
+      const res = await request(createTestApp(deps))
+        .get("/admin/v1/jobs/99")
+        .set("Accept", "text/html");
+
+      expect(res.status).toBe(200);
+      expect(res.text).toContain('<a href="/admin/v1/jobs" class="active">Jobs</a>');
+      expect(res.text).toContain('<a href="/admin/v1/">Packages</a>');
+      expect(res.text).toContain('<a href="/admin/v1/validate">Validate TOML</a>');
+    });
+
     it("returns cooling_off_until = null when no embargo was recorded", async () => {
       const body = await getJobBody(
         makeJobDetail([

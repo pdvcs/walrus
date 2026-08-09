@@ -782,7 +782,13 @@ function renderJobStatusPage(detail: JobDetail): string {
   <title>${title}</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f5f5; color: #222; padding: 24px; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f5f5; color: #222; }
+    .nav { display: flex; align-items: center; gap: 24px; background: #fff; border-bottom: 1px solid #e5e7eb; padding: 12px 24px; margin-bottom: 24px; }
+    .nav .brand { font-weight: 800; font-size: 1.05rem; color: #111; }
+    .nav a { font-size: 0.9rem; color: #6b7280; text-decoration: none; }
+    .nav a:hover { color: #111; }
+    .nav a.active { color: #111; font-weight: 700; }
+    .job-content { padding: 0 24px 24px; }
     h1 { font-size: 1.4rem; margin-bottom: 16px; }
     .badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 0.8rem; font-weight: 600; text-transform: uppercase; }
     .badge-running { background: #dbeafe; color: #1d4ed8; }
@@ -812,6 +818,8 @@ function renderJobStatusPage(detail: JobDetail): string {
   </style>
 </head>
 <body>
+  ${renderAdminNav("jobs")}
+  <div class="job-content">
   <h1 id="page-title">${title}</h1>
   <div id="status-badge"></div>
   <div class="cards" id="cards"></div>
@@ -900,6 +908,7 @@ function renderJobStatusPage(detail: JobDetail): string {
       pollTimer = setInterval(poll, 2000);
     }
   </script>
+  </div>
 </body>
 </html>`;
 }
@@ -986,15 +995,7 @@ export function renderSharedHtml(
   </style>
 </head>
 <body>
-  <nav class="nav">
-    <span class="brand">Walrus</span>
-    <a href="/admin/v1/"${activeNav === "packages" ? ' class="active"' : ""}>Packages</a>
-    <a href="/admin/v1/jobs"${activeNav === "jobs" ? ' class="active"' : ""}>Jobs</a>
-    <a href="/admin/v1/validate"${activeNav === "validate" ? ' class="active"' : ""}>Validate TOML</a>
-    <a href="/admin/v1/vulns"${activeNav === "vulns" ? ' class="active"' : ""}>Vulnerabilities</a>
-    <a href="/api">API Docs</a>
-    <a href="/health">Health</a>
-  </nav>
+  ${renderAdminNav(activeNav)}
   <div class="wrap">
     ${body}
   </div>
@@ -1003,6 +1004,18 @@ ${scripts}
 </script>${rawTail}
 </body>
 </html>`;
+}
+
+function renderAdminNav(activeNav: "packages" | "jobs" | "validate" | "vulns"): string {
+  return `<nav class="nav">
+    <span class="brand">Walrus</span>
+    <a href="/admin/v1/"${activeNav === "packages" ? ' class="active"' : ""}>Packages</a>
+    <a href="/admin/v1/jobs"${activeNav === "jobs" ? ' class="active"' : ""}>Jobs</a>
+    <a href="/admin/v1/validate"${activeNav === "validate" ? ' class="active"' : ""}>Validate TOML</a>
+    <a href="/admin/v1/vulns"${activeNav === "vulns" ? ' class="active"' : ""}>Vulnerabilities</a>
+    <a href="/api">API Docs</a>
+    <a href="/health">Health</a>
+  </nav>`;
 }
 
 function computeRetentionPlan(
