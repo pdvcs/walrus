@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseSince } from "../../scripts/vuln-backfill.js";
+import { parsePackage, parseSince } from "../../scripts/vuln-backfill.js";
 import { buildPublicationWindows } from "../../src/vuln/sync/nvd-sync.js";
 
 describe("vulnerability backfill date handling", () => {
@@ -9,6 +9,15 @@ describe("vulnerability backfill date handling", () => {
     expect(() => parseSince(["--since"])).toThrow(/requires/);
     expect(() => parseSince(["--since", "2025-02-30"])).toThrow(/Invalid/);
     expect(() => parseSince(["--since", "2999-01-01"])).toThrow(/future/);
+  });
+
+  it("parses --package and rejects a missing value", () => {
+    expect(parsePackage([])).toBeUndefined();
+    expect(parsePackage(["--package", "terraform"])).toBe("terraform");
+    expect(parsePackage(["--since", "2025-01-01", "--package", "terraform"])).toBe("terraform");
+    expect(() => parsePackage(["--package"])).toThrow(/requires/);
+    // A following flag is not a package name.
+    expect(() => parsePackage(["--package", "--since"])).toThrow(/requires/);
   });
 
   it("builds one paired publication window for a short range", () => {

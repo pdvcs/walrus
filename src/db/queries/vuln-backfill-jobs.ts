@@ -6,6 +6,8 @@ export interface VulnBackfillJobRow {
   id: string;
   status: VulnBackfillJobStatus;
   since_date: string | null;
+  /** null = every tracked CPE pair; otherwise the single package to backfill. */
+  package_name: string | null;
   cpe_pairs_total: number;
   cpe_pairs_done: number;
   error_message: string | null;
@@ -18,10 +20,11 @@ export interface VulnBackfillJobRow {
 export async function createVulnBackfillJob(
   q: Queryable,
   since?: string,
+  packageName?: string,
 ): Promise<VulnBackfillJobRow> {
   const { rows } = await q.query<VulnBackfillJobRow>(
-    `INSERT INTO vuln_backfill_jobs (since_date) VALUES ($1) RETURNING *`,
-    [since ?? null],
+    `INSERT INTO vuln_backfill_jobs (since_date, package_name) VALUES ($1, $2) RETURNING *`,
+    [since ?? null, packageName ?? null],
   );
   return rows[0];
 }

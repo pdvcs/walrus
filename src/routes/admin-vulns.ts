@@ -17,6 +17,7 @@ export interface AdminVulnsRouteDeps {
   getHints?: () => Promise<string[]>;
   startVulnBackfill: (
     since?: string,
+    packageName?: string,
   ) => Promise<{ job?: VulnBackfillJobRow; alreadyRunning?: boolean }>;
   getVulnBackfill: (id: string) => Promise<VulnBackfillJobRow | null>;
 }
@@ -89,21 +90,30 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
 
   router.post("/vuln-backfill", async (req, res, next) => {
     try {
-      const body = (req.body ?? {}) as { since?: unknown };
+      const body = (req.body ?? {}) as { since?: unknown; package?: unknown };
       const since = optionalString(body.since);
+      const packageName = optionalString(body.package);
       if (since) buildPublicationWindows(since);
-      const result = await deps.startVulnBackfill(since);
+      const result = await deps.startVulnBackfill(since, packageName);
       if (result.alreadyRunning)
         return void res
           .status(409)
           .json({ code: "already_running", ...(result.job ? { job: result.job } : {}) });
       if (!result.job) throw new Error("Backfill launcher did not return a job");
-      await deps.logAdminAction({ action: "vuln-backfill", since, job_id: result.job.id });
+      await deps.logAdminAction({
+        action: "vuln-backfill",
+        since,
+        package: packageName,
+        job_id: result.job.id,
+      });
       res
         .status(202)
         .json({ job: result.job, status_url: `/admin/v1/vuln-backfill/${result.job.id}` });
     } catch (error) {
-      if (error instanceof Error && error.message.includes("since"))
+      if (
+        error instanceof Error &&
+        (error.message.includes("since") || error.message.includes("No CPE pairs"))
+      )
         return void res.status(400).json({ error: error.message });
       next(error);
     }

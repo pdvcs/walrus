@@ -19,6 +19,7 @@ export interface InternalRouteDeps {
   vulnHints?: () => Promise<string[]>;
   startVulnBackfill?: (
     since?: string,
+    packageName?: string,
   ) => Promise<{ job?: VulnBackfillJobRow; alreadyRunning?: boolean }>;
   getVulnBackfill?: (id: string) => Promise<VulnBackfillJobRow | null>;
 }
@@ -73,10 +74,13 @@ export function createInternalRouter(deps: InternalRouteDeps): Router {
     try {
       if (!deps.startVulnBackfill)
         return void res.status(503).json({ error: "Backfill launcher unavailable" });
-      const body = (req.body ?? {}) as { since?: unknown };
+      const body = (req.body ?? {}) as { since?: unknown; package?: unknown };
       const since = typeof body.since === "string" ? body.since : undefined;
       if (body.since !== undefined && !since)
         return void res.status(400).json({ error: "since must be a YYYY-MM-DD string" });
+      const packageName = typeof body.package === "string" ? body.package : undefined;
+      if (body.package !== undefined && !packageName)
+        return void res.status(400).json({ error: "package must be a string" });
       try {
         if (since) buildPublicationWindows(since);
       } catch (error) {
@@ -84,7 +88,15 @@ export function createInternalRouter(deps: InternalRouteDeps): Router {
           .status(400)
           .json({ error: error instanceof Error ? error.message : String(error) });
       }
-      const result = await deps.startVulnBackfill(since);
+      let result;
+      try {
+        result = await deps.startVulnBackfill(since, packageName);
+      } catch (error) {
+        // An unbackfillable package scope is a client error, not a 500.
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes("No CPE pairs")) return void res.status(400).json({ error: message });
+        throw error;
+      }
       if (result.alreadyRunning)
         return void res.status(409).json({
           code: "already_running",

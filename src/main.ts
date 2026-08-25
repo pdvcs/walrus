@@ -20,7 +20,7 @@ import { createCvesRouter } from "./routes/cves.js";
 import { createPackageVulnsRouter } from "./routes/package-vulns.js";
 import { createAdminVulnsRouter } from "./routes/admin-vulns.js";
 import { createApiDocsRouter } from "./routes/api-docs.js";
-import { isPackageTracked } from "./db/queries/package-aliases.js";
+import { isPackageTracked, listDistinctCpePairs } from "./db/queries/package-aliases.js";
 import { crossReferenceVersions, getVersionAvailabilityStatus } from "./services/vuln-service.js";
 import { queryVulns, VulnQueryDeps } from "./services/vuln-query.js";
 import { getVulnHints } from "./services/vuln-hints.js";
@@ -147,13 +147,24 @@ async function startSyncAsync(packageName: string, opts: SyncRunOptions): Promis
   return service.startAsync(opts);
 }
 
-async function startVulnBackfill(since?: string) {
+async function startVulnBackfill(since?: string, packageName?: string) {
+  // Reject an unbackfillable scope up front rather than launching a job that
+  // would walk zero CPE pairs and report success.
+  if (packageName) {
+    const pairs = await listDistinctCpePairs(pool, packageName);
+    if (pairs.length === 0) {
+      throw new Error(
+        `No CPE pairs for package '${packageName}' — nothing to backfill from NVD. ` +
+          `Packages tracked only via OSV have no CPE pairs; use the OSV sync for those.`,
+      );
+    }
+  }
   const active = await getActiveVulnBackfillJob(pool);
   if (active) return { job: active, alreadyRunning: true };
   if (await isVulnSyncRunning(pool, "nvd")) return { alreadyRunning: true };
   let job;
   try {
-    job = await createVulnBackfillJob(pool, since);
+    job = await createVulnBackfillJob(pool, since, packageName);
   } catch (error) {
     if ((error as { code?: string }).code === "23505") {
       const raced = await getActiveVulnBackfillJob(pool);

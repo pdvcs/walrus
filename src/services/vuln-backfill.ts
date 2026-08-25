@@ -1,6 +1,6 @@
 import { Pool } from "pg";
 import { listDistinctCpePairs } from "../db/queries/package-aliases.js";
-import { updateVulnBackfillJob } from "../db/queries/vuln-backfill-jobs.js";
+import { getVulnBackfillJob, updateVulnBackfillJob } from "../db/queries/vuln-backfill-jobs.js";
 import { NvdClient } from "../vuln/sync/nvd-client.js";
 import { backfillNvd, IngestCounts } from "../vuln/sync/nvd-sync.js";
 import { withVulnSyncLock } from "../vuln/sync/lock.js";
@@ -10,19 +10,21 @@ export async function runVulnBackfillJob(
   jobId: string,
   nvd = new NvdClient(),
 ): Promise<IngestCounts> {
-  const total = (await listDistinctCpePairs(pool)).length;
+  // Read the job first: its package_name decides which CPE pairs are in scope,
+  // and therefore what cpe_pairs_total should report.
+  const job = await getVulnBackfillJob(pool, jobId);
+  const packageName = job?.package_name ?? undefined;
+  const total = (await listDistinctCpePairs(pool, packageName)).length;
   await updateVulnBackfillJob(pool, jobId, {
     status: "running",
     started_at: new Date(),
     cpe_pairs_total: total,
   });
   try {
-    const job = await import("../db/queries/vuln-backfill-jobs.js").then((m) =>
-      m.getVulnBackfillJob(pool, jobId),
-    );
     const result = await withVulnSyncLock(pool, "nvd", () =>
       backfillNvd(pool, nvd, {
         since: job?.since_date ?? undefined,
+        packageName,
         onPairComplete: (done) => updateVulnBackfillJob(pool, jobId, { cpe_pairs_done: done }),
       }),
     );

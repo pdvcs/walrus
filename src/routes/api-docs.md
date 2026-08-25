@@ -359,7 +359,21 @@ OpenAPI 3.1.0 specification for this API. [View](/openapi.json)
 
 ### Start an NVD backfill (operator API)
 
-`POST /internal/vuln-backfill` accepts JSON `{ "since": "YYYY-MM-DD" }` (optional) and returns
-`202 Accepted` with a durable job reference and status URL. Poll
+`POST /internal/vuln-backfill` accepts JSON `{ "since": "YYYY-MM-DD", "package": "<name>" }` (both
+optional) and returns `202 Accepted` with a durable job reference and status URL. Poll
 `GET /internal/vuln-backfill/:id` for lifecycle timestamps and CPE-pair progress. A currently
 queued/running backfill returns `409` with `code: "already_running"`.
+
+`package` restricts the walk to that package's CPE pairs — minutes instead of hours when you have
+only added or changed one package. Two things to know about a targeted run:
+
+- It does **not** advance the `nvd-cve` cursor. That cursor asserts "everything modified up to T
+  has been ingested for every tracked package", which a one-package walk has not established;
+  advancing it would make the next incremental sync skip that window for everything else.
+- It is narrower in what it _fetches_, not in what it _records_. A CPE pair shared by several
+  packages (`oracle:openjdk` is tracked by both `openjdk` and `azuljdk`) still writes affects rows
+  for all of them, because the CVE genuinely affects all of them.
+
+A package with no CPE pairs — one tracked only through an `[vulnerabilities].osv` mapping, like
+`uv` — returns `400`; use the OSV sync for those. The same scope is available on the CLI as
+`npm run vuln:backfill -- --package <name>`.

@@ -199,7 +199,22 @@ export function buildPublicationWindows(since: string, now = new Date()): Public
   return windows;
 }
 
-/** Per-pair backfill using virtualMatchString (keeps the DB scoped to tracked packages). */
+/**
+ * Per-pair backfill using virtualMatchString (keeps the DB scoped to tracked packages).
+ *
+ * `packageName` narrows the walk to one package's CPE pairs. Two deliberate
+ * consequences:
+ *
+ *  - The CPE lookup stays UNSCOPED. A pair can be shared (oracle:openjdk is
+ *    tracked by both openjdk and azuljdk), and a CVE on that pair genuinely
+ *    affects every package tracking it — so ingestion still attributes rows to
+ *    all of them. A targeted backfill is narrower in what it *fetches*, not in
+ *    what it records.
+ *  - The nvd-cve cursor is NOT advanced. That cursor means "everything modified
+ *    up to T has been ingested for every tracked package"; a one-package walk
+ *    has not established that, and advancing it would make the next incremental
+ *    sync skip the window for all other packages.
+ */
 export async function backfillNvd(
   pool: Pool,
   nvd: NvdClient,
@@ -207,11 +222,12 @@ export async function backfillNvd(
     since?: string;
     log?: Logger;
     now?: Date;
+    packageName?: string;
     onPairComplete?: (done: number) => Promise<void>;
   } = {},
 ): Promise<IngestCounts> {
   const log = opts.log ?? (() => {});
-  const pairs = await listDistinctCpePairs(pool);
+  const pairs = await listDistinctCpePairs(pool, opts.packageName);
   const lookup = await loadCpeLookup(pool);
   const totals: IngestCounts = { cves: 0, affects: 0, skippedCpes: 0 };
   const now = opts.now ?? new Date();
@@ -235,9 +251,10 @@ export async function backfillNvd(
       }
       await opts.onPairComplete?.(pairIndex + 1);
     }
-    await setSyncState(pool, "nvd-cve", now.toISOString(), true);
+    // Only a full backfill can claim the cursor — see the doc comment above.
+    if (!opts.packageName) await setSyncState(pool, "nvd-cve", now.toISOString(), true);
   } catch (err) {
-    await setSyncState(pool, "nvd-cve", null, false);
+    if (!opts.packageName) await setSyncState(pool, "nvd-cve", null, false);
     throw err;
   }
   return totals;

@@ -215,13 +215,22 @@ export async function loadCpeLookup(q: Queryable): Promise<Map<string, string[]>
   return map;
 }
 
-/** Distinct CPE pairs across all packages (per-pair NVD backfill). */
+/**
+ * Distinct CPE pairs (per-pair NVD backfill). Scoped to one package when
+ * `packageName` is given — the unit of a targeted backfill.
+ */
 export async function listDistinctCpePairs(
   pool: Pool,
+  packageName?: string,
 ): Promise<Array<{ cpe_vendor: string; cpe_product: string }>> {
-  const { rows } = await pool.query<{ cpe_vendor: string; cpe_product: string }>(
-    `SELECT DISTINCT cpe_vendor, cpe_product FROM package_cpes`,
-  );
+  const { rows } = packageName
+    ? await pool.query<{ cpe_vendor: string; cpe_product: string }>(
+        `SELECT DISTINCT cpe_vendor, cpe_product FROM package_cpes WHERE package_name = $1`,
+        [packageName],
+      )
+    : await pool.query<{ cpe_vendor: string; cpe_product: string }>(
+        `SELECT DISTINCT cpe_vendor, cpe_product FROM package_cpes`,
+      );
   return rows;
 }
 

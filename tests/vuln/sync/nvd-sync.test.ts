@@ -148,6 +148,100 @@ describe("nvd-sync ingestion", () => {
     expect(cvesForCpe.mock.calls[1][1].pubEndDate).toBe("2024-07-01T12:00:00.000Z");
   });
 
+  describe("targeted backfill (--package)", () => {
+    // A second package with a DIFFERENT pair, so scoping is observable.
+    const SCOPED = "test-scoped-pkg";
+
+    async function seedScoped(): Promise<void> {
+      await upsertPackage(pool, {
+        name: SCOPED,
+        display_name: SCOPED,
+        vendor: "v",
+        description: null,
+        website: null,
+        config_hash: "h",
+        enabled: true,
+      });
+      await reconcilePackageVuln(pool, {
+        packageName: SCOPED,
+        aliases: ["scoped"],
+        cpes: [{ cpe_vendor: "acme", cpe_product: "widget", is_primary: true }],
+        osvEcosystem: null,
+        osvName: null,
+      });
+    }
+
+    beforeEach(async () => {
+      await seedPackage(pool, PKG);
+      await seedScoped();
+    });
+
+    afterAll(async () => {
+      await pool.query(`DELETE FROM packages WHERE name = $1`, [SCOPED]);
+    });
+
+    it("walks only the named package's CPE pairs", async () => {
+      const cvesForCpe = vi.fn().mockResolvedValue([]);
+      const nvd = { cvesForCpe } as unknown as NvdClient;
+
+      await backfillNvd(pool, nvd, { packageName: SCOPED });
+
+      expect(cvesForCpe).toHaveBeenCalledTimes(1);
+      expect(cvesForCpe.mock.calls[0][0]).toBe("cpe:2.3:a:acme:widget");
+    });
+
+    it("walks every pair when no package is given", async () => {
+      const cvesForCpe = vi.fn().mockResolvedValue([]);
+      const nvd = { cvesForCpe } as unknown as NvdClient;
+
+      await backfillNvd(pool, nvd, {});
+
+      const matchStrings = cvesForCpe.mock.calls.map((c) => c[0]);
+      expect(matchStrings).toContain("cpe:2.3:a:acme:widget");
+      expect(matchStrings.length).toBeGreaterThan(1);
+    });
+
+    it("does NOT advance the nvd-cve cursor (a one-package walk proves nothing global)", async () => {
+      const nvd = { cvesForCpe: vi.fn().mockResolvedValue([]) } as unknown as NvdClient;
+      const before = await getSyncCursor(pool, "nvd-cve");
+
+      await backfillNvd(pool, nvd, { packageName: SCOPED });
+
+      expect(await getSyncCursor(pool, "nvd-cve")).toBe(before);
+    });
+
+    it("still advances the cursor for a full backfill", async () => {
+      const nvd = { cvesForCpe: vi.fn().mockResolvedValue([]) } as unknown as NvdClient;
+      const now = new Date("2025-06-01T00:00:00.000Z");
+
+      await backfillNvd(pool, nvd, { now });
+
+      expect(await getSyncCursor(pool, "nvd-cve")).toBe(now.toISOString());
+    });
+
+    it("leaves the cursor untouched when a targeted backfill fails", async () => {
+      const nvd = {
+        cvesForCpe: vi.fn().mockRejectedValue(new Error("upstream boom")),
+      } as unknown as NvdClient;
+      const before = await getSyncCursor(pool, "nvd-cve");
+
+      await expect(backfillNvd(pool, nvd, { packageName: SCOPED })).rejects.toThrow("boom");
+
+      expect(await getSyncCursor(pool, "nvd-cve")).toBe(before);
+    });
+
+    it("attributes a shared pair to every package tracking it, even when scoped", async () => {
+      // PKG2 shares PKG's pair. Backfilling PKG alone must still record PKG2's
+      // rows — the CVE genuinely affects it.
+      await seedPackage(pool, PKG2);
+      const nvd = { cvesForCpe: vi.fn().mockResolvedValue(items) } as unknown as NvdClient;
+
+      await backfillNvd(pool, nvd, { packageName: PKG });
+
+      expect(await affectsCount(pool, PKG2)).toBeGreaterThan(0);
+    });
+  });
+
   it("deliberately flattens NVD AND configurations to vulnerable application CPEs", () => {
     const andItem = items.find((item) =>
       item.cve.configurations?.some((configuration) =>
