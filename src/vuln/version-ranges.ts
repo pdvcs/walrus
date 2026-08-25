@@ -18,6 +18,19 @@ export function compareVersions(a: string, b: string): Cmp | null {
   const nb = normalizeVersion(b);
   if (na === null || nb === null) return null;
 
+  // Strict semver first — the only path that orders pre-releases correctly
+  // (1.27.0-rc.3 < 1.27.0). `semver.coerce` below DROPS the pre-release, so this
+  // cannot be folded into it. Reached only when BOTH sides are valid semver, so
+  // vendor-suffix versions ("1.0b", "8.3.2.1", "21.07") are untouched and keep
+  // the fallback comparator's "extra alpha segment sorts later" behaviour.
+  //
+  // OSV supplies pre-release bounds routinely ("1.26.0-rc.1", "1.24.0-0"); the
+  // fallback treated the released 1.27.0 as *inside* ">=1.27.0-0 <1.27.0-rc.3",
+  // blocking a version the range never covered.
+  const strictA = semver.valid(na, { loose: true });
+  const strictB = semver.valid(nb, { loose: true });
+  if (strictA && strictB) return semver.compare(strictA, strictB) as Cmp;
+
   const sa = semver.valid(semver.coerce(na, { loose: true }));
   const sb = semver.valid(semver.coerce(nb, { loose: true }));
   // semver.coerce drops segments beyond the third (8.3.2.0 → 8.3.2), so only

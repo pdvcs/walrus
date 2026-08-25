@@ -57,11 +57,30 @@ describe("compareVersions (table-driven)", () => {
     expect(isComparable(v)).toBe(false);
   });
 
-  it("1.0.0-alpha sorts after 1.0.0 in the fallback comparator (documented deviation from semver)", () => {
-    // The fallback treats extra alpha segments as later builds, not pre-releases.
-    // Windows-app versions ("1.0b") need this; true semver pre-release strings
-    // are rare in CPE data. Documented trade-off.
-    expect(compareVersions("1.0.0-alpha", "1.0.0")).toBe(1);
+  // Pre-release ordering: semver-valid strings follow semver, everything else
+  // keeps the fallback's "extra alpha segment is a later build" rule.
+  //
+  // This deliberately reverses an earlier documented trade-off, which assumed
+  // "true semver pre-release strings are rare in CPE data". They are not rare in
+  // OSV data, which supplies bounds like ">=1.27.0-0 <1.27.0-rc.3" — and under
+  // the old rule the released 1.27.0 fell *inside* that range.
+  it("semver pre-releases sort BEFORE their base release", () => {
+    expect(compareVersions("1.0.0-alpha", "1.0.0")).toBe(-1);
+    expect(compareVersions("1.27.0", "1.27.0-rc.3")).toBe(1);
+    expect(compareVersions("1.27.0-rc.3", "1.27.0")).toBe(-1);
+    // ...and order among themselves
+    expect(compareVersions("1.27.0-rc.1", "1.27.0-rc.3")).toBe(-1);
+    // "-0" is the lowest pre-release; OSV emits it for "any version in this line"
+    expect(compareVersions("1.27.0", "1.27.0-0")).toBe(1);
+    expect(compareVersions("1.26.0-rc.1", "1.26.0-0")).toBe(1);
+  });
+
+  it("non-semver alpha suffixes still sort AFTER the base (vendor versions)", () => {
+    // The case the original trade-off existed for: "1.0b" is not valid semver,
+    // so it never reaches the strict comparator and keeps the fallback ordering.
+    expect(compareVersions("1.0b", "1.0")).toBe(1);
+    expect(compareVersions("1.0", "1.0b")).toBe(-1);
+    expect(compareVersions("1.0.rc1", "1.0.1")).toBe(-1);
   });
 });
 
@@ -158,6 +177,29 @@ describe("evaluateRange", () => {
       matched: true,
       reason: "range-uncomparable",
     });
+  });
+
+  // Regression for CVE-2026-39821 on golang: the range covers only 1.27.0's
+  // release candidates, but the released 1.27.0 was matching it and returning a
+  // 403 from /download. The RCs the range does target were excluded.
+  it("a pre-release-bounded range excludes the released version (CVE-2026-39821)", () => {
+    const range = {
+      ...base,
+      versionStart: "1.27.0-0",
+      versionEnd: "1.27.0-rc.3",
+      versionEndExcl: true,
+    };
+    expect(evaluateRange("1.27.0", range).matched).toBe(false);
+    expect(evaluateRange("1.27.0-rc.1", range).matched).toBe(true);
+    expect(evaluateRange("1.27.0-rc.3", range).matched).toBe(false); // end-excluded
+  });
+
+  it("still matches the same CVE's correct range (guards against over-correcting)", () => {
+    const range = { ...base, versionStart: "1.26.0-0", versionEnd: "1.26.6", versionEndExcl: true };
+    expect(evaluateRange("1.26.4", range).matched).toBe(true);
+    expect(evaluateRange("1.26.5", range).matched).toBe(true);
+    expect(evaluateRange("1.26.6", range).matched).toBe(false);
+    expect(evaluateRange("1.26.7", range).matched).toBe(false);
   });
 
   it("empty range means all versions", () => {
