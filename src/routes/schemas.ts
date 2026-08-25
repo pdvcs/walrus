@@ -170,7 +170,11 @@ export const VulnItemSchema = z
   .object({
     cve_id: z.string(),
     severity: z.string().nullable(),
+    // Which CVSS version produced `severity`. v2 has no CRITICAL band (v2 HIGH
+    // spans 7.0-10.0), so a v2-sourced severity is not comparable to a v3 one.
+    severity_source: z.string().nullable(),
     cvss_v3_score: z.number().nullable(),
+    cvss_v2_score: z.number().nullable(),
     summary: z.string().nullable(),
     affected: z.object({
       range: z.string(),
@@ -246,8 +250,11 @@ export const CveDetailResponseSchema = z
     published_at: z.string().nullable(),
     modified_at: z.string().nullable(),
     severity: z.string().nullable(),
+    severity_source: z.string().nullable(),
     cvss_v3_score: z.number().nullable(),
     cvss_v3_vector: z.string().nullable(),
+    cvss_v2_score: z.number().nullable(),
+    cvss_v2_vector: z.string().nullable(),
     description: z.string().nullable(),
     is_kev: z.boolean(),
     kev_added_at: z.string().nullable(),

@@ -1,5 +1,6 @@
 /**
- * Vuln sync orchestrator. Dispatches a sync source (nvd | kev | osv | all) to an
+ * Vuln sync orchestrator. Dispatches a sync source (nvd | kev | osv | cvss | all)
+ * to an
  * injected implementation and returns per-source outcomes. Shared by the
  * `/internal/vuln-sync/:source` route, the admin trigger, and tests (which inject
  * fixture-backed fakes). Mirrors walrus's dependency-injected route pattern —
@@ -8,11 +9,11 @@
 import { log } from "../../common/log.js";
 import { VulnSyncAlreadyRunningError } from "./lock.js";
 
-export type VulnSyncSource = "nvd" | "kev" | "osv" | "all";
-export const SYNC_SOURCES: VulnSyncSource[] = ["nvd", "kev", "osv", "all"];
+export type VulnSyncSource = "nvd" | "kev" | "osv" | "cvss" | "all";
+export const SYNC_SOURCES: VulnSyncSource[] = ["nvd", "kev", "osv", "cvss", "all"];
 
 export interface SourceOutcome {
-  source: "nvd" | "kev" | "osv";
+  source: "nvd" | "kev" | "osv" | "cvss";
   ok: boolean;
   summary?: Record<string, number>;
   error?: string;
@@ -27,13 +28,18 @@ export interface VulnSyncImpls {
   nvd?: () => Promise<Record<string, number>>;
   kev?: () => Promise<Record<string, number>>;
   osv?: () => Promise<Record<string, number>>;
+  /** CVSS enrichment for CVEs with no severity — a repair pass, not routine. */
+  cvss?: () => Promise<Record<string, number>>;
 }
 
 export function isVulnSyncSource(s: string): s is VulnSyncSource {
   return (SYNC_SOURCES as string[]).includes(s);
 }
 
-async function runOne(source: "nvd" | "kev" | "osv", impls: VulnSyncImpls): Promise<SourceOutcome> {
+async function runOne(
+  source: "nvd" | "kev" | "osv" | "cvss",
+  impls: VulnSyncImpls,
+): Promise<SourceOutcome> {
   const impl = impls[source];
   if (!impl)
     return {
@@ -59,6 +65,10 @@ async function runOne(source: "nvd" | "kev" | "osv", impls: VulnSyncImpls): Prom
 /**
  * Run one source, or all three in order (nvd → kev → osv). `all` continues past
  * a per-source failure and reports each; only failing sources are marked not-ok.
+ *
+ * `cvss` is deliberately excluded from `all`: it is a repair pass that walks every
+ * severity-less CVE one request at a time, and folding it into routine syncs would
+ * lengthen them for no routine benefit. Trigger it explicitly.
  */
 export async function runVulnSync(
   source: VulnSyncSource,

@@ -12,6 +12,7 @@ import { NvdClient, type NvdCveItem } from "../../../src/vuln/sync/nvd-client.js
 import {
   backfillNvd,
   extractAffects,
+  extractCvss,
   ingestCveItems,
   incrementalNvdSync,
 } from "../../../src/vuln/sync/nvd-sync.js";
@@ -44,6 +45,92 @@ async function seedPackage(pool: Pool, name: string): Promise<void> {
     osvName: null,
   });
 }
+
+describe("extractCvss", () => {
+  const withMetrics = (metrics: Record<string, unknown>): NvdCveItem =>
+    ({ cve: { id: "CVE-0000-0000", metrics } }) as unknown as NvdCveItem;
+
+  const v3 = (baseScore: number, baseSeverity: string) => [
+    {
+      type: "Primary",
+      cvssData: { version: "3.1", vectorString: "CVSS:3.1/AV:N", baseScore, baseSeverity },
+    },
+  ];
+  // NVD puts v2's baseSeverity on the metric object, NOT inside cvssData.
+  const v2 = (baseScore: number, baseSeverity: string) => [
+    {
+      type: "Primary",
+      cvssData: { version: "2.0", vectorString: "AV:N/AC:M/Au:N/C:P/I:P/A:P", baseScore },
+      baseSeverity,
+    },
+  ];
+
+  it("prefers v3.1 for severity while still recording v2 alongside it", () => {
+    const r = extractCvss(
+      withMetrics({ cvssMetricV31: v3(9.8, "CRITICAL"), cvssMetricV2: v2(6.8, "MEDIUM") }),
+    );
+    expect(r.severity).toBe("CRITICAL");
+    expect(r.severitySource).toBe("nvd-cvss-v3");
+    expect(r.score).toBe(9.8);
+    // v2 is kept even when v3 wins — the columns are independent.
+    expect(r.v2Score).toBe(6.8);
+    expect(r.v2Vector).toBe("AV:N/AC:M/Au:N/C:P/I:P/A:P");
+  });
+
+  it("falls back to v3.0 when v3.1 is absent", () => {
+    const r = extractCvss(withMetrics({ cvssMetricV30: v3(7.5, "HIGH") }));
+    expect(r.severity).toBe("HIGH");
+    expect(r.severitySource).toBe("nvd-cvss-v3");
+    expect(r.score).toBe(7.5);
+  });
+
+  it("falls back to v2 when no v3 metric exists — the gap this fixes", () => {
+    const r = extractCvss(withMetrics({ cvssMetricV2: v2(4.3, "MEDIUM") }));
+    expect(r.severity).toBe("MEDIUM");
+    expect(r.severitySource).toBe("nvd-cvss-v2");
+    // v3 columns stay null: a v2 score is NOT a v3 score.
+    expect(r.score).toBeNull();
+    expect(r.vector).toBeNull();
+    expect(r.v2Score).toBe(4.3);
+  });
+
+  it("reads v2 baseSeverity from the metric object, not cvssData", () => {
+    const metric = [
+      { type: "Primary", cvssData: { version: "2.0", baseScore: 7.5 }, baseSeverity: "HIGH" },
+    ];
+    expect(extractCvss(withMetrics({ cvssMetricV2: metric })).severity).toBe("HIGH");
+  });
+
+  it("returns all-null with no severity source when there are no metrics", () => {
+    const r = extractCvss(withMetrics({}));
+    expect(r).toEqual({
+      score: null,
+      vector: null,
+      v2Score: null,
+      v2Vector: null,
+      severity: null,
+      severitySource: null,
+    });
+  });
+
+  it("prefers the Primary provider over a secondary one", () => {
+    const metrics = {
+      cvssMetricV31: [
+        { type: "Secondary", cvssData: { baseScore: 5.0, baseSeverity: "MEDIUM" } },
+        { type: "Primary", cvssData: { baseScore: 9.1, baseSeverity: "CRITICAL" } },
+      ],
+    };
+    expect(extractCvss(withMetrics(metrics)).score).toBe(9.1);
+  });
+
+  it("parses the real fixture CVE that carries both v3.1 and v2", () => {
+    const item = items.find((i) => i.cve.id === "CVE-2017-8803")!;
+    const r = extractCvss(item);
+    expect(r.severitySource).toBe("nvd-cvss-v3");
+    expect(r.v2Score).toBe(6.8);
+    expect(r.v2Vector).toBe("AV:N/AC:M/Au:N/C:P/I:P/A:P");
+  });
+});
 
 describe("nvd-sync ingestion", () => {
   let pool: Pool;

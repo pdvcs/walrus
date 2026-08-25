@@ -23,27 +23,62 @@ export interface IngestCounts {
   skippedCpes: number;
 }
 
-/** Pick the best CVSS v3 metric (Primary preferred), tolerating NVD's variants. */
-export function extractCvss(item: NvdCveItem): {
+/** Which CVSS version produced a row's `severity`. */
+export type SeveritySource = "nvd-cvss-v3" | "nvd-cvss-v2";
+
+export interface ExtractedCvss {
+  /** CVSS v3 base score; null when the CVE is only scored under v2. */
   score: number | null;
   vector: string | null;
+  /** CVSS v2 base score, populated independently of v3. */
+  v2Score: number | null;
+  v2Vector: string | null;
   severity: string | null;
-} {
-  const metrics = item.cve.metrics ?? {};
-  for (const key of ["cvssMetricV31", "cvssMetricV30"]) {
-    const list = (metrics as Record<string, Array<Record<string, unknown>>>)[key];
-    if (!list?.length) continue;
-    const primary = list.find((m) => m["type"] === "Primary") ?? list[0];
-    const data = primary["cvssData"] as
-      | { baseScore?: number; vectorString?: string; baseSeverity?: string }
-      | undefined;
-    return {
-      score: data?.baseScore ?? null,
-      vector: data?.vectorString ?? null,
-      severity: data?.baseSeverity ?? (primary["baseSeverity"] as string | undefined) ?? null,
-    };
-  }
-  return { score: null, vector: null, severity: null };
+  severitySource: SeveritySource | null;
+}
+
+/** Read one metric entry, preferring the Primary provider. */
+function readMetric(
+  metrics: Record<string, Array<Record<string, unknown>>>,
+  key: string,
+): { score: number | null; vector: string | null; severity: string | null } | null {
+  const list = metrics[key];
+  if (!list?.length) return null;
+  const primary = list.find((m) => m["type"] === "Primary") ?? list[0];
+  const data = primary["cvssData"] as
+    | { baseScore?: number; vectorString?: string; baseSeverity?: string }
+    | undefined;
+  return {
+    score: data?.baseScore ?? null,
+    vector: data?.vectorString ?? null,
+    // v3 carries baseSeverity inside cvssData; v2 carries it on the metric
+    // object one level up. Tolerate both.
+    severity: data?.baseSeverity ?? (primary["baseSeverity"] as string | undefined) ?? null,
+  };
+}
+
+/**
+ * Pick the best CVSS metrics, tolerating NVD's variants.
+ *
+ * v3 wins when present. v2 is a fallback rather than an equal: it has no
+ * CRITICAL band (v2 HIGH spans 7.0-10.0, where v3 splits HIGH 7.0-8.9 from
+ * CRITICAL 9.0+), so a v2-derived severity is not comparable to a v3 one and
+ * `severitySource` records which produced it. v2 score/vector are stored in
+ * their own fields either way, so a CVE scored under both keeps both.
+ */
+export function extractCvss(item: NvdCveItem): ExtractedCvss {
+  const metrics = (item.cve.metrics ?? {}) as Record<string, Array<Record<string, unknown>>>;
+  const v3 = readMetric(metrics, "cvssMetricV31") ?? readMetric(metrics, "cvssMetricV30");
+  const v2 = readMetric(metrics, "cvssMetricV2");
+
+  return {
+    score: v3?.score ?? null,
+    vector: v3?.vector ?? null,
+    v2Score: v2?.score ?? null,
+    v2Vector: v2?.vector ?? null,
+    severity: v3?.severity ?? v2?.severity ?? null,
+    severitySource: v3?.severity ? "nvd-cvss-v3" : v2?.severity ? "nvd-cvss-v2" : null,
+  };
 }
 
 /** Build cve_affects rows (source 'nvd') for the packages we track. */
@@ -127,7 +162,7 @@ export async function ingestCveItems(
     for (const item of items) {
       const cve = item.cve;
       const desc = cve.descriptions?.find((d) => d.lang === "en")?.value ?? null;
-      const { score, vector, severity } = extractCvss(item);
+      const { score, vector, v2Score, v2Vector, severity, severitySource } = extractCvss(item);
 
       await upsertCveFull(client, {
         id: cve.id,
@@ -135,7 +170,10 @@ export async function ingestCveItems(
         modified_at: cve.lastModified ?? null,
         cvss_v3_score: score,
         cvss_v3_vector: vector,
+        cvss_v2_score: v2Score,
+        cvss_v2_vector: v2Vector,
         severity,
+        severity_source: severitySource,
         description: desc,
         raw: item,
       });

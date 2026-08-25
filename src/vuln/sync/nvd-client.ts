@@ -186,6 +186,19 @@ export class NvdClient {
     return items;
   }
 
+  /**
+   * A single CVE by id. Used by the CVSS enrichment pass to reach CVEs that the
+   * CPE-keyed paths never see: NVD "Deferred" records carry full CVSS metrics
+   * but no CPE configurations, so `cvesForCpe` cannot find them.
+   * Returns null when NVD does not know the id.
+   */
+  async cveById(cveId: string): Promise<NvdCveItem | null> {
+    for await (const page of this.cvePages({ cveId })) {
+      if (page.vulnerabilities.length > 0) return page.vulnerabilities[0];
+    }
+    return null;
+  }
+
   /** Raw CPE dictionary query (alias/pair verification support). */
   async cpeDictionary(cpeMatchString: string): Promise<unknown> {
     const qs = new URLSearchParams({ cpeMatchString, resultsPerPage: "500" });

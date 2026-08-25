@@ -9,7 +9,11 @@ export interface CveRow {
   modified_at: Date | null;
   cvss_v3_score: string | null; // NUMERIC comes back as string from pg
   cvss_v3_vector: string | null;
+  cvss_v2_score: string | null; // NUMERIC comes back as string from pg
+  cvss_v2_vector: string | null;
   severity: string | null;
+  /** Which CVSS version produced `severity`: 'nvd-cvss-v3' | 'nvd-cvss-v2'. */
+  severity_source: string | null;
   description: string | null;
   is_kev: boolean;
   kev_added_at: Date | null;
@@ -23,7 +27,10 @@ export interface CveUpsert {
   modified_at: string | null;
   cvss_v3_score: number | null;
   cvss_v3_vector: string | null;
+  cvss_v2_score: number | null;
+  cvss_v2_vector: string | null;
   severity: string | null;
+  severity_source: string | null;
   description: string | null;
   raw: unknown;
 }
@@ -60,7 +67,9 @@ export interface AffectsWithCveRow {
   fixed_in: string | null;
   source: string;
   severity: string | null;
+  severity_source: string | null;
   cvss_v3_score: string | null;
+  cvss_v2_score: string | null;
   description: string | null;
   is_kev: boolean;
   raw: { cve?: { references?: Array<{ url: string }> } } | null;
@@ -83,24 +92,31 @@ export interface AffectedPackageRow {
 /** Full CVE upsert (NVD ingestion): overwrites denormalized fields + raw. */
 export async function upsertCveFull(q: Queryable, cve: CveUpsert): Promise<void> {
   await q.query(
-    `INSERT INTO cves (id, published_at, modified_at, cvss_v3_score, cvss_v3_vector, severity, description, raw, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+    `INSERT INTO cves (id, published_at, modified_at, cvss_v3_score, cvss_v3_vector,
+                       cvss_v2_score, cvss_v2_vector, severity, severity_source, description, raw, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now())
      ON CONFLICT (id) DO UPDATE SET
-       published_at   = EXCLUDED.published_at,
-       modified_at    = EXCLUDED.modified_at,
-       cvss_v3_score  = EXCLUDED.cvss_v3_score,
-       cvss_v3_vector = EXCLUDED.cvss_v3_vector,
-       severity       = EXCLUDED.severity,
-       description    = EXCLUDED.description,
-       raw            = EXCLUDED.raw,
-       updated_at     = now()`,
+       published_at    = EXCLUDED.published_at,
+       modified_at     = EXCLUDED.modified_at,
+       cvss_v3_score   = EXCLUDED.cvss_v3_score,
+       cvss_v3_vector  = EXCLUDED.cvss_v3_vector,
+       cvss_v2_score   = EXCLUDED.cvss_v2_score,
+       cvss_v2_vector  = EXCLUDED.cvss_v2_vector,
+       severity        = EXCLUDED.severity,
+       severity_source = EXCLUDED.severity_source,
+       description     = EXCLUDED.description,
+       raw             = EXCLUDED.raw,
+       updated_at      = now()`,
     [
       cve.id,
       cve.published_at,
       cve.modified_at,
       cve.cvss_v3_score,
       cve.cvss_v3_vector,
+      cve.cvss_v2_score,
+      cve.cvss_v2_vector,
       cve.severity,
+      cve.severity_source,
       cve.description,
       JSON.stringify(cve.raw),
     ],
@@ -200,7 +216,8 @@ export async function clearKevExcept(q: Queryable, ids: string[]): Promise<numbe
 
 export async function getCveById(pool: Pool, id: string): Promise<CveRow | null> {
   const { rows } = await pool.query<CveRow>(
-    `SELECT id, published_at, modified_at, cvss_v3_score, cvss_v3_vector, severity,
+    `SELECT id, published_at, modified_at, cvss_v3_score, cvss_v3_vector,
+            cvss_v2_score, cvss_v2_vector, severity, severity_source,
             description, is_kev, kev_added_at, raw, updated_at
      FROM cves WHERE id = $1`,
     [id],
@@ -216,13 +233,92 @@ export async function listAffectsWithCveForPackage(
   const { rows } = await pool.query<AffectsWithCveRow>(
     `SELECT ca.cve_id, ca.version_start, ca.version_start_excl, ca.version_end,
             ca.version_end_excl, ca.exact_version, ca.fixed_in, ca.source,
-            c.severity, c.cvss_v3_score, c.description, c.is_kev, c.raw
+            c.severity, c.severity_source, c.cvss_v3_score, c.cvss_v2_score,
+            c.description, c.is_kev, c.raw
      FROM cve_affects ca JOIN cves c ON c.id = ca.cve_id
      WHERE ca.package_name = $1
      ORDER BY ca.cve_id DESC`,
     [packageName],
   );
   return rows;
+}
+
+/**
+ * Fill in only the CVSS/severity columns, leaving `raw` and `description` alone.
+ *
+ * Deliberately NOT `upsertCveFull`: enrichment targets are mostly OSV stubs whose
+ * `raw` holds the OSV advisory. Overwriting it would swap their description for
+ * NVD's and make `buildReferences` start emitting NVD reference lists — a silent
+ * content change well beyond "fill in the severity".
+ */
+export async function updateCveCvss(
+  q: Queryable,
+  cve: {
+    id: string;
+    cvss_v3_score: number | null;
+    cvss_v3_vector: string | null;
+    cvss_v2_score: number | null;
+    cvss_v2_vector: string | null;
+    severity: string | null;
+    severity_source: string | null;
+  },
+): Promise<void> {
+  await q.query(
+    `UPDATE cves SET
+       cvss_v3_score   = $2,
+       cvss_v3_vector  = $3,
+       cvss_v2_score   = $4,
+       cvss_v2_vector  = $5,
+       severity        = $6,
+       severity_source = $7,
+       updated_at      = now()
+     WHERE id = $1`,
+    [
+      cve.id,
+      cve.cvss_v3_score,
+      cve.cvss_v3_vector,
+      cve.cvss_v2_score,
+      cve.cvss_v2_vector,
+      cve.severity,
+      cve.severity_source,
+    ],
+  );
+}
+
+/**
+ * Record that NVD was consulted and had nothing usable, so the enrichment walk
+ * does not re-fetch this CVE on every run. Only ever applied to rows that still
+ * have no severity.
+ */
+export async function markCveSeverityUnavailable(
+  q: Queryable,
+  id: string,
+  reason: "nvd-no-metrics" | "nvd-not-found",
+): Promise<void> {
+  await q.query(
+    `UPDATE cves SET severity_source = $2, updated_at = now()
+     WHERE id = $1 AND severity IS NULL AND severity_source IS NULL`,
+    [id, reason],
+  );
+}
+
+/**
+ * CVE ids that carry no severity — the CVSS enrichment work list. Ordered for a
+ * stable, resumable walk. Most are OSV stubs (`upsertCveStub` never sets
+ * severity) whose CVSS data NVD does hold under a by-id lookup.
+ */
+export async function listCveIdsMissingSeverity(pool: Pool, limit?: number): Promise<string[]> {
+  // `severity_source IS NULL` excludes CVEs already checked and found to have no
+  // usable CVSS upstream; without it every Rejected/unscored CVE would be
+  // re-fetched on each run, one request apiece, forever.
+  const { rows } = await pool.query<{ id: string }>(
+    `SELECT id FROM cves
+     WHERE severity IS NULL AND severity_source IS NULL
+     ORDER BY id
+     LIMIT $1`,
+    [limit ?? null],
+  );
+  return rows.map((r) => r.id);
 }
 
 /** Affected packages (joined to display name) for one CVE — powers CVE detail. */

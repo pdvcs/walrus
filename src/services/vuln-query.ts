@@ -29,7 +29,9 @@ export interface VulnQueryDeps {
 export interface VulnItem {
   cve_id: string;
   severity: string | null;
+  severity_source: string | null;
   cvss_v3_score: number | null;
+  cvss_v2_score: number | null;
   summary: string | null;
   affected: { range: string; matched_because: string | null };
   fixed_in: string | null;
@@ -135,7 +137,9 @@ export async function queryVulns(
     const item: VulnItem = {
       cve_id: cveId,
       severity: row.severity,
+      severity_source: row.severity_source,
       cvss_v3_score: row.cvss_v3_score !== null ? Number(row.cvss_v3_score) : null,
+      cvss_v2_score: row.cvss_v2_score == null ? null : Number(row.cvss_v2_score),
       summary: truncate(row.description, 300),
       affected: { range: describeRange(toRange(row)), matched_because: entry.reason },
       fixed_in: row.fixed_in,

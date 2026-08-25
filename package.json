@@ -20,7 +20,8 @@
     "lint:oxlint": "oxlint src tests scripts",
     "check-schemas": "tsx scripts/check-schemas.ts",
     "vuln:backfill": "dotenv -e .env.local -e .env.secrets -- tsx scripts/vuln-backfill.ts",
-    "validate": "dotenv -e .env.local -- tsx scripts/validate-package.ts"
+    "validate": "dotenv -e .env.local -- tsx scripts/validate-package.ts",
+    "vuln:enrich": "dotenv -e .env.local -e .env.secrets -- tsx scripts/cvss-enrich.ts"
   },
   "dependencies": {
     "@asteasolutions/zod-to-openapi": "^8.4.3",
