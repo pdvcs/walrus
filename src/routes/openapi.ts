@@ -62,7 +62,7 @@ registry.registerPath({
   responses: {
     200: {
       description:
-        "Version groups, optionally filtered to those with available artifacts for the given platform",
+        "Every version group for the package, newest first. A group with nothing currently servable — all versions embargoed or CVE-blocked — is still listed, with `latest_available: null`. A platform filter narrows which artifacts count as servable, not which groups appear.",
       content: { "application/json": { schema: ListGroupsResponseSchema } },
     },
     404: {
@@ -86,7 +86,8 @@ registry.registerPath({
   },
   responses: {
     200: {
-      description: "Versions with platform availability",
+      description:
+        "Versions with platform availability. Both the version and each platform report `cooling_off` with an `available_at` while inside the release embargo.",
       content: { "application/json": { schema: ListVersionsResponseSchema } },
     },
     404: {
@@ -127,6 +128,17 @@ registry.registerPath({
     404: {
       description: "Package, group, or artifact not found",
       content: { "application/json": { schema: ErrorSchema } },
+    },
+    423: {
+      description:
+        "Nothing in the group is servable yet because the candidates are within their cooling-off period. Distinct from 202 (not synced yet) and 404 (nothing safe exists).",
+      headers: {
+        "Retry-After": {
+          description: "Seconds until the earliest artifact in the group is released",
+          schema: { type: "integer" },
+        },
+      },
+      content: { "application/json": { schema: CoolingOffErrorSchema } },
     },
   },
 });

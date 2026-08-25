@@ -113,6 +113,66 @@ export async function listVersionGroups(pool: Pool, packageName: string): Promis
   return rows.map((r) => r.version_group);
 }
 
+export interface VersionGroupWithLts {
+  version_group: string;
+  is_lts: boolean;
+}
+
+/**
+ * Every group for a package, newest first, regardless of whether anything in it is servable.
+ *
+ * The groups endpoint pairs this with the available-only candidate list so a group whose versions
+ * are all embargoed or CVE-blocked still appears, carrying `latest_available: null`, rather than
+ * vanishing from the listing entirely.
+ */
+export async function listVersionGroupsWithLts(
+  pool: Pool,
+  packageName: string,
+): Promise<VersionGroupWithLts[]> {
+  const { rows } = await pool.query<{ version_group: string; is_lts: boolean }>(
+    `SELECT version_group, bool_or(is_lts) AS is_lts, MAX(version_sort) AS max_sort
+     FROM versions
+     WHERE package_name = $1
+     GROUP BY version_group
+     ORDER BY max_sort DESC`,
+    [packageName],
+  );
+  return rows.map((r) => ({ version_group: r.version_group, is_lts: r.is_lts }));
+}
+
+/**
+ * The soonest moment a currently-embargoed artifact in this group becomes servable, or null when
+ * the group has none. Lets the latest endpoint answer "temporarily withheld, come back at X"
+ * instead of reporting an embargo as a plain 404.
+ */
+export async function getEarliestCoolingOffInGroup(
+  pool: Pool,
+  packageName: string,
+  group: string,
+  opts: { os?: string; arch?: string } = {},
+): Promise<Date | null> {
+  const params: unknown[] = [packageName, group];
+  const conditions: string[] = ["a.cooling_off_until > now()"];
+
+  if (opts.os) {
+    params.push(opts.os);
+    conditions.push(`a.os = $${params.length}`);
+  }
+  if (opts.arch) {
+    params.push(opts.arch);
+    conditions.push(`a.arch = $${params.length}`);
+  }
+
+  const { rows } = await pool.query<{ earliest: Date | null }>(
+    `SELECT MIN(a.cooling_off_until) AS earliest
+     FROM artifacts a
+     JOIN versions v ON v.id = a.version_id
+     WHERE v.package_name = $1 AND v.version_group = $2 AND ${conditions.join(" AND ")}`,
+    params,
+  );
+  return rows[0]?.earliest ?? null;
+}
+
 export interface GroupVersionRow {
   version: string;
   version_group: string;

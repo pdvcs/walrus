@@ -37,14 +37,19 @@ List all enabled packages. [Try it](/api/v1/packages/)
 
 ### GET /api/v1/packages/:name/groups
 
-Version groups for a package, optionally filtered to groups that have artifacts for a given platform.
+Every version group for a package, newest first. A platform filter narrows which artifacts count
+as servable, not which groups are listed — a group with nothing servable still appears, carrying
+`latest_available: null`.
 Examples: [openjdk](/api/v1/packages/openjdk/groups), [golang](/api/v1/packages/golang/groups), [uv](/api/v1/packages/uv/groups)
 
 `latest_available` is the latest cached version in the group that is free of known
 critical CVEs (CVSS v3 score >= 9.0, or a score-less CVE labeled CRITICAL). When every
-cached version in a group carries a critical CVE it is `null` — meaning nothing safe to
-recommend, **not** nothing cached. Walrus never points this field at a version it knows
-to be critically vulnerable. Per-version CVE detail is available from
+cached version in a group carries a critical CVE — or is still inside its cooling-off
+period — it is `null`, meaning nothing safe to recommend right now, **not** nothing cached.
+Walrus never points this field at a version it knows to be critically vulnerable, nor at one
+it would refuse to serve. Use
+[`/api/v1/packages/:name/versions`](#get-apiv1packagesnameversions) to tell the two apart:
+an embargoed version reports `cooling_off` with the timestamp it is released. Per-version CVE detail is available from
 [`/api/v1/packages/:name/vulns`](#get-apiv1packagesnamevulns).
 
 **Query parameters**
@@ -60,6 +65,7 @@ to be critically vulnerable. Per-version CVE detail is available from
 {
   "package": "openjdk",
   "groups": [
+    { "group": "22", "is_lts": false, "latest_available": null },
     { "group": "21", "is_lts": true, "latest_available": "21.0.3" },
     { "group": "17", "is_lts": true, "latest_available": "17.0.11" }
   ]
@@ -78,9 +84,16 @@ All versions for a package, with platform availability and a version-level secur
 Examples: [openjdk](/api/v1/packages/openjdk/versions), [golang](/api/v1/packages/golang/versions), [uv](/api/v1/packages/uv/versions)
 
 `status` is `blocked` when the version concretely matches a known critical CVE (CVSS v3
-score >= 9.0, or a score-less CVE labeled CRITICAL); otherwise it is `available`.
-Range-uncomparable matches remain visible through the package vulnerability endpoint but
-do not block the version.
+score >= 9.0, or a score-less CVE labeled CRITICAL) — this takes precedence over everything
+else. It is `cooling_off` when no platform is servable yet because every candidate artifact is
+inside its release embargo; `available_at` then carries the moment the first one is released.
+Otherwise it is `available`. Range-uncomparable matches remain visible through the package
+vulnerability endpoint but do not block the version.
+
+Platform `status` is the artifact's lifecycle state — `pending`, `downloading`, `available`,
+`failed`, `removed` — except that an embargoed artifact reports `cooling_off` with its own
+`available_at`. Embargoed artifacts are stored as `pending`, so without this they would be
+indistinguishable from ones the sync has simply not fetched yet.
 
 **Query parameters**
 
@@ -100,9 +113,25 @@ do not block the version.
       "version_group": "21",
       "is_lts": true,
       "status": "available",
+      "available_at": null,
       "platforms": [
-        { "os": "linux", "arch": "x86-64", "status": "available" },
-        { "os": "mac", "arch": "aarch64", "status": "available" }
+        { "os": "linux", "arch": "x86-64", "status": "available", "available_at": null },
+        { "os": "mac", "arch": "aarch64", "status": "available", "available_at": null }
+      ]
+    },
+    {
+      "version": "21.0.4",
+      "version_group": "21",
+      "is_lts": true,
+      "status": "cooling_off",
+      "available_at": "2026-08-29T09:00:00.000Z",
+      "platforms": [
+        {
+          "os": "linux",
+          "arch": "x86-64",
+          "status": "cooling_off",
+          "available_at": "2026-08-29T09:00:00.000Z"
+        }
       ]
     }
   ]
@@ -120,7 +149,9 @@ do not block the version.
 Latest available artifact for a version group and platform, excluding versions with a
 concrete known-critical CVE match. If the newest version is blocked, Walrus returns the
 next safe version; if every compatible cached version is blocked, it returns `404` and no
-download URL.
+download URL. If nothing is servable only because the candidates are still inside their
+cooling-off period, it returns `423` with `Retry-After` and `available_at` instead — a dated,
+temporary withholding, distinct from the `202` that means "not synced yet, retry shortly".
 Example: [openjdk group 21, linux/x86-64](/api/v1/packages/openjdk/versions/21/latest?os=linux&arch=x86-64)
 
 **Query parameters**
@@ -154,6 +185,8 @@ Example: [openjdk group 21, linux/x86-64](/api/v1/packages/openjdk/versions/21/l
 
 - `202` + `Retry-After: 30` — no cached data; sync triggered, retry after 30 s
 - `404` — package, group, or artifact not found
+- `423` + `Retry-After` — nothing servable yet; every candidate is within its cooling-off
+  period. Body includes `available_at`
 
 ---
 

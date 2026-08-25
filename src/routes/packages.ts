@@ -7,6 +7,7 @@ import {
   summarizeGroupsWithVulnGate,
 } from "../services/vuln-service.js";
 import {
+  CoolingOffErrorSchema,
   LatestArtifactResponseSchema,
   ListGroupsResponseSchema,
   ListPackagesResponseSchema,
@@ -18,6 +19,14 @@ export interface PackagesRouteDeps {
   listEnabledPackages: () => Promise<PackageRow[]>;
   getPackage: (name: string) => Promise<PackageRow | null>;
   listVersionGroups: (packageName: string) => Promise<string[]>;
+  listVersionGroupsWithLts: (
+    packageName: string,
+  ) => Promise<{ version_group: string; is_lts: boolean }[]>;
+  getEarliestCoolingOffInGroup: (
+    packageName: string,
+    group: string,
+    opts?: { os?: string; arch?: string },
+  ) => Promise<Date | null>;
   listAvailableVersionsByGroup: (
     packageName: string,
     opts?: { os?: string; arch?: string },
@@ -67,11 +76,31 @@ export function createPackagesRouter(deps: PackagesRouteDeps): Router {
 
       const os = optionalString(req.query.os);
       const arch = optionalString(req.query.arch);
-      const [versions, affects] = await Promise.all([
+      const [allGroups, versions, affects] = await Promise.all([
+        deps.listVersionGroupsWithLts(packageName),
         deps.listAvailableVersionsByGroup(packageName, { os, arch }),
         deps.listAffectsForPackage(packageName),
       ]);
-      const groups = summarizeGroupsWithVulnGate(versions, affects);
+
+      // summarizeGroupsWithVulnGate only sees versions with a servable artifact, so a group whose
+      // versions are all embargoed or CVE-blocked would otherwise disappear from the listing
+      // rather than reporting the null it is entitled to. Order follows allGroups (max
+      // version_sort desc), which is the order the summary already produced for served groups.
+      const summarized = new Map(
+        summarizeGroupsWithVulnGate(versions, affects).map((group) => [group.group, group]),
+      );
+      const listed = new Set(allGroups.map(({ version_group }) => version_group));
+      const groups = [
+        ...allGroups.map(
+          ({ version_group, is_lts }) =>
+            summarized.get(version_group) ?? {
+              group: version_group,
+              is_lts,
+              latest_available: null,
+            },
+        ),
+        ...[...summarized.values()].filter((group) => !listed.has(group.group)),
+      ];
       res.json(ListGroupsResponseSchema.parse({ package: packageName, groups }));
     } catch (err) {
       next(err);
@@ -97,16 +126,33 @@ export function createPackagesRouter(deps: PackagesRouteDeps): Router {
       const versionsWithArtifacts = await Promise.all(
         versions.map(async (version) => {
           const artifacts = await deps.listArtifactsForVersion(version.id);
+          const platforms = artifacts.map((artifact) => {
+            const until = coolingOffUntil(artifact);
+            return {
+              os: artifact.os,
+              arch: artifact.arch,
+              status: until === null ? artifact.status : ("cooling_off" as const),
+              available_at: until === null ? null : until.toISOString(),
+            };
+          });
+
+          const cveStatus = getVersionAvailabilityStatus(version.version, affects);
+          const embargoed = platforms.filter((platform) => platform.status === "cooling_off");
+          // The CVE gate wins: a blocked version stays blocked whatever its embargo says. Only
+          // when *every* platform is embargoed is the version itself withheld -- one servable
+          // platform means the caller has something to fetch.
+          const withheld =
+            cveStatus !== "blocked" &&
+            embargoed.length > 0 &&
+            embargoed.length === platforms.length;
+
           return {
             version: version.version,
             version_group: version.version_group,
             is_lts: version.is_lts,
-            status: getVersionAvailabilityStatus(version.version, affects),
-            platforms: artifacts.map((artifact) => ({
-              os: artifact.os,
-              arch: artifact.arch,
-              status: artifact.status,
-            })),
+            status: withheld ? ("cooling_off" as const) : cveStatus,
+            available_at: withheld ? earliest(embargoed) : null,
+            platforms,
           };
         }),
       );
@@ -143,6 +189,25 @@ export function createPackagesRouter(deps: PackagesRouteDeps): Router {
       const version = candidates.find(
         (candidate) => getVersionAvailabilityStatus(candidate.version, affects) !== "blocked",
       );
+      if (!version) {
+        // An embargo is a temporary, dated withholding -- distinct from "not synced yet" (202,
+        // retry shortly) and from "nothing safe exists" (404). Reporting it as either tells the
+        // caller to do the wrong thing.
+        const until = await deps.getEarliestCoolingOffInGroup(packageName, group, { os, arch });
+        if (until !== null) {
+          res
+            .status(423)
+            .set("Retry-After", String(retryAfterSeconds(until)))
+            .json(
+              CoolingOffErrorSchema.parse({
+                error: `No servable version for group ${group}: awaiting release from cooling off`,
+                available_at: until.toISOString(),
+              }),
+            );
+          return;
+        }
+      }
+
       if (!version && candidates.length === 0) {
         const recent = await deps.getRecentSyncJob(packageName, 30);
         if (!recent) {
@@ -200,6 +265,26 @@ export function createPackagesRouter(deps: PackagesRouteDeps): Router {
   });
 
   return router;
+}
+
+/** The artifact's embargo expiry if it is still in force, else null. */
+function coolingOffUntil(artifact: ArtifactRow): Date | null {
+  const until = artifact.cooling_off_until;
+  if (!until || until <= new Date()) return null;
+  return until;
+}
+
+/** Earliest `available_at` among embargoed platforms — the first moment anything can be fetched. */
+function earliest(platforms: { available_at: string | null }[]): string | null {
+  const times = platforms
+    .map((platform) => platform.available_at)
+    .filter((at): at is string => at !== null)
+    .sort();
+  return times[0] ?? null;
+}
+
+function retryAfterSeconds(until: Date): number {
+  return Math.max(1, Math.ceil((until.getTime() - Date.now()) / 1000));
 }
 
 function parseOptionalBoolean(value: unknown): boolean | undefined {

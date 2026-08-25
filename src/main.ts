@@ -50,7 +50,9 @@ import {
   listArtifactsInGroup,
   listAvailableVersionsInGroup,
   listAvailableVersionsByGroup,
+  getEarliestCoolingOffInGroup,
   listVersionGroups,
+  listVersionGroupsWithLts,
   listVersions,
 } from "./db/queries/versions.js";
 import {
@@ -282,6 +284,9 @@ export function createApp(): express.Express {
       listEnabledPackages: () => listPackages(pool, true),
       getPackage: (name) => getPackage(pool, name),
       listVersionGroups: (packageName) => listVersionGroups(pool, packageName),
+      listVersionGroupsWithLts: (packageName) => listVersionGroupsWithLts(pool, packageName),
+      getEarliestCoolingOffInGroup: (packageName, group, opts) =>
+        getEarliestCoolingOffInGroup(pool, packageName, group, opts),
       listAvailableVersionsByGroup: (packageName, opts) =>
         listAvailableVersionsByGroup(pool, packageName, opts),
       listAffectsForPackage: (name) => listAffectsWithCveForPackage(pool, name),

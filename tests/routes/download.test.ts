@@ -43,6 +43,22 @@ function makeAvailableArtifact(overrides: Partial<{ cooling_off_until: Date | nu
   };
 }
 
+/**
+ * The state the sync service actually leaves an embargoed artifact in: `pending` with no gcs_path,
+ * because it skips queueing the download until the cooling-off window elapses.
+ */
+function makeCoolingOffArtifact(coolingOffUntil: Date) {
+  return {
+    ...makeAvailableArtifact(),
+    gcs_path: null,
+    file_size: null,
+    checksum: null,
+    checksum_type: null,
+    status: "pending" as const,
+    cooling_off_until: coolingOffUntil,
+  };
+}
+
 function makeVersionRow() {
   return {
     id: 1,
@@ -140,9 +156,7 @@ describe("download routes", () => {
       deps.getVersion = vi.fn().mockResolvedValue(makeVersionRow());
       // cooling_off_until is ~2.75 days from now (3 days - 6 hours elapsed)
       const coolingOffUntil = new Date(Date.now() + (3 * 86_400_000 - 6 * 3600_000));
-      deps.getArtifact = vi
-        .fn()
-        .mockResolvedValue(makeAvailableArtifact({ cooling_off_until: coolingOffUntil }));
+      deps.getArtifact = vi.fn().mockResolvedValue(makeCoolingOffArtifact(coolingOffUntil));
       const app = createTestApp(deps);
 
       const response = await request(app).get("/download/uv/0.10.10/linux/x86-64");
@@ -155,6 +169,38 @@ describe("download routes", () => {
       expect(retryAfter).toBeGreaterThan(0);
       // Should be roughly 2.75 days away, within 60s tolerance
       expect(retryAfter).toBeCloseTo(3 * 86400 - 6 * 3600, -3);
+    });
+
+    it("returns 423 rather than 404 for a pending artifact with no gcs_path", async () => {
+      // Regression: the availability check used to run first, so every embargoed artifact -- which
+      // is pending by design -- surfaced as "Artifact not found" and the 423 branch was dead code.
+      const deps = baseDeps();
+      deps.getVersion = vi.fn().mockResolvedValue(makeVersionRow());
+      deps.getArtifact = vi
+        .fn()
+        .mockResolvedValue(makeCoolingOffArtifact(new Date(Date.now() + 86_400_000)));
+      const app = createTestApp(deps);
+
+      const response = await request(app).get("/download/uv/0.10.10/linux/x86-64");
+
+      expect(response.status).toBe(423);
+      expect(deps.streamFromStorage).not.toHaveBeenCalled();
+    });
+
+    it("returns 423 when an already-available artifact is re-embargoed", async () => {
+      const deps = baseDeps();
+      deps.getVersion = vi.fn().mockResolvedValue(makeVersionRow());
+      deps.getArtifact = vi
+        .fn()
+        .mockResolvedValue(
+          makeAvailableArtifact({ cooling_off_until: new Date(Date.now() + 86_400_000) }),
+        );
+      const app = createTestApp(deps);
+
+      const response = await request(app).get("/download/uv/0.10.10/linux/x86-64");
+
+      expect(response.status).toBe(423);
+      expect(deps.streamFromStorage).not.toHaveBeenCalled();
     });
 
     it("serves the artifact once cooling_off_until has passed", async () => {
@@ -172,6 +218,21 @@ describe("download routes", () => {
       const response = await request(app).get("/download/uv/0.10.10/linux/x86-64");
 
       expect(response.status).toBe(200);
+    });
+
+    it("returns 404 when the embargo has lapsed but the download has not run yet", async () => {
+      const deps = baseDeps();
+      deps.getVersion = vi.fn().mockResolvedValue(makeVersionRow());
+      deps.getArtifact = vi
+        .fn()
+        .mockResolvedValue(makeCoolingOffArtifact(new Date(Date.now() - 86_400_000)));
+      const app = createTestApp(deps);
+
+      const response = await request(app).get("/download/uv/0.10.10/linux/x86-64");
+
+      expect(response.status).toBe(404);
+      const body = response.body as { error: string };
+      expect(body.error).toBe("Artifact not found");
     });
 
     it("serves the artifact when cooling_off_until is null (no cooling off applied)", async () => {

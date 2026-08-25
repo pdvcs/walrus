@@ -14,6 +14,8 @@ function baseDeps(): PackagesRouteDeps {
     listEnabledPackages: vi.fn().mockResolvedValue([]),
     getPackage: vi.fn().mockResolvedValue(null),
     listVersionGroups: vi.fn().mockResolvedValue([]),
+    listVersionGroupsWithLts: vi.fn().mockResolvedValue([]),
+    getEarliestCoolingOffInGroup: vi.fn().mockResolvedValue(null),
     listAvailableVersionsByGroup: vi.fn().mockResolvedValue([]),
     listAffectsForPackage: vi.fn().mockResolvedValue([]),
     listVersions: vi.fn().mockResolvedValue([]),
@@ -209,6 +211,7 @@ describe("packages routes", () => {
       os: "linux",
       arch: "x86-64",
       status: "available",
+      available_at: null,
     });
   });
 
@@ -368,5 +371,208 @@ describe("packages routes", () => {
     expect(response.status).toBe(202);
     expect(response.headers["retry-after"]).toBe("30");
     expect(triggerOnDemandSync).toHaveBeenCalledWith("uv");
+  });
+  describe("cooling off", () => {
+    function enabledPackage(name: string) {
+      return {
+        name,
+        display_name: name,
+        vendor: "Test",
+        description: null,
+        website: null,
+        config_hash: "x",
+        enabled: true,
+        created_at: new Date(),
+        updated_at: new Date(),
+      };
+    }
+
+    function artifact(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 10,
+        version_id: 1,
+        os: "linux",
+        arch: "x86-64",
+        filename: "go.tar.gz",
+        gcs_path: null,
+        file_size: null,
+        checksum: null,
+        checksum_type: null,
+        upstream_url: "https://example.test/go.tar.gz",
+        status: "pending",
+        error_message: null,
+        download_started_at: null,
+        download_completed_at: null,
+        removed_at: null,
+        created_at: new Date(),
+        cooling_off_until: null,
+        ...overrides,
+      };
+    }
+
+    function versionRow(version: string, group: string) {
+      return {
+        id: 1,
+        package_name: "golang",
+        version,
+        version_group: group,
+        is_lts: false,
+        discovered_at: new Date(),
+        version_sort: "0000.0027.0000",
+      };
+    }
+
+    it("reports an embargoed version as cooling_off with available_at, not available", async () => {
+      const until = new Date(Date.now() + 3 * 86_400_000);
+      const deps = baseDeps();
+      deps.getPackage = vi.fn().mockResolvedValue(enabledPackage("golang"));
+      deps.listVersionGroups = vi.fn().mockResolvedValue(["1.27"]);
+      deps.listVersions = vi.fn().mockResolvedValue([versionRow("1.27.0", "1.27")]);
+      deps.listArtifactsForVersion = vi
+        .fn()
+        .mockResolvedValue([artifact({ cooling_off_until: until })]);
+      const app = createTestApp(deps);
+
+      const response = await request(app).get("/api/v1/packages/golang/versions");
+      const body = response.body as {
+        versions: Array<{
+          status: string;
+          available_at: string | null;
+          platforms: Array<{ status: string; available_at: string | null }>;
+        }>;
+      };
+
+      expect(response.status).toBe(200);
+      expect(body.versions[0].status).toBe("cooling_off");
+      expect(body.versions[0].available_at).toBe(until.toISOString());
+      // The stored status is `pending`; reporting that verbatim is what made an embargo
+      // indistinguishable from a download the sync had simply not run yet.
+      expect(body.versions[0].platforms[0].status).toBe("cooling_off");
+      expect(body.versions[0].platforms[0].available_at).toBe(until.toISOString());
+    });
+
+    it("keeps a version available when only some platforms are embargoed", async () => {
+      const deps = baseDeps();
+      deps.getPackage = vi.fn().mockResolvedValue(enabledPackage("golang"));
+      deps.listVersionGroups = vi.fn().mockResolvedValue(["1.27"]);
+      deps.listVersions = vi.fn().mockResolvedValue([versionRow("1.27.0", "1.27")]);
+      deps.listArtifactsForVersion = vi
+        .fn()
+        .mockResolvedValue([
+          artifact({ id: 10, arch: "x86-64", status: "available", gcs_path: "x" }),
+          artifact({ id: 11, arch: "arm64", cooling_off_until: new Date(Date.now() + 86_400_000) }),
+        ]);
+      const app = createTestApp(deps);
+
+      const response = await request(app).get("/api/v1/packages/golang/versions");
+      const body = response.body as {
+        versions: Array<{
+          status: string;
+          available_at: string | null;
+          platforms: Array<{ status: string }>;
+        }>;
+      };
+
+      expect(body.versions[0].status).toBe("available");
+      expect(body.versions[0].available_at).toBeNull();
+      expect(body.versions[0].platforms.map((p) => p.status)).toEqual(["available", "cooling_off"]);
+    });
+
+    it("keeps a CVE-blocked version blocked even while embargoed", async () => {
+      const deps = baseDeps();
+      deps.getPackage = vi.fn().mockResolvedValue(enabledPackage("golang"));
+      deps.listVersionGroups = vi.fn().mockResolvedValue(["1.27"]);
+      deps.listVersions = vi.fn().mockResolvedValue([versionRow("1.27.0", "1.27")]);
+      deps.listArtifactsForVersion = vi
+        .fn()
+        .mockResolvedValue([artifact({ cooling_off_until: new Date(Date.now() + 86_400_000) })]);
+      deps.listAffectsForPackage = vi.fn().mockResolvedValue([
+        {
+          cve_id: "CVE-2026-9999",
+          version_start: null,
+          version_start_excl: false,
+          version_end: null,
+          version_end_excl: false,
+          exact_version: "1.27.0",
+          fixed_in: null,
+          source: "nvd",
+          severity: "CRITICAL",
+          cvss_v3_score: "9.8",
+          description: null,
+          is_kev: false,
+          raw: null,
+        },
+      ]);
+      const app = createTestApp(deps);
+
+      const response = await request(app).get("/api/v1/packages/golang/versions");
+      const body = response.body as { versions: Array<{ status: string }> };
+
+      expect(body.versions[0].status).toBe("blocked");
+    });
+
+    it("lists a group with nothing servable, carrying latest_available null", async () => {
+      const deps = baseDeps();
+      deps.getPackage = vi.fn().mockResolvedValue(enabledPackage("golang"));
+      deps.listVersionGroupsWithLts = vi.fn().mockResolvedValue([
+        { version_group: "1.27", is_lts: false },
+        { version_group: "1.25", is_lts: true },
+      ]);
+      // Only 1.25 has a servable artifact, so 1.27 never reaches the vuln-gate summary.
+      deps.listAvailableVersionsByGroup = vi
+        .fn()
+        .mockResolvedValue([{ version: "1.25.14", version_group: "1.25", is_lts: true }]);
+      const app = createTestApp(deps);
+
+      const response = await request(app).get("/api/v1/packages/golang/groups");
+      const body = response.body as {
+        groups: Array<{ group: string; is_lts: boolean; latest_available: string | null }>;
+      };
+
+      expect(response.status).toBe(200);
+      expect(body.groups).toEqual([
+        { group: "1.27", is_lts: false, latest_available: null },
+        { group: "1.25", is_lts: true, latest_available: "1.25.14" },
+      ]);
+    });
+
+    it("returns 423 with Retry-After when the group is only embargoed", async () => {
+      const until = new Date(Date.now() + 2 * 86_400_000);
+      const deps = baseDeps();
+      deps.getPackage = vi.fn().mockResolvedValue(enabledPackage("golang"));
+      deps.listAvailableVersionsInGroup = vi.fn().mockResolvedValue([]);
+      deps.getEarliestCoolingOffInGroup = vi.fn().mockResolvedValue(until);
+      const app = createTestApp(deps);
+
+      const response = await request(app).get(
+        "/api/v1/packages/golang/versions/1.27/latest?os=linux&arch=x86-64",
+      );
+      const body = response.body as { error: string; available_at: string };
+
+      expect(response.status).toBe(423);
+      expect(body.available_at).toBe(until.toISOString());
+      expect(Number(response.headers["retry-after"])).toBeGreaterThan(0);
+      // An embargo must not be reported as "not synced yet" -- that tells the caller to retry
+      // in 30s for something three days away.
+      expect(deps.triggerOnDemandSync).not.toHaveBeenCalled();
+      expect(deps.getEarliestCoolingOffInGroup).toHaveBeenCalledWith("golang", "1.27", {
+        os: "linux",
+        arch: "x86-64",
+      });
+    });
+
+    it("still returns 202 syncing when the group is empty and nothing is embargoed", async () => {
+      const deps = baseDeps();
+      deps.getPackage = vi.fn().mockResolvedValue(enabledPackage("golang"));
+      deps.listAvailableVersionsInGroup = vi.fn().mockResolvedValue([]);
+      deps.getEarliestCoolingOffInGroup = vi.fn().mockResolvedValue(null);
+      deps.getRecentSyncJob = vi.fn().mockResolvedValue(null);
+      const app = createTestApp(deps);
+
+      const response = await request(app).get("/api/v1/packages/golang/versions/9/latest");
+
+      expect(response.status).toBe(202);
+      expect(deps.triggerOnDemandSync).toHaveBeenCalledWith("golang");
+    });
   });
 });

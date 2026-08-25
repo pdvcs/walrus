@@ -35,11 +35,14 @@ export function createDownloadRouter(deps: DownloadRouteDeps): Router {
       }
 
       const artifact = await deps.getArtifact(versionRow.id, os, arch);
-      if (!artifact || artifact.status !== "available" || !artifact.gcs_path) {
+      if (!artifact) {
         res.status(404).json({ error: "Artifact not found" });
         return;
       }
 
+      // Policy checks run before the availability check: an artifact inside its release embargo is
+      // deliberately left `pending` with no gcs_path (the sync service skips queueing its
+      // download), so testing availability first would report every cooling-off artifact as a 404.
       if (artifact.cooling_off_until !== null && artifact.cooling_off_until > new Date()) {
         const retryAfterSecs = Math.ceil(
           (artifact.cooling_off_until.getTime() - Date.now()) / 1000,
@@ -49,6 +52,11 @@ export function createDownloadRouter(deps: DownloadRouteDeps): Router {
           error: "Artifact is in cooling off period",
           available_at: artifact.cooling_off_until.toISOString(),
         });
+        return;
+      }
+
+      if (artifact.status !== "available" || !artifact.gcs_path) {
+        res.status(404).json({ error: "Artifact not found" });
         return;
       }
 

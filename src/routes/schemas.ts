@@ -49,7 +49,15 @@ export const PlatformSchema = z
   .object({
     os: z.string(),
     arch: z.string(),
-    status: z.enum(["pending", "downloading", "available", "failed", "removed"]),
+    status: z
+      .enum(["pending", "downloading", "available", "failed", "removed", "cooling_off"])
+      .openapi({
+        description:
+          "Artifact lifecycle state, except that an artifact still inside its release embargo reports `cooling_off` rather than the `pending` it is stored as — the two are indistinguishable otherwise, and mean very different things to a caller.",
+      }),
+    available_at: z.string().datetime().nullable().optional().openapi({
+      description: "When a `cooling_off` artifact becomes servable. Null for every other status.",
+    }),
   })
   .openapi("Platform");
 
@@ -58,9 +66,13 @@ export const VersionSchema = z
     version: z.string(),
     version_group: z.string(),
     is_lts: z.boolean(),
-    status: z.enum(["available", "blocked"]).openapi({
+    status: z.enum(["available", "blocked", "cooling_off"]).openapi({
       description:
-        "Version eligibility under the critical-CVE gate. Blocked means a concrete match to a known critical CVE (CVSS >= 9.0, or score-less CRITICAL).",
+        "Whether the version can be fetched. `blocked` is a concrete match to a known critical CVE (CVSS >= 9.0, or score-less CRITICAL) and takes precedence. `cooling_off` means no platform is servable yet because every candidate artifact is inside its release embargo. `available` means at least one platform is downloadable now, or is pending for ordinary sync reasons.",
+    }),
+    available_at: z.string().datetime().nullable().optional().openapi({
+      description:
+        "For `cooling_off`, when the first platform leaves its embargo. Null for every other status.",
     }),
     platforms: z.array(PlatformSchema),
   })
