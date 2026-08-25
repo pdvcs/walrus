@@ -33,21 +33,27 @@ export async function upsertPackage(
  * Insert a package row if it does not already exist, without clobbering an
  * existing row's config_hash/enabled. Used at boot so vuln reconciliation has a
  * package row to reference before any sync has run.
+ *
+ * `enabled` applies to the INSERT only — an existing row keeps whatever an
+ * operator set. Watch-only packages (`watchlist/*.toml`) pass false: walrus
+ * serves no binaries for them, and `enabled = false` is what every serving route
+ * already filters on, while the vuln routes ignore it.
  */
 export async function ensurePackage(
   pool: Pool,
   pkg: Pick<PackageRow, "name" | "display_name" | "vendor" | "description" | "website">,
+  enabled = true,
 ): Promise<void> {
   await pool.query(
     `INSERT INTO packages (name, display_name, vendor, description, website, config_hash, enabled)
-     VALUES ($1, $2, $3, $4, $5, '', true)
+     VALUES ($1, $2, $3, $4, $5, '', $6)
      ON CONFLICT (name) DO UPDATE SET
        display_name = EXCLUDED.display_name,
        vendor       = EXCLUDED.vendor,
        description   = EXCLUDED.description,
        website       = EXCLUDED.website,
        updated_at    = now()`,
-    [pkg.name, pkg.display_name, pkg.vendor, pkg.description, pkg.website],
+    [pkg.name, pkg.display_name, pkg.vendor, pkg.description, pkg.website, enabled],
   );
 }
 

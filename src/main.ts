@@ -6,7 +6,8 @@ import { log } from "./common/log.js";
 import { pool, runMigrations } from "./db/client.js";
 import { createStorageBackend } from "./storage/index.js";
 import { loadAllPackages } from "./services/package-registry.js";
-import { reconcileAllPackageVulns } from "./services/vuln-config.js";
+import { loadAllWatchConfigs } from "./services/watch-registry.js";
+import { reconcileAllPackageVulns, reconcileAllWatchVulns } from "./services/vuln-config.js";
 import { createVulnSyncImpls } from "./vuln/sync/impls.js";
 import { DownloadService, ChecksumAlgorithm } from "./services/download-service.js";
 import { RetentionService } from "./services/retention-service.js";
@@ -83,7 +84,16 @@ if (packageRegistry.errors.length > 0) {
   }
 }
 
+// Watch-only packages: vuln-tracked, never discovered/downloaded/served.
+const watchRegistry = loadAllWatchConfigs();
+if (watchRegistry.errors.length > 0) {
+  for (const error of watchRegistry.errors) {
+    log.warn({ file: error.filePath, error: error.error }, "Watch config failed to load");
+  }
+}
+
 const configs = packageRegistry.configs.map((entry) => entry.config);
+const watchConfigs = watchRegistry.configs.map((entry) => entry.config);
 const syncServices = new Map<string, SyncService>();
 const sharedDownloadService = new DownloadService(pool, storage, { maxRetries: 2 });
 
@@ -483,6 +493,7 @@ if (require.main === module) {
   runMigrations()
     .then(() => recoverInterruptedState())
     .then(() => reconcileAllPackageVulns(pool, configs))
+    .then(() => reconcileAllWatchVulns(pool, watchConfigs))
     .then(() => {
       log.info("Startup recovery complete");
       app.listen(config.PORT, () => {

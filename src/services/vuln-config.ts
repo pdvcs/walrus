@@ -1,5 +1,8 @@
 import { Pool } from "pg";
-import { PackageConfig } from "../types/package-config.js";
+import { PackageConfig, VulnerabilitiesConfig } from "../types/package-config.js";
+import { WatchConfig } from "../types/watch-config.js";
+import { loadAllPackages } from "./package-registry.js";
+import { loadAllWatchConfigs } from "./watch-registry.js";
 import { ensurePackage } from "../db/queries/packages.js";
 import {
   reconcilePackageVuln,
@@ -11,12 +14,26 @@ import { normalizeName } from "../vuln/normalize.js";
 import { log } from "../common/log.js";
 
 /**
+ * The identity + vuln fields shared by a served `PackageConfig` and a watch-only
+ * `WatchConfig`. Everything below operates on this common shape so both kinds of
+ * TOML reconcile through one code path.
+ */
+export interface VulnTrackableConfig {
+  name: string;
+  display_name: string;
+  vendor: string;
+  description?: string;
+  website?: string;
+  vulnerabilities?: VulnerabilitiesConfig;
+}
+
+/**
  * Resolve a package's `[vulnerabilities]` TOML section into the normalized
  * shape stored in the DB. Returns null when the package has no vuln tracking.
  * Aliases are normalized; the package's own name and display name are always
  * included so the package is findable by its own identity in search/resolution.
  */
-export function computeVulnInput(config: PackageConfig): VulnConfigInput | null {
+export function computeVulnInput(config: VulnTrackableConfig): VulnConfigInput | null {
   const v = config.vulnerabilities;
   if (!v) return null;
 
@@ -42,18 +59,27 @@ export function computeVulnInput(config: PackageConfig): VulnConfigInput | null 
 /**
  * Ensure the package row exists, then reconcile its vuln metadata from config
  * (or clear it if the `[vulnerabilities]` section is absent). Idempotent.
+ *
+ * `enabled` seeds the package row only when it does not yet exist — see
+ * `ensurePackage`. Watch-only entries pass false so they never reach the serving
+ * routes.
  */
 export async function reconcilePackageVulnFromConfig(
   pool: Pool,
-  config: PackageConfig,
+  config: VulnTrackableConfig,
+  enabled = true,
 ): Promise<void> {
-  await ensurePackage(pool, {
-    name: config.name,
-    display_name: config.display_name,
-    vendor: config.vendor,
-    description: config.description ?? null,
-    website: config.website ?? null,
-  });
+  await ensurePackage(
+    pool,
+    {
+      name: config.name,
+      display_name: config.display_name,
+      vendor: config.vendor,
+      description: config.description ?? null,
+      website: config.website ?? null,
+    },
+    enabled,
+  );
 
   const input = computeVulnInput(config);
   if (input) {
@@ -75,4 +101,36 @@ export async function reconcileAllPackageVulns(
       log.error({ package: config.name, err }, "Vuln config reconciliation failed");
     }
   }
+}
+
+/**
+ * Reconcile every `watchlist/*.toml` entry at boot. Same path as served
+ * packages, but the package row is seeded disabled so nothing tries to serve it.
+ * Best-effort per package.
+ */
+export async function reconcileAllWatchVulns(pool: Pool, configs: WatchConfig[]): Promise<void> {
+  for (const config of configs) {
+    try {
+      await reconcilePackageVulnFromConfig(pool, config, false);
+    } catch (err) {
+      log.error({ package: config.name, err }, "Watch config reconciliation failed");
+    }
+  }
+}
+
+/**
+ * Reconcile every vuln-tracked definition on disk — both served `packages/*.toml`
+ * and watch-only `watchlist/*.toml`. Standalone entrypoints (the backfill script,
+ * the backfill job) call this so they are self-sufficient on a fresh database
+ * without booting the app.
+ */
+export async function reconcileAllVulnConfigsFromDisk(pool: Pool): Promise<void> {
+  await reconcileAllPackageVulns(
+    pool,
+    loadAllPackages().configs.map((entry) => entry.config),
+  );
+  await reconcileAllWatchVulns(
+    pool,
+    loadAllWatchConfigs().configs.map((entry) => entry.config),
+  );
 }

@@ -94,7 +94,7 @@ const ChecksumSchema = z.object({
   response_path: z.string().optional(),
 });
 
-const VulnerabilitiesSchema = z.object({
+export const VulnerabilitiesSchema = z.object({
   // NVD CPE 2.3 `vendor:product` pairs; first entry is primary. Verify against
   // the NVD CPE dictionary when authoring (plan §2 / WAL-3 MANUAL_TEST).
   cpes: z

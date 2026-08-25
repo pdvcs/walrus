@@ -1,6 +1,7 @@
 #!/usr/bin/env tsx
 /**
- * check-schemas.ts — Fast schema-only validation for all packages/walrus-*.toml files.
+ * check-schemas.ts — Fast schema-only validation for all packages/walrus-*.toml
+ * and watchlist/*.toml files.
  *
  * Parses each TOML file and runs it through the Zod schema. No network calls.
  * Suitable for pre-commit hooks and CI.
@@ -11,22 +12,35 @@
 
 import path from "path";
 import { loadAllPackages } from "../src/services/package-registry.js";
+import { loadAllWatchConfigs } from "../src/services/watch-registry.js";
 
 const PACKAGES_DIR = path.join(process.cwd(), "packages");
+const WATCHLIST_DIR = path.join(process.cwd(), "watchlist");
 
 const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
 const red = (s: string) => `\x1b[31m${s}\x1b[0m`;
 const bold = (s: string) => `\x1b[1m${s}\x1b[0m`;
 
 const { configs, errors } = loadAllPackages(PACKAGES_DIR);
-const total = configs.length + errors.length;
+const watch = loadAllWatchConfigs(WATCHLIST_DIR);
+const total = configs.length + errors.length + watch.configs.length + watch.errors.length;
+const errorCount = errors.length + watch.errors.length;
 
-for (const { config, filePath } of configs) {
+const ok = [
+  ...configs.map((e) => ({ name: e.config.name, filePath: e.filePath, suffix: "" })),
+  ...watch.configs.map((e) => ({
+    name: e.config.name,
+    filePath: e.filePath,
+    suffix: " watch-only",
+  })),
+];
+
+for (const { name, filePath, suffix } of ok) {
   const rel = path.relative(process.cwd(), filePath);
-  console.log(`${green("✓")} ${rel} ${bold(`(${config.name})`)}`);
+  console.log(`${green("✓")} ${rel} ${bold(`(${name}${suffix})`)}`);
 }
 
-for (const { filePath, error } of errors) {
+for (const { filePath, error } of [...errors, ...watch.errors]) {
   const rel = path.relative(process.cwd(), filePath);
   console.log(`${red("✗")} ${rel}`);
   // Indent each line of the error message
@@ -36,10 +50,10 @@ for (const { filePath, error } of errors) {
 }
 
 console.log("");
-if (errors.length === 0) {
+if (errorCount === 0) {
   console.log(green(`✓ All ${total} package schema(s) valid`));
   process.exit(0);
 } else {
-  console.log(red(`✗ ${errors.length} of ${total} package schema(s) failed`));
+  console.log(red(`✗ ${errorCount} of ${total} package schema(s) failed`));
   process.exit(1);
 }

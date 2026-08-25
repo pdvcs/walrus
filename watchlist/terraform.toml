@@ -1,0 +1,28 @@
+# Terraform — watch-only: walrus tracks its vulnerabilities but does not
+# discover, cache, or serve Terraform binaries.
+# See ./engineering/docs/watchlist.md
+
+name = "terraform"
+display_name = "Terraform"
+vendor = "HashiCorp (IBM)"
+website = "https://developer.hashicorp.com/terraform"
+description = "Infrastructure-as-code provisioning tool (vulnerability tracking only)"
+
+[vulnerabilities]
+# hashicorp:terraform — 185 CPE dictionary entries, 5 CVEs (verified against the
+# live NVD API 2.0 on 2026-08-25). NVD still files Terraform under vendor
+# `hashicorp` post-IBM-acquisition; no `ibm:*` Terraform CPE exists.
+#
+# Deliberately NOT tracked here:
+#   hashicorp:terraform_enterprise (26 entries) — the self-hosted server, a
+#     different product from the CLI.
+#   hashicorp:terraform_provider, terraform:linode_provider, bpg:terraform_provider
+#     — individual providers, not Terraform itself.
+cpes = ["hashicorp:terraform"]
+
+# OSV cross-check via the Go module path. Yields 4 advisories covering 2 distinct
+# CVEs (CVE-2019-19316, CVE-2023-4782), both also in NVD — a useful corroboration
+# signal and an earlier-warning path when NVD lags.
+osv = { ecosystem = "Go", name = "github.com/hashicorp/terraform" }
+
+aliases = ["terraform", "tf", "hashicorp terraform", "terraform cli"]

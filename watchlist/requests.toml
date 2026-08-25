@@ -1,0 +1,30 @@
+# Requests (PyPI) — watch-only: walrus tracks its vulnerabilities but does not
+# discover, cache, or serve the library.
+# See ./engineering/docs/watchlist.md
+
+name = "requests"
+display_name = "Requests"
+vendor = "Python Software Foundation"
+website = "https://pypi.org/project/requests/"
+description = "Python HTTP library (vulnerability tracking only)"
+
+[vulnerabilities]
+# python:requests — 160 CPE dictionary entries, 6 CVEs (verified against the live
+# NVD API 2.0 on 2026-08-25).
+#
+# Deliberately NOT tracked here:
+#   python-requests:requests — 140 dictionary entries, but ALL are deprecated=true
+#     (NVD renamed the vendor to `python`) and zero CVEs reference the pair. Adding
+#     it would cost a virtualMatchString pass per backfill and never match anything.
+#   jenkins:requests, wordpress:requests — unrelated products that merely share the
+#     product name.
+cpes = ["python:requests"]
+
+# OSV PyPI is the primary source here and is strictly ahead of NVD: 16 advisories
+# covering 8 distinct CVEs, versus NVD's 6. The two extras (CVE-2024-35195,
+# CVE-2024-47081) ARE in NVD but sit in vulnStatus "Deferred" with no CPE
+# configurations at all, so walrus's CPE join can never attribute them. Do not
+# remove this mapping on the assumption that NVD covers the package.
+osv = { ecosystem = "PyPI", name = "requests" }
+
+aliases = ["requests", "python requests", "python-requests", "requests library"]
