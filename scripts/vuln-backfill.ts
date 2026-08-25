@@ -17,8 +17,7 @@ import { runMigrations } from "../src/db/client.js";
 import { NvdClient } from "../src/vuln/sync/nvd-client.js";
 import { backfillNvd, buildPublicationWindows } from "../src/vuln/sync/nvd-sync.js";
 import { listDistinctCpePairs } from "../src/db/queries/package-aliases.js";
-import { loadAllPackages } from "../src/services/package-registry.js";
-import { reconcileAllPackageVulns } from "../src/services/vuln-config.js";
+import { reconcileAllVulnConfigsFromDisk } from "../src/services/vuln-config.js";
 import { withVulnSyncLock } from "../src/vuln/sync/lock.js";
 import { runVulnBackfillJob } from "../src/services/vuln-backfill.js";
 
@@ -61,10 +60,9 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Reconcile package configs so CPE pairs exist even on a fresh DB (the same
-  // step the app runs at boot) — makes the backfill self-sufficient.
-  const configs = loadAllPackages().configs.map((c) => c.config);
-  await reconcileAllPackageVulns(pool, configs);
+  // Reconcile package + watchlist configs so CPE pairs exist even on a fresh DB
+  // (the same step the app runs at boot) — makes the backfill self-sufficient.
+  await reconcileAllVulnConfigsFromDisk(pool);
 
   const pairs = await listDistinctCpePairs(pool, packageName);
   if (pairs.length === 0) {
