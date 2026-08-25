@@ -12,8 +12,11 @@ example entries for this feature.
 ## Why a separate directory
 
 The vuln pipeline is keyed purely on `packages.name` and driven by
-`package_cpes`, `package_aliases`, and `packages.osv_*`. It never reads
-`versions` or `artifacts`. So vuln tracking has always been independent of
+`package_cpes`, `package_aliases`, and `packages.osv_*`. Ingestion never reads
+`versions` or `artifacts` at all; the cross-referencing query reads cached
+versions only where they exist, and a watch package simply has none — which is
+why `/api/v1/packages/terraform/vulns` answers `tracked: true` with an empty
+`versions` array. So vuln tracking has always been independent of
 serving — the only thing standing in the way was that a `packages` row could
 only originate from a `packages/*.toml`, which mandates `discovery`,
 `versioning`, and a non-empty `platforms` array.
@@ -26,12 +29,18 @@ watch-only entries get their own directory and their own small schema:
 | ---------------------------------------- | ---------------------------------- | -------------------------------- |
 | Schema                                   | `PackageConfigSchema`              | `WatchConfigSchema`              |
 | Loader                                   | `src/services/package-registry.ts` | `src/services/watch-registry.ts` |
-| `discovery` / `versioning` / `platforms` | required                           | not accepted                     |
+| `discovery` / `versioning` / `platforms` | required                           | ignored (silently stripped)      |
 | `[vulnerabilities]`                      | optional                           | **required**                     |
 | Gets a `SyncService`                     | yes                                | no                               |
 | `packages.enabled` on insert             | `true`                             | `false`                          |
 
 `packages/` keeps meaning "things walrus serves".
+
+> **Caveat:** `WatchConfigSchema` is a plain `z.object()`, so Zod *strips* keys it
+> does not know rather than rejecting them. Dropping a full `packages/*.toml` into
+> `watchlist/` therefore loads without error and quietly discards everything that
+> made it servable, leaving a watch-only package. See WAL-35 for making this an
+> error instead.
 
 ## How it stays out of the serving path
 
