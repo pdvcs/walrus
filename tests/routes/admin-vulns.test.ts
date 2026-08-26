@@ -79,6 +79,8 @@ describe("admin vuln explorer + sync (isolated)", () => {
 
   function buildApp(overrides: Partial<Parameters<typeof createAdminVulnsRouter>[0]> = {}) {
     const app = express();
+    // Mirrors main.ts: the real app parses JSON bodies before the admin router sees them.
+    app.use(express.json());
     app.use(
       "/admin/v1",
       createAdminVulnsRouter({
@@ -114,6 +116,64 @@ describe("admin vuln explorer + sync (isolated)", () => {
     expect(res.text).toMatch(/Data freshness/);
     expect(res.text).toMatch(/Sync KEV now/);
     expect(res.text).toMatch(/never attempted/);
+  });
+
+  it("renders the CVSS enrichment panel with Apply locked until a preview runs", async () => {
+    const res = await request(buildApp()).get("/admin/v1/vulns");
+    expect(res.text).toMatch(/CVSS enrichment/);
+    expect(res.text).toMatch(/id="cvss-preview"/);
+    // Applying without previewing is the mistake the panel exists to prevent, so the
+    // button ships disabled and the script only unlocks it after a successful preview.
+    expect(res.text).toMatch(/id="cvss-apply"[^>]*disabled/);
+  });
+
+  it("previews cvss enrichment without applying, and audits the preview", async () => {
+    let applied = false;
+    const app = buildApp({
+      vulnSyncImpls: {
+        cvss: async () => {
+          applied = true;
+          return { updated: 4 };
+        },
+        cvssPreview: async () => ({
+          candidates: 1,
+          fetched: 1,
+          proposals: [
+            {
+              cve_id: "CVE-2026-2222",
+              severity: "CRITICAL",
+              severity_source: "nvd-cvss-v3",
+              cvss_v3_score: 9.9,
+              cvss_v2_score: null,
+              crosses_critical_gate: true,
+            },
+          ],
+          newly_blocked: [{ package_name: "golang", newly_blocked: ["1.26.4"] }],
+        }),
+      },
+    });
+
+    const res = await request(app)
+      .post("/admin/v1/vuln-sync/cvss")
+      .send({ dry_run: true, limit: 5 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.dry_run).toBe(true);
+    expect(res.body.preview.newly_blocked).toEqual([
+      { package_name: "golang", newly_blocked: ["1.26.4"] },
+    ]);
+    expect(applied).toBe(false);
+
+    const { rows } = await pool.query(
+      "SELECT details FROM admin_actions WHERE details->>'action' = 'vuln-sync-preview' ORDER BY id DESC LIMIT 1",
+    );
+    expect(rows[0].details.newly_blocked).toBe(1);
+  });
+
+  it("rejects a dry run for a source that cannot honour it", async () => {
+    const res = await request(buildApp()).post("/admin/v1/vuln-sync/kev").send({ dry_run: true });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("only supported for the 'cvss' source");
   });
 
   it("renders a failed latest attempt without advancing displayed freshness", async () => {

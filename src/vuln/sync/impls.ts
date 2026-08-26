@@ -4,7 +4,7 @@ import { NvdClient } from "./nvd-client.js";
 import { incrementalNvdSync } from "./nvd-sync.js";
 import { kevSync } from "./kev-sync.js";
 import { osvSyncAll } from "./osv-sync.js";
-import { enrichMissingCvss } from "./cvss-enrich.js";
+import { enrichMissingCvss, previewGateDelta } from "./cvss-enrich.js";
 import { VulnSyncImpls } from "./index.js";
 import { withVulnSyncLock } from "./lock.js";
 
@@ -34,12 +34,15 @@ export function createVulnSyncImpls(pool: Pool): VulnSyncImpls {
       }),
     // Shares the "nvd" lock: it is NVD traffic, and must not race NVD ingestion
     // rewriting the same cves rows.
-    cvss: () =>
+    cvss: (opts) =>
       withVulnSyncLock(pool, "nvd", async () => {
         const nvd = new NvdClient({
           logger: { info: (m) => log.info(m), warn: (m) => log.warn(m) },
         });
-        const r = await enrichMissingCvss(pool, nvd, { log: (m) => log.info(m) });
+        const r = await enrichMissingCvss(pool, nvd, {
+          limit: opts?.limit,
+          log: (m) => log.info(m),
+        });
         return {
           candidates: r.candidates,
           fetched: r.fetched,
@@ -47,6 +50,25 @@ export function createVulnSyncImpls(pool: Pool): VulnSyncImpls {
           not_found: r.not_found,
           no_metrics: r.no_metrics,
           errors: r.errors,
+        };
+      }),
+    // Takes the same lock as the apply: it reads the cves rows NVD ingestion
+    // rewrites, and a preview computed against half-written data would be a lie.
+    cvssPreview: (opts) =>
+      withVulnSyncLock(pool, "nvd", async () => {
+        const nvd = new NvdClient({
+          logger: { info: (m) => log.info(m), warn: (m) => log.warn(m) },
+        });
+        const r = await enrichMissingCvss(pool, nvd, {
+          dryRun: true,
+          limit: opts?.limit,
+          log: (m) => log.info(m),
+        });
+        return {
+          candidates: r.candidates,
+          fetched: r.fetched,
+          proposals: r.proposals,
+          newly_blocked: await previewGateDelta(pool, r.proposals),
         };
       }),
   };

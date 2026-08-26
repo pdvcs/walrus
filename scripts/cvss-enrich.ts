@@ -10,6 +10,10 @@
  * which makes /download return 403 for versions that serve fine today. The dry
  * run reports exactly which versions those would be, before anything is written.
  *
+ * Dev convenience only. Production has no shell, so the same capability is exposed
+ * over HTTP: POST /internal/vuln-sync/cvss (or /admin/v1/...) with a JSON body of
+ * {"dry_run": true, "limit": N}. Keep the two in step.
+ *
  * Usage:
  *   npm run vuln:enrich -- --dry-run   # report proposals + newly-blocked versions
  *   npm run vuln:enrich                # apply

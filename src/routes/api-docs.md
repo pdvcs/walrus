@@ -359,9 +359,53 @@ curl 'http://localhost:8080/api/v1/packages/openjdk/vulns'
 ### Ingestion triggers (internal / admin)
 
 Vuln data is refreshed by external cron hitting `POST /internal/vuln-sync/:source`
-(`nvd | kev | osv | all`), or the sync-now buttons in the admin explorer
+(`nvd | kev | osv | cvss | all`), or the sync-now buttons in the admin explorer
 (`POST /admin/v1/vuln-sync/:source`, audited in `admin_actions`). See the
 [ops runbook](../../engineering/docs/build-release.md) for cadence and the one-time backfill.
+
+**`cvss` — preview before applying.** The `cvss` source is a repair pass that fills in
+severity for CVEs that have none (mostly OSV stubs NVD files as "Deferred"). Enrichment
+can newly satisfy the >= 9.0 download gate, so a version that serves today can start
+returning `403`. Both triggers accept a JSON body:
+
+| Field     | Type    | Description                                           |
+| --------- | ------- | ----------------------------------------------------- |
+| `dry_run` | boolean | Report what would change, write nothing. `cvss` only  |
+| `limit`   | integer | Bound the walk to N CVEs, in either mode. `cvss` only |
+
+Both are rejected with `400` for any other source rather than being ignored — a caller
+who asked for a preview must never get a live sync instead.
+
+```bash
+curl -XPOST .../internal/vuln-sync/cvss -H 'content-type: application/json' \
+  -d '{"dry_run": true, "limit": 50}'
+```
+
+```json
+{
+  "source": "cvss",
+  "dry_run": true,
+  "preview": {
+    "candidates": 3,
+    "fetched": 3,
+    "proposals": [
+      {
+        "cve_id": "CVE-2026-1111",
+        "severity": "CRITICAL",
+        "severity_source": "nvd-cvss-v3",
+        "cvss_v3_score": 9.8,
+        "cvss_v2_score": null,
+        "crosses_critical_gate": true
+      }
+    ],
+    "newly_blocked": [{ "package_name": "golang", "newly_blocked": ["1.26.4"] }]
+  }
+}
+```
+
+`newly_blocked` is the list to read before applying: those versions would begin returning
+`403` from `/download`. A preview takes the same lock as the sync it models, so it returns
+`409` if NVD ingestion is already running.
 
 ---
 

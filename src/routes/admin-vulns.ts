@@ -1,7 +1,14 @@
 import { Router } from "express";
 import { renderSharedHtml, escHtml } from "./admin.js";
 import { VulnQueryResult, DataFreshness } from "../services/vuln-query.js";
-import { isVulnSyncSource, runVulnSync, SourceOutcome, VulnSyncImpls } from "../vuln/sync/index.js";
+import {
+  isVulnSyncSource,
+  parseVulnSyncOptions,
+  runVulnSync,
+  SourceOutcome,
+  VulnSyncImpls,
+} from "../vuln/sync/index.js";
+import { VulnSyncAlreadyRunningError } from "../vuln/sync/lock.js";
 import type { VulnSourceStatus, VulnSyncStatus } from "../db/queries/vuln-sync-state.js";
 import type { VulnBackfillJobRow } from "../db/queries/vuln-backfill-jobs.js";
 import { buildPublicationWindows } from "../vuln/sync/nvd-sync.js";
@@ -69,7 +76,41 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
         res.status(400).json({ error: `Unknown vuln sync source: ${source}` });
         return;
       }
-      const outcomes = await runVulnSync(source, deps.vulnSyncImpls);
+      const parsed = parseVulnSyncOptions(source, req.body);
+      if (!parsed.ok) {
+        res.status(400).json({ error: parsed.error });
+        return;
+      }
+
+      if (parsed.opts.dryRun) {
+        const preview = deps.vulnSyncImpls.cvssPreview;
+        if (!preview) {
+          res.status(503).json({ error: "cvss preview is not available" });
+          return;
+        }
+        let result;
+        try {
+          result = await preview({ limit: parsed.opts.limit });
+        } catch (err) {
+          if (err instanceof VulnSyncAlreadyRunningError) {
+            res.status(409).json({ code: "already_running", error: err.message });
+            return;
+          }
+          throw err;
+        }
+        // Logged like any other admin action even though nothing was written — who
+        // previewed a gate change, and when, is part of the audit trail.
+        await deps.logAdminAction({
+          action: "vuln-sync-preview",
+          source,
+          proposals: result.proposals.length,
+          newly_blocked: result.newly_blocked.reduce((n, d) => n + d.newly_blocked.length, 0),
+        });
+        res.status(200).json({ source, dry_run: true, preview: result });
+        return;
+      }
+
+      const outcomes = await runVulnSync(source, deps.vulnSyncImpls, parsed.opts);
       await deps.logAdminAction({ action: "vuln-sync", source, outcomes });
       const wantsHtml = req.headers.accept?.includes("text/html");
       const alreadyRunning = source !== "all" && outcomes[0]?.code === "already_running";
@@ -162,6 +203,27 @@ function renderExplorer(ctx: {
       <form method="post" action="/admin/v1/vuln-backfill" style="display:inline"><button class="btn btn-sm btn-secondary">Start NVD backfill</button></form>
     </div>`;
 
+  // cvss has no freshness row: it shares the nvd lock and sync state. It gets its own
+  // panel because it is the one trigger that can change what /download serves -- the
+  // preview is not a convenience here, it is the step that makes applying safe.
+  const enrichPanel = `
+    <div class="enrich">
+      <div class="enrich-head">
+        <strong>CVSS enrichment</strong>
+        <span>Fills in severity for CVEs that have none (mostly OSV stubs). Applying can newly
+        satisfy the &ge; 9.0 gate, which makes versions that serve today return 403.
+        Preview first.</span>
+      </div>
+      <div class="enrich-actions">
+        <label for="cvss-limit">Limit</label>
+        <input id="cvss-limit" type="number" min="1" placeholder="all">
+        <button id="cvss-preview" class="btn btn-sm btn-secondary" type="button">Preview</button>
+        <button id="cvss-apply" class="btn btn-sm btn-danger" type="button" disabled
+          title="Run a preview first">Apply</button>
+      </div>
+      <div id="cvss-out"></div>
+    </div>`;
+
   const syncedBanner = ctx.synced
     ? `<div class="note note-ok">Triggered ${esc(ctx.synced)} sync. Freshness updates once ingestion completes.</div>`
     : "";
@@ -187,6 +249,7 @@ function renderExplorer(ctx: {
     <h1>Vulnerability explorer</h1>
     ${hintsBanner}
     ${freshnessPanel}
+    ${enrichPanel}
     ${syncedBanner}
     ${syncErrorBanner}
     ${form}
@@ -214,7 +277,133 @@ function renderExplorer(ctx: {
         } catch(e) {}
       }, 150);
     });
-    input.addEventListener('blur', () => setTimeout(() => ac.innerHTML='', 150));`;
+    input.addEventListener('blur', () => setTimeout(() => ac.innerHTML='', 150));
+
+    const limitEl = document.getElementById('cvss-limit');
+    const previewBtn = document.getElementById('cvss-preview');
+    const applyBtn = document.getElementById('cvss-apply');
+    const out = document.getElementById('cvss-out');
+    // Apply stays locked to the limit the preview was computed for: applying with a
+    // different bound would write a change set nobody looked at.
+    let previewedLimit;
+    let previewedBlocked = 0;
+
+    function esc(v) {
+      const d = document.createElement('div');
+      d.textContent = v == null ? '' : String(v);
+      return d.innerHTML;
+    }
+
+    function currentLimit() {
+      const raw = limitEl.value.trim();
+      return raw === '' ? undefined : Number(raw);
+    }
+
+    function lockApply(why) {
+      applyBtn.disabled = true;
+      applyBtn.title = why;
+      previewedLimit = undefined;
+    }
+
+    limitEl.addEventListener('input', () => lockApply('Limit changed — preview again'));
+
+    async function post(payload) {
+      const r = await fetch('/admin/v1/vuln-sync/cvss', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      let data = {};
+      try { data = await r.json(); } catch (e) {}
+      return { status: r.status, data: data };
+    }
+
+    function renderError(status, data) {
+      const msg = data && data.error ? data.error : 'Request failed (HTTP ' + status + ')';
+      out.innerHTML = '<div class="note note-warn">' + esc(msg) + '</div>';
+    }
+
+    function renderPreview(d) {
+      const p = d.preview || {};
+      const proposals = p.proposals || [];
+      const blocked = p.newly_blocked || [];
+      previewedBlocked = blocked.reduce((n, x) => n + x.newly_blocked.length, 0);
+
+      let html = '<div class="note note-info">Dry run — nothing was written. '
+        + esc(p.candidates) + ' candidate(s), ' + esc(p.fetched) + ' fetched, '
+        + proposals.length + ' proposal(s).</div>';
+
+      if (previewedBlocked > 0) {
+        html += '<div class="note note-warn"><strong>' + previewedBlocked
+          + ' version(s) would start returning 403:</strong><ul class="blocked">'
+          + blocked.map(b => '<li>' + esc(b.package_name) + ': '
+              + b.newly_blocked.map(esc).join(', ') + '</li>').join('')
+          + '</ul></div>';
+      } else if (proposals.length > 0) {
+        html += '<div class="note note-ok">No cached version changes availability.</div>';
+      }
+
+      if (proposals.length > 0) {
+        html += '<table><thead><tr><th>CVE</th><th>Severity</th><th>CVSS v3</th>'
+          + '<th>CVSS v2</th><th>Source</th><th>Crosses gate</th></tr></thead><tbody>'
+          + proposals.map(x =>
+              '<tr><td>' + esc(x.cve_id) + '</td>'
+              + '<td class="sev-' + esc(x.severity) + '">' + esc(x.severity) + '</td>'
+              + '<td>' + esc(x.cvss_v3_score == null ? '—' : x.cvss_v3_score) + '</td>'
+              + '<td>' + esc(x.cvss_v2_score == null ? '—' : x.cvss_v2_score) + '</td>'
+              + '<td>' + esc(x.severity_source) + '</td>'
+              + '<td>' + (x.crosses_critical_gate ? 'yes' : 'no') + '</td></tr>'
+            ).join('')
+          + '</tbody></table>';
+      } else {
+        html += '<p class="empty">Nothing to enrich — no CVE is missing a severity.</p>';
+      }
+      out.innerHTML = html;
+    }
+
+    previewBtn.addEventListener('click', async () => {
+      previewBtn.disabled = true;
+      out.innerHTML = '<p class="empty">Previewing…</p>';
+      try {
+        const limit = currentLimit();
+        const payload = { dry_run: true };
+        if (limit !== undefined) payload.limit = limit;
+        const r = await post(payload);
+        if (r.status !== 200) { renderError(r.status, r.data); lockApply('Preview failed'); return; }
+        renderPreview(r.data);
+        previewedLimit = limit;
+        applyBtn.disabled = false;
+        applyBtn.title = 'Apply the previewed changes';
+      } catch (e) {
+        renderError(0, { error: String(e) });
+        lockApply('Preview failed');
+      } finally {
+        previewBtn.disabled = false;
+      }
+    });
+
+    applyBtn.addEventListener('click', async () => {
+      const warning = previewedBlocked > 0
+        ? previewedBlocked + ' version(s) will start returning 403 from /download.\\n\\n'
+        : '';
+      if (!confirm(warning + 'Apply the previewed CVSS enrichment?')) return;
+      applyBtn.disabled = true;
+      out.innerHTML = '<p class="empty">Applying…</p>';
+      try {
+        const payload = {};
+        if (previewedLimit !== undefined) payload.limit = previewedLimit;
+        const r = await post(payload);
+        if (r.status !== 200 && r.status !== 207) { renderError(r.status, r.data); return; }
+        const s = (r.data.outcomes && r.data.outcomes[0] && r.data.outcomes[0].summary) || {};
+        out.innerHTML = '<div class="note note-ok">Applied: ' + esc(s.updated) + ' updated, '
+          + esc(s.fetched) + ' fetched of ' + esc(s.candidates) + ' candidate(s). '
+          + 'Re-run the lookup to see the new severities.</div>';
+      } catch (e) {
+        renderError(0, { error: String(e) });
+      } finally {
+        lockApply('Preview again before applying');
+      }
+    });`;
 
   const styleTail = `<style>
     .vform { display:flex; gap:8px; margin:16px 0; flex-wrap:wrap; }
@@ -229,6 +418,16 @@ function renderExplorer(ctx: {
     .note-ok { background:#dcfce7; color:#15803d; }
     .note-warn { background:#fef3c7; color:#92400e; }
     .note-info { background:#f3f4f6; color:#374151; }
+    .enrich { background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:12px 14px; margin-top:12px; }
+    .enrich-head { display:flex; flex-direction:column; gap:4px; }
+    .enrich-head strong { font-size:0.9rem; color:#111; }
+    .enrich-head span { font-size:0.8rem; color:#6b7280; max-width:70ch; }
+    .enrich-actions { display:flex; align-items:center; gap:8px; margin-top:10px; flex-wrap:wrap; }
+    .enrich-actions label { font-size:0.8rem; color:#6b7280; }
+    .enrich-actions input { padding:4px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:0.8rem; width:90px; }
+    .enrich .btn:disabled { opacity:0.5; cursor:not-allowed; }
+    .blocked { margin:6px 0 0 18px; }
+    .blocked li { font-size:0.82rem; }
     .sev-CRITICAL { color:#b91c1c; font-weight:700; }
     .sev-HIGH { color:#c2410c; font-weight:700; }
     .sev-MEDIUM { color:#a16207; }

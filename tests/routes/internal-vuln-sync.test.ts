@@ -3,10 +3,11 @@ import express from "express";
 import request from "supertest";
 import { createInternalRouter } from "../../src/routes/internal.js";
 import { VulnSyncAlreadyRunningError } from "../../src/vuln/sync/lock.js";
+import type { VulnSyncImpls } from "../../src/vuln/sync/index.js";
 import type { VulnBackfillJobRow } from "../../src/db/queries/vuln-backfill-jobs.js";
 
 function appWith(
-  vulnSync: Record<string, () => Promise<Record<string, number>>>,
+  vulnSync: VulnSyncImpls,
   vulnHints?: () => Promise<string[]>,
   backfill?: {
     start: (since?: string) => Promise<{ job: VulnBackfillJobRow; alreadyRunning?: boolean }>;
@@ -168,5 +169,108 @@ describe("NVD backfill HTTP jobs", () => {
       cpe_pairs_done: 1,
       cpe_pairs_total: 3,
     });
+  });
+});
+
+describe("POST /internal/vuln-sync/cvss dry runs", () => {
+  const proposal = {
+    cve_id: "CVE-2026-1111",
+    severity: "CRITICAL",
+    severity_source: "nvd-cvss-v3",
+    cvss_v3_score: 9.8,
+    cvss_v2_score: null,
+    crosses_critical_gate: true,
+  };
+
+  it("previews without applying, reporting the versions that would become blocked", async () => {
+    let applied = false;
+    const app = appWith({
+      cvss: async () => {
+        applied = true;
+        return { updated: 7 };
+      },
+      cvssPreview: async () => ({
+        candidates: 3,
+        fetched: 3,
+        proposals: [proposal],
+        newly_blocked: [{ package_name: "golang", newly_blocked: ["1.26.4"] }],
+      }),
+    });
+
+    const res = await request(app).post("/internal/vuln-sync/cvss").send({ dry_run: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body.dry_run).toBe(true);
+    expect(res.body.preview.proposals).toEqual([proposal]);
+    expect(res.body.preview.newly_blocked).toEqual([
+      { package_name: "golang", newly_blocked: ["1.26.4"] },
+    ]);
+    // The whole point: a preview must never reach the writing path.
+    expect(applied).toBe(false);
+  });
+
+  it("rejects dry_run for a source that cannot honour it, without running it", async () => {
+    let ran = false;
+    const app = appWith({
+      nvd: async () => {
+        ran = true;
+        return { cves: 1 };
+      },
+    });
+
+    const res = await request(app).post("/internal/vuln-sync/nvd").send({ dry_run: true });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("only supported for the 'cvss' source");
+    // Silently ignoring the flag would run a live sync for someone who asked to preview.
+    expect(ran).toBe(false);
+  });
+
+  it("rejects limit for a source that cannot honour it", async () => {
+    const app = appWith({ nvd: async () => ({ cves: 1 }) });
+    const res = await request(app).post("/internal/vuln-sync/nvd").send({ limit: 10 });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("only supported for the 'cvss' source");
+  });
+
+  it("passes limit through to the cvss apply", async () => {
+    let seen: number | undefined;
+    const app = appWith({
+      cvss: async (opts) => {
+        seen = opts?.limit;
+        return { updated: 2 };
+      },
+    });
+
+    const res = await request(app).post("/internal/vuln-sync/cvss").send({ limit: 25 });
+
+    expect(res.status).toBe(200);
+    expect(seen).toBe(25);
+  });
+
+  it("rejects a non-positive or non-integer limit", async () => {
+    const app = appWith({ cvss: async () => ({ updated: 0 }) });
+    for (const limit of [0, -1, 2.5, "abc"]) {
+      const res = await request(app).post("/internal/vuln-sync/cvss").send({ limit });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain("positive integer");
+    }
+  });
+
+  it("returns 503 when no preview implementation is wired", async () => {
+    const app = appWith({ cvss: async () => ({ updated: 1 }) });
+    const res = await request(app).post("/internal/vuln-sync/cvss").send({ dry_run: true });
+    expect(res.status).toBe(503);
+  });
+
+  it("returns 409 when the shared nvd lock is held during a preview", async () => {
+    const app = appWith({
+      cvssPreview: async () => {
+        throw new VulnSyncAlreadyRunningError("nvd");
+      },
+    });
+    const res = await request(app).post("/internal/vuln-sync/cvss").send({ dry_run: true });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("already_running");
   });
 });

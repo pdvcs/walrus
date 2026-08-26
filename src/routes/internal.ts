@@ -1,6 +1,12 @@
 import { Router } from "express";
 import { SyncRunResult } from "../services/sync-service.js";
-import { isVulnSyncSource, runVulnSync, VulnSyncImpls } from "../vuln/sync/index.js";
+import {
+  isVulnSyncSource,
+  parseVulnSyncOptions,
+  runVulnSync,
+  VulnSyncImpls,
+} from "../vuln/sync/index.js";
+import { VulnSyncAlreadyRunningError } from "../vuln/sync/lock.js";
 import { buildPublicationWindows } from "../vuln/sync/nvd-sync.js";
 import type { VulnBackfillJobRow } from "../db/queries/vuln-backfill-jobs.js";
 
@@ -56,7 +62,35 @@ export function createInternalRouter(deps: InternalRouteDeps): Router {
         res.status(400).json({ error: `Unknown vuln sync source: ${source}` });
         return;
       }
-      const outcomes = await runVulnSync(source, deps.vulnSync);
+      const parsed = parseVulnSyncOptions(source, req.body);
+      if (!parsed.ok) {
+        res.status(400).json({ error: parsed.error });
+        return;
+      }
+
+      if (parsed.opts.dryRun) {
+        const preview = deps.vulnSync.cvssPreview;
+        if (!preview) {
+          res.status(503).json({ error: "cvss preview is not available" });
+          return;
+        }
+        try {
+          res.status(200).json({
+            source,
+            dry_run: true,
+            preview: await preview({ limit: parsed.opts.limit }),
+          });
+        } catch (err) {
+          if (err instanceof VulnSyncAlreadyRunningError) {
+            res.status(409).json({ code: "already_running", error: err.message });
+            return;
+          }
+          throw err;
+        }
+        return;
+      }
+
+      const outcomes = await runVulnSync(source, deps.vulnSync, parsed.opts);
       const allOk = outcomes.every((o) => o.ok);
       const alreadyRunning = source !== "all" && outcomes[0]?.code === "already_running";
       const hints = deps.vulnHints ? await deps.vulnHints() : [];
