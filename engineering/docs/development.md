@@ -13,6 +13,7 @@
 | `npm run db:reset`                            | Wipe and recreate the local schema (asks for confirmation)        |
 | `npm run validate`                            | Dry-run all `packages/*.toml` configs against real upstream APIs  |
 | `npm run validate -- packages/walrus-uv.toml` | Dry-run a single package config                                   |
+| `npm run validate -- --online <file>`         | As above, plus a CPE dictionary probe of each pair against NVD    |
 | `npm run fmt`                                 | Format source files                                               |
 | `npm run fmt:check`                           | Check formatting without writing                                  |
 | `npm run lint`                                | Run eslint + oxlint                                               |

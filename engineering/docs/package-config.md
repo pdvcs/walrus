@@ -563,6 +563,21 @@ Common schema errors and what they mean:
 | `platforms: Array must contain at least 1 element(s)`    | Need at least one `[[platforms]]` block                                      |
 | `versioning.type: Invalid enum value`                    | Must be `semver`, `major-minor`, or `calver`                                 |
 
+### Verifying CPE pairs against NVD
+
+A syntactically valid pair can still name the wrong product, which silently matches zero
+CVEs. With `--online`, each CPE pair is probed against the NVD CPE dictionary:
+
+```bash
+npm run validate -- --online packages/walrus-mytool.toml
+```
+
+A zero-hit pair prints a warning, not an error — products NVD has never had to name (small
+utilities) legitimately have no dictionary entry, so absence of evidence cannot distinguish
+a typo from an obscure but correct pair. Double-check the spelling either way. The admin UI's
+validate page runs the same probe automatically for any TOML with CPE pairs, so production
+operators get identical feedback without shell access.
+
 ---
 
 ## Validating against the real upstream

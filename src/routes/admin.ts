@@ -9,6 +9,7 @@ import TOML from "@iarna/toml";
 import { getStrategy, DiscoveredVersion } from "../discovery/index.js";
 import { PackageConfigSchema, PackageConfig } from "../types/package-config.js";
 import { sortVersionsDesc } from "../common/version-utils.js";
+import { defaultCpeProbe, CpeVerifyResult } from "../vuln/cpe-verify.js";
 
 interface VersionDetail {
   version: string;
@@ -96,6 +97,13 @@ export interface AdminRouteDeps {
   getPackageVulnBadges: (
     name: string,
   ) => Promise<{ tracked: boolean; byVersion: Record<string, VersionVulnBadge> }>;
+  /**
+   * CPE-pair probe for the validate flow (WAL-45). Defaults to a live NVD dictionary
+   * lookup; tests inject fakes. Deliberately advisory — it can only add warnings, never
+   * flip `overall`, because zero dictionary hits is also what an obscure-but-correct
+   * product looks like.
+   */
+  cpeProbe?: (pairs: string[]) => Promise<CpeVerifyResult>;
 }
 
 export interface VersionVulnBadge {
@@ -495,7 +503,13 @@ export function createAdminRouter(deps: AdminRouteDeps): Router {
         return;
       }
 
-      type StepName = "toml_parse" | "schema_validate" | "discovery" | "spot_check" | "retention";
+      type StepName =
+        | "toml_parse"
+        | "schema_validate"
+        | "cpe_dictionary"
+        | "discovery"
+        | "spot_check"
+        | "retention";
       interface StepResult {
         name: StepName;
         ok: boolean;
@@ -514,6 +528,12 @@ export function createAdminRouter(deps: AdminRouteDeps): Router {
         prunedCount?: number;
         keptPreview?: string[];
         prunedPreview?: string[];
+        /** cpe_dictionary step only: per-pair dictionary verdicts (WAL-45). */
+        cpeResults?: Array<{
+          pair: string;
+          status: "verified" | "unverifiable" | "unchecked";
+          hits: number | null;
+        }>;
       }
 
       const steps: StepResult[] = [];
@@ -546,6 +566,48 @@ export function createAdminRouter(deps: AdminRouteDeps): Router {
       }
       const config = schemaResult.data;
       steps.push({ name: "schema_validate", ok: true });
+
+      // Step 2b: CPE dictionary probe (WAL-45). Runs before discovery so authoring-time
+      // NVD feedback survives a broken repo; only adds warnings, never `overall`, because
+      // zero dictionary hits is also what an obscure-but-correct product looks like.
+      const cpePairs = config.vulnerabilities?.cpes ?? [];
+      if (cpePairs.length > 0) {
+        let verification: CpeVerifyResult;
+        try {
+          const probe = deps.cpeProbe ?? defaultCpeProbe;
+          verification = await probe(cpePairs);
+        } catch (err) {
+          // Per-pair failures are caught inside the probe; reaching here is wiring-level
+          // breakage. Degrade to a single unchecked verdict so authoring can continue.
+          verification = {
+            results: cpePairs.map((pair) => ({
+              pair,
+              matchString: pair,
+              status: "unchecked" as const,
+              hits: null,
+              detail:
+                "Could not be checked (" + `${err instanceof Error ? err.message : String(err)})`,
+            })),
+            verified: 0,
+            unverifiable: 0,
+            unchecked: cpePairs.length,
+          };
+        }
+        const problems = verification.results.filter((r) => r.status !== "verified" && r.detail);
+        steps.push({
+          name: "cpe_dictionary",
+          ok: true,
+          warning:
+            problems.length > 0
+              ? `${problems.map((r) => `${r.pair}: ${r.detail}`).join(" ")}`
+              : undefined,
+          cpeResults: verification.results.map((r) => ({
+            pair: r.pair,
+            status: r.status,
+            hits: r.hits,
+          })),
+        });
+      }
 
       // Step 3: Discovery
       let versions: DiscoveredVersion[];
@@ -1143,8 +1205,10 @@ function renderValidatePage(configuredPackages: string[]): string {
   }
 
   function stepLabel(name) {
-    return { toml_parse: "TOML Parse", schema_validate: "Schema Validate", discovery: "Discovery", spot_check: "Spot Check", retention: "Retention" }[name] || name;
+    return { toml_parse: "TOML Parse", schema_validate: "Schema Validate", cpe_dictionary: "CPE Dictionary (NVD)", discovery: "Discovery", spot_check: "Spot Check", retention: "Retention" }[name] || name;
   }
+
+  const CPE_STATUS_LABEL = { verified: "found in NVD", unverifiable: "no dictionary entry", unchecked: "not checked" };
 
   function renderStep(step) {
     const icon = step.ok ? (step.warning ? "⚠" : "✓") : "✗";
@@ -1159,6 +1223,14 @@ function renderValidatePage(configuredPackages: string[]): string {
     }
     if (step.errors && step.errors.length) {
       details += '<ul style="margin-top:6px;padding-left:18px;font-size:0.82rem;color:#b91c1c">' + step.errors.map(e => "<li>" + esc(e) + "</li>").join("") + "</ul>";
+    }
+    if (step.cpeResults && step.cpeResults.length) {
+      details += '<ul style="margin-top:6px;padding-left:18px;font-size:0.82rem;color:#374151">'
+        + step.cpeResults.map(r =>
+          '<li><code>' + esc(r.pair) + '</code> — ' + esc(CPE_STATUS_LABEL[r.status] || r.status)
+          + (r.hits != null ? ' (' + esc(r.hits) + ' entr' + (r.hits === 1 ? "y" : "ies") + ')' : "")
+          + '</li>').join("")
+        + "</ul>";
     }
     if (step.strategy) {
       details += '<p style="margin-top:6px;font-size:0.82rem;color:#374151">Strategy: <code>' + esc(step.strategy) + "</code></p>";

@@ -4,7 +4,11 @@
  *
  * Usage:
  *   npm run validate                        # validate all packages/*.toml
- *   npm run validate -- packages/uv.toml   # validate a single file
+ *   npm run validate -- packages/uv.toml    # validate a single file
+ *   npm run validate -- --online <file>     # also probe CPE pairs against NVD (WAL-45)
+ *
+ * The same CPE check is available in production without shell access via the admin UI's
+ * validate page, which probes automatically for any TOML with CPE pairs.
  */
 
 import fs from "fs";
@@ -16,6 +20,7 @@ import { PackageConfig } from "../src/types/package-config.js";
 import { DiscoveredVersion } from "../src/discovery/types.js";
 import { computeVulnInput } from "../src/services/vuln-config.js";
 import { selectRetentionWindow } from "../src/common/retention-window.js";
+import { verifyCpePairs, defaultCpeProbe } from "../src/vuln/cpe-verify.js";
 
 const PACKAGES_DIR = path.join(process.cwd(), "packages");
 const SPOT_CHECK_PLATFORM = { os: "linux", arch: "x86-64" } as const;
@@ -81,9 +86,40 @@ async function headRequest(url: string): Promise<HeadResult> {
   }
 }
 
+// ── CPE dictionary probe (--online) ───────────────────────────────────────────
+
+/**
+ * Advisory only: every outcome prints, nothing flips the exit code. Zero hits is a
+ * prompt to double-check spelling, not a verdict — products NVD has never had to name
+ * (small utilities) legitimately have no dictionary entry.
+ */
+async function probeCpePairs(cpes: string[]): Promise<boolean> {
+  console.log(`  ${c.dim("○")} Probing ${cpes.length} CPE pair(s) against the NVD dictionary...`);
+  const verification = await verifyCpePairs(defaultCpeProbe, cpes);
+  let warned = false;
+  for (const r of verification.results) {
+    switch (r.status) {
+      case "verified":
+        console.log(
+          `    ${c.green("✓")} ${r.pair} — found in NVD (${r.hits} entr${r.hits === 1 ? "y" : "ies"})`,
+        );
+        break;
+      case "unverifiable":
+        warned = true;
+        console.log(`    ${c.yellow("!")} ${r.pair} — ${r.detail}`);
+        break;
+      case "unchecked":
+        warned = true;
+        console.log(`    ${c.yellow("!")} ${r.pair} — ${r.detail}`);
+        break;
+    }
+  }
+  return warned;
+}
+
 // ── Single package validation ─────────────────────────────────────────────────
 
-async function validatePackage(filePath: string): Promise<boolean> {
+async function validatePackage(filePath: string, online: boolean): Promise<boolean> {
   const shortName = path.relative(process.cwd(), filePath);
   console.log(c.bold(`\nValidating ${shortName}...`));
 
@@ -116,6 +152,9 @@ async function validatePackage(filePath: string): Promise<boolean> {
     console.log(`    CPE pairs: ${cpeStr}`);
     console.log(`    OSV: ${osvStr}`);
     console.log(`    Aliases (${vulnInput.aliases.length}): ${vulnInput.aliases.join(", ")}`);
+    if (online && vulnInput.cpes.length > 0) {
+      await probeCpePairs(vulnInput.cpes.map((c) => `${c.cpe_vendor}:${c.cpe_product}`));
+    }
   } else {
     console.log(
       `  ${c.dim("○")} ${c.dim("No [vulnerabilities] section — vuln tracking disabled")}`,
@@ -196,11 +235,13 @@ async function validatePackage(filePath: string): Promise<boolean> {
 
 async function main() {
   const args = process.argv.slice(2);
+  const online = args.includes("--online");
+  const fileArgs = args.filter((a) => a !== "--online");
 
   let filePaths: string[];
 
-  if (args.length > 0) {
-    filePaths = args.map((a) => path.resolve(a));
+  if (fileArgs.length > 0) {
+    filePaths = fileArgs.map((a) => path.resolve(a));
     for (const fp of filePaths) {
       if (!fs.existsSync(fp)) {
         console.error(c.red(`File not found: ${fp}`));
@@ -226,7 +267,7 @@ async function main() {
 
   let allPassed = true;
   for (const fp of filePaths) {
-    const ok = await validatePackage(fp);
+    const ok = await validatePackage(fp, online);
     if (!ok) allPassed = false;
   }
 
