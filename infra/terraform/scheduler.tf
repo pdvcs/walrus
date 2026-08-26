@@ -105,3 +105,32 @@ resource "google_cloud_scheduler_job" "vuln_sync" {
     }
   }
 }
+
+# Autonomous per-package CVE backfill sweep (WAL-37, ADR-003 commitment 2).
+#
+# Incremental NVD sync is cursor-based, so it is structurally blind to a newly tracked
+# package's *history*. Without this sweep that gap closes only when a human remembers to
+# run a targeted backfill — and nothing warns them, because the old hint fired only when
+# cve_affects was globally empty. Daily is ample: it is a gap-closer, not ingestion.
+resource "google_cloud_scheduler_job" "vuln_backfill_auto" {
+  name             = "walrus-vuln-backfill-auto"
+  region           = var.region
+  schedule         = var.vuln_backfill_auto_schedule
+  time_zone        = "UTC"
+  attempt_deadline = "320s"
+
+  retry_config {
+    retry_count          = 1
+    min_backoff_duration = "300s"
+  }
+
+  http_target {
+    http_method = "POST"
+    uri         = "${google_cloud_run_v2_service.walrus.uri}/internal/vuln-backfill/auto"
+
+    oidc_token {
+      service_account_email = google_service_account.walrus_scheduler.email
+      audience              = google_cloud_run_v2_service.walrus.uri
+    }
+  }
+}

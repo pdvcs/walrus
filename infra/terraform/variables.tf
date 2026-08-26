@@ -72,6 +72,13 @@ variable "vuln_sync_cvss_schedule" {
   default     = "10 9 * * *"
 }
 
+# Runs after the nvd job's :20 so a newly seeded package is swept the same day.
+variable "vuln_backfill_auto_schedule" {
+  description = "Cron schedule for the autonomous per-package CVE backfill sweep (UTC)"
+  type        = string
+  default     = "50 6 * * *"
+}
+
 variable "sync_job_timeout" {
   description = "Max duration for one walrus-sync Cloud Run Job execution"
   type        = string

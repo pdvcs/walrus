@@ -179,7 +179,7 @@ SELECT count(*) FROM cve_affects ca JOIN packages p ON p.name = ca.package_name 
 ### 3. Cron cadence (incremental)
 
 On GCP these are provisioned by Terraform (`infra/terraform/scheduler.tf`) as one Cloud Scheduler
-job per source, authenticating with the same OIDC service account as the package sync. Cadence —
+job per source, authenticating with the same service account as the package sync. Cadence —
 NVD changes often, KEV daily, OSV is a weekly cross-check — is set by variable, so overriding one
 source does not touch the others:
 
@@ -265,36 +265,43 @@ appear current.
 
 ### 4. After setup: what runs itself, and what does not
 
-Once the one-time backfill in §2 has been done, vulnerability ingestion is autonomous. The
-only routine action left for an operator is adding a package — and that one currently still
-needs a manual step.
+Once the one-time backfill in §2 has been done, vulnerability ingestion is autonomous — no
+routine operator action is required, including when a package is added.
 
-| Event                                  | Handled by                            | Autonomous?         |
-| -------------------------------------- | ------------------------------------- | ------------------- |
-| New CVEs published / rescored          | `nvd` incremental, 2-hourly           | Yes                 |
-| CVE added to CISA KEV                  | `kev`, daily                          | Yes                 |
-| OSV advisory added or changed          | `osv`, weekly (re-queries every pkg)  | Yes                 |
-| CVE arrives with no severity           | `cvss`, daily                         | Yes                 |
-| Version passes its cooling-off period  | Next package sync (`walrus-sync` Job) | Yes                 |
-| **New package, or new CPE pair added** | **Targeted NVD backfill**             | **No — see WAL-37** |
+| Event                                  | Handled by                                   | Autonomous? |
+| -------------------------------------- | -------------------------------------------- | ----------- |
+| New CVEs published / rescored          | `nvd` incremental, 2-hourly                  | Yes         |
+| CVE added to CISA KEV                  | `kev`, daily                                 | Yes         |
+| OSV advisory added or changed          | `osv`, weekly (re-queries every pkg)         | Yes         |
+| CVE arrives with no severity           | `cvss`, daily                                | Yes         |
+| Version passes its cooling-off period  | Next package sync (`walrus-sync` Job)        | Yes         |
+| **New package, or new CPE pair added** | **`walrus-vuln-backfill-auto` sweep, daily** | **Yes**     |
 
-The last row is the gap. Incremental NVD sync is cursor-based (`lastModStartDate`), so it
-only sees recently-modified CVEs; a newly tracked package's _historical_ CVEs are structurally
-unreachable by it. Until WAL-37 lands, adding a package means also running a targeted backfill
-for it:
+That last row is the one that needed building. Incremental NVD sync is cursor-based
+(`lastModStartDate`), so it only sees recently-modified CVEs — a newly tracked package's
+_historical_ CVEs are structurally unreachable by it, and only a targeted backfill gets them.
+The other sources need no equivalent: OSV re-queries every tracked package in full each run,
+KEV flags rows in the global `cves` table, and `cvss` walks every severity-less CVE.
+
+The sweep (`POST /internal/vuln-backfill/auto`) compares each package's current CPE set
+against the set its last backfill covered, and starts a targeted backfill where they differ.
+Comparing the _set_, not a timestamp, is what makes a CPE pair added to an already-covered
+package trigger a fresh backfill.
+
+- One at a time: only one backfill may be active, so the rest are reported `deferred` and
+  picked up by the next sweep.
+- Bounded retries: after three failed attempts a package stops being retried and is named in
+  the operator hints instead.
+- Contention is not a failure and does not consume the retry budget.
+- `VULN_AUTO_BACKFILL=false` disables the sweep without touching scheduled ingestion. While
+  disabled, uncovered packages are named in the hints, since nothing else will cover them.
+
+To force one package immediately rather than waiting for the sweep:
 
 ```bash
 curl -X POST "$WALRUS_URL/internal/vuln-backfill" \
   -H 'Content-Type: application/json' -d '{"package":"<name>"}'
 ```
-
-Nothing warns you if you forget. The `getVulnHints` nudge only fires when `cve_affects` holds
-zero NVD rows across the _whole_ database, so after the first backfill it never fires again —
-the package is simply served with CVE history that was never ingested.
-
-The other sources need no equivalent step: OSV re-queries every tracked package in full each
-run, KEV flags rows in the global `cves` table, and `cvss` walks every severity-less CVE. NVD
-is the only cursor-based source, so it is the only one blind to a new package's history.
 
 ### Data-source attribution
 

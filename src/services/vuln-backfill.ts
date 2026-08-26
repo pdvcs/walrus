@@ -1,6 +1,7 @@
 import { Pool } from "pg";
 import { listDistinctCpePairs } from "../db/queries/package-aliases.js";
 import { getVulnBackfillJob, updateVulnBackfillJob } from "../db/queries/vuln-backfill-jobs.js";
+import { hashCpePairs, markBackfillComplete } from "./vuln-backfill-autostart.js";
 import { NvdClient } from "../vuln/sync/nvd-client.js";
 import { backfillNvd, IngestCounts } from "../vuln/sync/nvd-sync.js";
 import { withVulnSyncLock } from "../vuln/sync/lock.js";
@@ -29,6 +30,16 @@ export async function runVulnBackfillJob(
       }),
     );
     await updateVulnBackfillJob(pool, jobId, { status: "succeeded", finished_at: new Date() });
+    if (packageName) {
+      // Record which CPE set this run covered, so the autostart sweep stops selecting the
+      // package — and selects it again if a pair is later added. Computed now rather than at
+      // launch: the set is whatever was actually walked.
+      await markBackfillComplete(
+        pool,
+        packageName,
+        hashCpePairs(await listDistinctCpePairs(pool, packageName)),
+      );
+    }
     return result;
   } catch (error) {
     await updateVulnBackfillJob(pool, jobId, {

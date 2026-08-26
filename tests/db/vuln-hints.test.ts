@@ -2,14 +2,106 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { Pool } from "pg";
 import { runMigrations } from "../../src/db/client.js";
 import { upsertPackage } from "../../src/db/queries/packages.js";
-import { reconcilePackageVuln } from "../../src/db/queries/package-aliases.js";
-import { upsertCveFull, insertAffects } from "../../src/db/queries/cves.js";
-import { getVulnHints, BACKFILL_HINT } from "../../src/services/vuln-hints.js";
+import {
+  reconcilePackageVuln,
+  listDistinctCpePairs,
+} from "../../src/db/queries/package-aliases.js";
+import { getVulnHints } from "../../src/services/vuln-hints.js";
+import {
+  findPackagesNeedingBackfill,
+  hashCpePairs,
+  markBackfillComplete,
+  recordBackfillAttempt,
+  MAX_ATTEMPTS,
+} from "../../src/services/vuln-backfill-autostart.js";
 
 const TEST_DB_URL =
   process.env.DATABASE_URL ?? "postgresql://walrus:walrus@localhost:5432/walrus_test";
 const PKG = "hint-pkg";
-const CVE = "CVE-2099-8000";
+
+async function seedTrackedPackage(pool: Pool, cpes: Array<{ v: string; p: string }>) {
+  await upsertPackage(pool, {
+    name: PKG,
+    display_name: PKG,
+    vendor: "T",
+    description: null,
+    website: null,
+    config_hash: "h",
+    enabled: true,
+  });
+  await reconcilePackageVuln(pool, {
+    packageName: PKG,
+    aliases: ["hint"],
+    cpes: cpes.map((c) => ({ cpe_vendor: c.v, cpe_product: c.p, is_primary: true })),
+    osvEcosystem: null,
+    osvName: null,
+  });
+}
+
+describe("autonomous backfill detection", () => {
+  let pool: Pool;
+
+  beforeAll(async () => {
+    pool = new Pool({ connectionString: TEST_DB_URL });
+    await runMigrations();
+  });
+
+  afterAll(async () => {
+    await pool.query(`DELETE FROM packages WHERE name = $1`, [PKG]);
+    await pool.end();
+  });
+
+  beforeEach(async () => {
+    await pool.query(`DELETE FROM packages WHERE name = $1`, [PKG]);
+  });
+
+  /**
+   * The marker is written from TypeScript (`hashCpePairs`) but selected in SQL. If the two
+   * ever disagree the package looks permanently uncovered, and the sweep re-launches a
+   * backfill for it on every run, forever. Nothing else would surface that.
+   */
+  it("computes the same CPE hash in SQL as in TypeScript", async () => {
+    await seedTrackedPackage(pool, [
+      { v: "zvendor", p: "prod" },
+      { v: "avendor", p: "prod" },
+    ]);
+
+    const pending = await findPackagesNeedingBackfill(pool);
+    const row = pending.find((p) => p.package_name === PKG);
+    expect(row).toBeDefined();
+
+    const inTs = hashCpePairs(await listDistinctCpePairs(pool, PKG));
+    expect(row!.cpe_hash).toBe(inTs);
+  });
+
+  it("selects a newly tracked package, and stops once its CPE set is marked covered", async () => {
+    await seedTrackedPackage(pool, [{ v: "v", p: "p" }]);
+    expect((await findPackagesNeedingBackfill(pool)).map((r) => r.package_name)).toContain(PKG);
+
+    await markBackfillComplete(pool, PKG, hashCpePairs(await listDistinctCpePairs(pool, PKG)));
+    expect((await findPackagesNeedingBackfill(pool)).map((r) => r.package_name)).not.toContain(PKG);
+  });
+
+  it("selects the package again when a CPE pair is added to it", async () => {
+    // The case a bare "backfilled at" timestamp cannot see: already covered, then widened.
+    await seedTrackedPackage(pool, [{ v: "v", p: "p" }]);
+    await markBackfillComplete(pool, PKG, hashCpePairs(await listDistinctCpePairs(pool, PKG)));
+
+    await seedTrackedPackage(pool, [
+      { v: "v", p: "p" },
+      { v: "v2", p: "p2" },
+    ]);
+
+    expect((await findPackagesNeedingBackfill(pool)).map((r) => r.package_name)).toContain(PKG);
+  });
+
+  it("stops selecting a package once it exhausts its retry budget", async () => {
+    await seedTrackedPackage(pool, [{ v: "v", p: "p" }]);
+    for (let i = 0; i < MAX_ATTEMPTS; i += 1) await recordBackfillAttempt(pool, PKG);
+
+    expect((await findPackagesNeedingBackfill(pool)).map((r) => r.package_name)).not.toContain(PKG);
+  });
+});
 
 describe("getVulnHints", () => {
   let pool: Pool;
@@ -20,82 +112,40 @@ describe("getVulnHints", () => {
   });
 
   afterAll(async () => {
-    await pool.query(`DELETE FROM cves WHERE id = $1`, [CVE]);
     await pool.query(`DELETE FROM packages WHERE name = $1`, [PKG]);
     await pool.end();
   });
 
   beforeEach(async () => {
-    await pool.query(`DELETE FROM cves WHERE id = $1`, [CVE]);
     await pool.query(`DELETE FROM packages WHERE name = $1`, [PKG]);
   });
 
-  it("hints to run backfill when a CPE-tracked package has zero NVD affects", async () => {
-    // A tracked package (has CPEs) but no NVD affects yet. Every other test file
-    // cascade-cleans its own affects on teardown, so global NVD affects are 0 here
-    // on the dedicated test DB — no destructive global delete needed.
-    await upsertPackage(pool, {
-      name: PKG,
-      display_name: PKG,
-      vendor: "T",
-      description: null,
-      website: null,
-      config_hash: "h",
-      enabled: true,
-    });
-    await reconcilePackageVuln(pool, {
-      packageName: PKG,
-      aliases: ["hint"],
-      cpes: [{ cpe_vendor: "v", cpe_product: "p", is_primary: true }],
-      osvEcosystem: null,
-      osvName: null,
-    });
-
-    const hints = await getVulnHints(pool);
-    expect(hints).toContain(BACKFILL_HINT);
+  it("stays silent for an uncovered package the sweep is still working on", async () => {
+    await seedTrackedPackage(pool, [{ v: "v", p: "p" }]);
+    const hints = await getVulnHints(pool, { autoBackfillEnabled: true });
+    expect(hints.join(" ")).not.toContain(PKG);
   });
 
-  it("does not hint once NVD affects exist", async () => {
-    await upsertPackage(pool, {
-      name: PKG,
-      display_name: PKG,
-      vendor: "T",
-      description: null,
-      website: null,
-      config_hash: "h",
-      enabled: true,
-    });
-    await reconcilePackageVuln(pool, {
-      packageName: PKG,
-      aliases: ["hint"],
-      cpes: [{ cpe_vendor: "v", cpe_product: "p", is_primary: true }],
-      osvEcosystem: null,
-      osvName: null,
-    });
-    await upsertCveFull(pool, {
-      id: CVE,
-      published_at: null,
-      modified_at: null,
-      cvss_v3_score: null,
-      cvss_v3_vector: null,
-      severity: "HIGH",
-      description: null,
-      raw: { cve: { id: CVE } },
-    });
-    await insertAffects(pool, {
-      cve_id: CVE,
-      package_name: PKG,
-      version_start: null,
-      version_start_excl: false,
-      version_end: "2.0",
-      version_end_excl: true,
-      exact_version: null,
-      fixed_in: "2.0",
-      source: "nvd",
-      raw_cpe: "cpe:2.3:a:v:p:*|<2.0",
-    });
+  it("names the package when the sweep is switched off", async () => {
+    await seedTrackedPackage(pool, [{ v: "v", p: "p" }]);
+    const hints = await getVulnHints(pool, { autoBackfillEnabled: false });
+    expect(hints.join(" ")).toContain(PKG);
+    expect(hints.join(" ")).toContain("VULN_AUTO_BACKFILL=false");
+  });
 
-    const hints = await getVulnHints(pool);
-    expect(hints).not.toContain(BACKFILL_HINT);
+  it("names the package once automatic retries are exhausted, even while enabled", async () => {
+    await seedTrackedPackage(pool, [{ v: "v", p: "p" }]);
+    for (let i = 0; i < MAX_ATTEMPTS; i += 1) await recordBackfillAttempt(pool, PKG);
+
+    const hints = await getVulnHints(pool, { autoBackfillEnabled: true });
+    expect(hints.join(" ")).toContain(PKG);
+    expect(hints.join(" ")).toContain("exhausted");
+  });
+
+  it("says nothing once the package is covered", async () => {
+    await seedTrackedPackage(pool, [{ v: "v", p: "p" }]);
+    await markBackfillComplete(pool, PKG, hashCpePairs(await listDistinctCpePairs(pool, PKG)));
+
+    expect(await getVulnHints(pool, { autoBackfillEnabled: true })).toEqual([]);
   });
 });

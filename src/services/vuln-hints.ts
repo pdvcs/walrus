@@ -1,31 +1,71 @@
 import { Pool } from "pg";
 import { getDataFreshness } from "../db/queries/vuln-sync-state.js";
-
-export const BACKFILL_HINT =
-  "No NVD vulnerability data yet — run `npm run vuln:backfill` (with NVD_API_KEY set) to " +
-  "populate historical CVEs. The incremental `/internal/vuln-sync/nvd` trigger only covers " +
-  "recently-modified CVEs, so on a fresh database it leaves most packages empty.";
+import { MAX_ATTEMPTS } from "./vuln-backfill-autostart.js";
 
 /**
- * Operator-facing hints about vuln-data health. Currently: warn when NVD produced
- * zero affected-version rows (the tell-tale sign that only the incremental sync
- * has run and a one-time backfill is still needed). Surfaced in the /internal
- * and admin sync responses and the admin explorer's freshness panel.
+ * Operator-facing hints about vuln-data health.
+ *
+ * These are *reports*, not instructions. Walrus closes its own CVE-coverage gaps
+ * (ADR-003): a package whose CPE set has never been backfilled is picked up by the
+ * autostart sweep. A hint appears only when that self-healing has stopped working —
+ * the sweep is switched off, or a package has exhausted its retries — because those
+ * are the cases a human genuinely has to look at.
+ *
+ * The old hint told operators to run `npm run vuln:backfill`, which production cannot
+ * do: the image installs no dev dependencies and never copies `scripts/`. It also
+ * fired only when `cve_affects` was globally empty, so it never fired at all for a
+ * package added after the first backfill — exactly the case that needed attention.
  */
-export async function getVulnHints(pool: Pool): Promise<string[]> {
-  const hints: string[] = [];
-  const { rows } = await pool.query<{ n: number }>(
-    `SELECT count(*)::int AS n FROM cve_affects WHERE source = 'nvd'`,
+export function backfillDisabledHint(packages: string[]): string {
+  return (
+    `${packages.length} package(s) have no NVD CVE history and autonomous backfill is ` +
+    `disabled (VULN_AUTO_BACKFILL=false): ${packages.join(", ")}. Their versions are served ` +
+    `without CVE data ever having been ingested. Re-enable it, or POST ` +
+    `/internal/vuln-backfill with {"package":"<name>"} for each.`
   );
-  const nvdAffects = rows[0]?.n ?? 0;
-  if (nvdAffects === 0) {
-    // Only nudge once at least one package declares CPE tracking (otherwise there
-    // is legitimately nothing for NVD to populate).
-    const { rows: cpe } = await pool.query<{ n: number }>(
-      `SELECT count(*)::int AS n FROM package_cpes`,
-    );
-    if ((cpe[0]?.n ?? 0) > 0) hints.push(BACKFILL_HINT);
+}
+
+export function backfillStuckHint(entries: Array<{ name: string; error: string | null }>): string {
+  const detail = entries.map((e) => `${e.name}${e.error ? ` (${e.error})` : ""}`).join("; ");
+  return (
+    `${entries.length} package(s) have exhausted ${MAX_ATTEMPTS} automatic CVE backfill ` +
+    `attempts and are no longer being retried: ${detail}. Until this is resolved their ` +
+    `versions are served without complete CVE data.`
+  );
+}
+
+export async function getVulnHints(
+  pool: Pool,
+  opts: { autoBackfillEnabled?: boolean } = {},
+): Promise<string[]> {
+  const autoEnabled = opts.autoBackfillEnabled ?? true;
+  const hints: string[] = [];
+
+  // Per package, not global. The previous global check went quiet permanently after the
+  // first backfill, which is precisely when new packages start being missed.
+  const { rows } = await pool.query<{
+    name: string;
+    attempts: number;
+    last_error: string | null;
+  }>(
+    `SELECT p.name, p.vuln_backfill_attempts AS attempts, p.vuln_backfill_last_error AS last_error
+       FROM packages p
+      WHERE p.vuln_backfill_completed_at IS NULL
+        AND EXISTS (SELECT 1 FROM package_cpes c WHERE c.package_name = p.name)
+      ORDER BY p.name`,
+  );
+  if (rows.length === 0) return hints;
+
+  const stuck = rows.filter((r) => r.attempts >= MAX_ATTEMPTS);
+  if (stuck.length > 0) {
+    hints.push(backfillStuckHint(stuck.map((r) => ({ name: r.name, error: r.last_error }))));
   }
+
+  const waiting = rows.filter((r) => r.attempts < MAX_ATTEMPTS);
+  if (!autoEnabled && waiting.length > 0) {
+    hints.push(backfillDisabledHint(waiting.map((r) => r.name)));
+  }
+
   return hints;
 }
 

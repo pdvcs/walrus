@@ -35,6 +35,17 @@ export interface InternalRouteDeps {
     packageName?: string,
   ) => Promise<{ job?: VulnBackfillJobRow; alreadyRunning?: boolean }>;
   getVulnBackfill?: (id: string) => Promise<VulnBackfillJobRow | null>;
+  /**
+   * Sweep for packages whose CPE set has never been backfilled and start one. Scheduled, so
+   * a newly tracked package acquires its CVE history without anyone remembering to ask.
+   */
+  autoBackfill?: () => Promise<{
+    enabled: boolean;
+    pending: number;
+    started: string[];
+    deferred: string[];
+    failed: Array<{ package: string; error: string }>;
+  }>;
 }
 
 export function createInternalRouter(deps: InternalRouteDeps): Router {
@@ -167,6 +178,27 @@ export function createInternalRouter(deps: InternalRouteDeps): Router {
         job: serializeJob(result.job),
         status_url: `/internal/vuln-backfill/${result.job.id}`,
       });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.post("/vuln-backfill/auto", async (_req, res, next) => {
+    try {
+      if (!deps.autoBackfill) {
+        res.status(503).json({ error: "Autonomous backfill is not available" });
+        return;
+      }
+      const result = await deps.autoBackfill();
+      if (!result.enabled) {
+        // Disabled on purpose is a successful no-op, not a failure — a scheduler must not
+        // turn red because an operator switched the sweep off.
+        res.status(200).json({ enabled: false, message: "VULN_AUTO_BACKFILL is disabled" });
+        return;
+      }
+      // Nothing pending, work deferred to the next sweep, and work started are all 200:
+      // none of them is an error, and only a real failure should page anyone.
+      res.status(result.failed.length > 0 ? 207 : 200).json(result);
     } catch (err) {
       next(err);
     }

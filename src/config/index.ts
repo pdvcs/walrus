@@ -21,6 +21,14 @@ const configSchema = z.object({
   // Optional upstream credential for the NVD API 2.0 (raises the rate limit from
   // 5 to 50 req/30s). Unrelated to walrus authn/authz. Lives in .env.secrets.
   NVD_API_KEY: z.string().optional(),
+  // Autonomous per-package CVE backfill (WAL-37, ADR-003). On by default: a package added
+  // without it is served with CVE history that was never ingested. Set "false" to disable
+  // the autostart sweep only — scheduled NVD/KEV/OSV/CVSS ingestion is unaffected.
+  // Not z.coerce.boolean(): Boolean("false") is true, which would make the off switch a no-op.
+  VULN_AUTO_BACKFILL: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;

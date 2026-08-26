@@ -29,6 +29,7 @@ import { isPackageTracked, listDistinctCpePairs } from "./db/queries/package-ali
 import { crossReferenceVersions, getVersionAvailabilityStatus } from "./services/vuln-service.js";
 import { queryVulns, VulnQueryDeps } from "./services/vuln-query.js";
 import { getVulnHints } from "./services/vuln-hints.js";
+import { autoBackfillPendingPackages } from "./services/vuln-backfill-autostart.js";
 import { insertAdminAction } from "./db/queries/admin-actions.js";
 import { resolvePackage } from "./vuln/resolver.js";
 import {
@@ -261,7 +262,7 @@ export function createApp(): express.Express {
       queryVulns: (product, version) => queryVulns(vulnQueryDeps, { product, version }),
       getDataFreshness: () => getDataFreshness(pool),
       getSyncStatus: () => getVulnSyncStatus(pool),
-      getHints: () => getVulnHints(pool),
+      getHints: () => getVulnHints(pool, { autoBackfillEnabled: config.VULN_AUTO_BACKFILL }),
       vulnSyncImpls,
       logAdminAction: (details) => insertAdminAction(pool, { action_type: "vuln-sync", details }),
       startVulnBackfill,
@@ -480,7 +481,7 @@ export function createApp(): express.Express {
       runSync: (packageName, opts) => runSync(packageName, opts),
       runSyncAll: (opts) => runSyncAll(opts),
       vulnSync: vulnSyncImpls,
-      vulnHints: () => getVulnHints(pool),
+      vulnHints: () => getVulnHints(pool, { autoBackfillEnabled: config.VULN_AUTO_BACKFILL }),
       // performed_by distinguishes these from the admin UI's rows: /internal is
       // machine-triggered (Cloud Scheduler), so the trail can tell an unattended
       // gate change from one an operator made.
@@ -492,6 +493,13 @@ export function createApp(): express.Express {
         }),
       startVulnBackfill,
       getVulnBackfill: (id) => getVulnBackfillJob(pool, id),
+      autoBackfill: async () => {
+        if (!config.VULN_AUTO_BACKFILL) {
+          return { enabled: false, pending: 0, started: [], deferred: [], failed: [] };
+        }
+        const result = await autoBackfillPendingPackages(pool, { startVulnBackfill });
+        return { enabled: true, ...result };
+      },
     }),
   );
 
