@@ -72,6 +72,34 @@ function makeVersionRow() {
 }
 
 describe("download routes", () => {
+  // WAL-53: a disabled package (operator disable or TOML-removed tombstone) must not
+  // serve binaries via direct URL. 404 rather than 403 — that is reserved for the
+  // critical-CVE gate's "dangerous" semantics.
+  it("returns 404 for a disabled/tombstoned package even with an available artifact", async () => {
+    const deps = baseDeps();
+    deps.getPackageRow = vi.fn().mockResolvedValue({ enabled: false });
+    deps.getVersion = vi.fn().mockResolvedValue(makeVersionRow());
+    deps.getArtifact = vi.fn().mockResolvedValue(makeAvailableArtifact());
+    const app = createTestApp(deps);
+
+    const res = await request(app).get("/download/uv/0.10.10/linux/x86-64");
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/not available/);
+    expect(deps.getArtifact).not.toHaveBeenCalled();
+  });
+
+  it("serves normally when the package row reports enabled", async () => {
+    const deps = baseDeps();
+    deps.getPackageRow = vi.fn().mockResolvedValue({ enabled: true });
+    deps.getVersion = vi.fn().mockResolvedValue(makeVersionRow());
+    deps.getArtifact = vi.fn().mockResolvedValue(makeAvailableArtifact());
+    deps.streamFromStorage = vi.fn().mockReturnValue(Readable.from(Buffer.from("hello")));
+    const app = createTestApp(deps);
+
+    const res = await request(app).get("/download/uv/0.10.10/linux/x86-64");
+    expect(res.status).toBe(200);
+  });
+
   it("streams an available artifact with headers", async () => {
     const deps = baseDeps();
     deps.getVersion = vi.fn().mockResolvedValue(makeVersionRow());

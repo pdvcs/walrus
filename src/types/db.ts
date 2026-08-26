@@ -6,6 +6,8 @@ export interface PackageRow {
   website: string | null;
   config_hash: string;
   enabled: boolean;
+  /** Tombstone (WAL-53): set when the package's TOML disappeared. Null = never removed. */
+  removed_at: Date | null;
   created_at: Date;
   updated_at: Date;
 }

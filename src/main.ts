@@ -336,6 +336,7 @@ export function createApp(): express.Express {
     "/download",
     createDownloadRouter({
       getVersion: (packageName, version) => getVersion(pool, packageName, version),
+      getPackageRow: (packageName) => getPackage(pool, packageName),
       listAffectsForPackage: (packageName) => listAffectsWithCveForPackage(pool, packageName),
       getArtifact: (versionId, os, arch) => getArtifact(pool, versionId, os, arch),
       streamFromStorage: (key) => storage.stream(key),

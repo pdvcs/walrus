@@ -211,7 +211,7 @@ CVEs known to be exploited in the wild (CISA KEV) are flagged but do not block o
 
 - `200` — binary stream
 - `403` — version is blocked due to a known critical vulnerability
-- `404` — artifact not found or not available
+- `404` — artifact not found or not available; also when the package is disabled or removed (its TOML no longer exists)
 - `423` + `Retry-After` — artifact is within the cooling-off period; body includes `available_at`
 
 ---

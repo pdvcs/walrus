@@ -322,3 +322,20 @@ curl -X POST "$WALRUS_URL/internal/vuln-backfill" \
 - **OSV** — osv.dev, Google (Apache-2.0).
 
 ---
+
+### Removing a package (WAL-53)
+
+Delete its TOML; the next boot reconciliation tombstones it automatically. The row is marked
+with `removed_at` and disabled — serving stops (including direct `/download` URLs), syncs stop,
+and its vuln config (aliases, CPE pairs, OSV mapping) and derived `cve_affects` rows are
+cleared so no ingestion traffic still targets it.
+
+The row, cached versions, artifacts and history are deliberately **kept**: hard delete requires
+an explicit admin decision because DB rows own storage objects a stray `git rm` must never
+destroy. Re-adding the same TOML revives the package (`removed_at` cleared, enabled again);
+its historical NVD associations then need the usual targeted backfill.
+
+A watch-only or operator-disabled package is unaffected: the marker distinguishes an actual
+removal from either.
+
+---

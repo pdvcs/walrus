@@ -10,6 +10,12 @@ export interface DownloadRouteDeps {
   listAffectsForPackage: (packageName: string) => Promise<AffectsWithCveRow[]>;
   getArtifact: (versionId: number, os: string, arch: string) => Promise<ArtifactRow | null>;
   streamFromStorage: (key: string) => Readable;
+  /**
+   * Package row lookup for the enabled/tombstone check. Disabled packages — operator
+   * disabled or TOML-removed tombstones (WAL-53) — must not serve binaries via direct
+   * URL; the catalog listing routes already hide them. Optional so tests can omit it.
+   */
+  getPackageRow?: (packageName: string) => Promise<{ enabled: boolean } | null>;
 }
 
 export function createDownloadRouter(deps: DownloadRouteDeps): Router {
@@ -21,6 +27,15 @@ export function createDownloadRouter(deps: DownloadRouteDeps): Router {
       const version = req.params.version;
       const os = req.params.os;
       const arch = req.params.arch;
+
+      // Disabled/tombstoned packages do not serve binaries, even with artifacts on
+      // disk — direct URLs must not bypass the catalog (404, not 403: 403 is reserved
+      // for the critical-CVE gate's "this version is dangerous" semantics).
+      const pkgRow = await deps.getPackageRow?.(packageName);
+      if (pkgRow && !pkgRow.enabled) {
+        res.status(404).json({ error: `Package '${packageName}' is not available` });
+        return;
+      }
 
       const versionRow = await deps.getVersion(packageName, version);
       if (!versionRow) {

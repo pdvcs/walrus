@@ -3,7 +3,9 @@ import { PackageRow } from "../../types/db.js";
 
 export async function upsertPackage(
   pool: Pool,
-  pkg: Omit<PackageRow, "created_at" | "updated_at">,
+  // removed_at is deliberately absent: new rows are never tombstones, and a conflict
+  // update must not clobber an existing row's removal marker.
+  pkg: Omit<PackageRow, "created_at" | "updated_at" | "removed_at">,
 ): Promise<PackageRow> {
   const { rows } = await pool.query<PackageRow>(
     `INSERT INTO packages (name, display_name, vendor, description, website, config_hash, enabled)
@@ -70,4 +72,40 @@ export async function setPackageEnabled(pool: Pool, name: string, enabled: boole
     name,
     enabled,
   ]);
+}
+
+// ── Removal lifecycle (WAL-53) ──────────────────────────────────────────────
+
+/**
+ * Tombstone every package whose name is not among `configured` and has not been
+ * tombstoned already. Disabling stops serving and syncing; `removed_at` distinguishes
+ * a removal from an operator disable or a watch-only row. Returns the names newly
+ * marked so the caller can clear their vuln config and log.
+ */
+export async function markRemovedPackagesNotIn(
+  pool: Pool,
+  configured: string[],
+): Promise<string[]> {
+  const { rows } = await pool.query<{ name: string }>(
+    `UPDATE packages SET removed_at = now(), enabled = false, updated_at = now()
+      WHERE removed_at IS NULL
+        AND NOT (name = ANY($1))
+      RETURNING name`,
+    [configured],
+  );
+  return rows.map((r) => r.name);
+}
+
+/**
+ * Undo a tombstone when the package's TOML reappears. Deliberately scoped to
+ * `removed_at IS NOT NULL`: reconcile runs at every boot, and an operator's manual
+ * disable of a still-configured package must survive it. Only a prior removal flips
+ * `enabled` back on.
+ */
+export async function reviveTombstonedPackage(pool: Pool, name: string): Promise<void> {
+  await pool.query(
+    `UPDATE packages SET enabled = true, removed_at = NULL, updated_at = now()
+      WHERE name = $1 AND removed_at IS NOT NULL`,
+    [name],
+  );
 }
