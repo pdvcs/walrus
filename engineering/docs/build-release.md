@@ -267,6 +267,13 @@ The download gate blocks a version on **any** CVSS base score — v3, v4, or v2 
 or a score-less CRITICAL severity (`meetsCriticalGate`, ADR-005). KEV (exploited in the wild) is
 flagged everywhere but does not block on its own — PO decision, may be revisited.
 
+**Degradation reporting.** `/health` also carries a `degradations` array: per-source staleness
+(NVD success older than 12h, KEV 48h, OSV 8 days), sources that are currently failing or have
+never succeeded, and stuck or disabled autonomous backfills. `status` stays `"ok"` for these —
+it is reserved for major events — so external monitors should watch `degradations` length, not
+status. The same list renders as a warning banner across the admin UI, which is currently the
+surface an operator sees it on; alerting and email notification are planned on top
+(TODO — see ADR-002 Option C).
 
 ### 4. After setup: what runs itself, and what does not
 

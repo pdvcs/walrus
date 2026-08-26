@@ -29,6 +29,7 @@ import { isPackageTracked, listDistinctCpePairs } from "./db/queries/package-ali
 import { crossReferenceVersions, getVersionAvailabilityStatus } from "./services/vuln-service.js";
 import { queryVulns, VulnQueryDeps } from "./services/vuln-query.js";
 import { getVulnHints } from "./services/vuln-hints.js";
+import { getDegradations } from "./services/degradations.js";
 import { autoBackfillPendingPackages } from "./services/vuln-backfill-autostart.js";
 import {
   listAvailabilityHistory,
@@ -225,9 +226,12 @@ export function createApp(): express.Express {
 
   app.get("/health", async (_req, res, next) => {
     try {
-      const [vuln_data_freshness, vuln_sync_status] = await Promise.all([
+      const [vuln_data_freshness, vuln_sync_status, degradations] = await Promise.all([
         getDataFreshness(pool).catch(() => null),
         getVulnSyncStatus(pool).catch(() => null),
+        // status stays "ok" when degradations exist — it is reserved for major
+        // events (PO decision 2026-08-26); degradation is reported alongside.
+        getDegradations(pool, { autoBackfillEnabled: config.VULN_AUTO_BACKFILL }).catch(() => []),
       ]);
       res.json(
         HealthResponseSchema.parse({
@@ -235,6 +239,7 @@ export function createApp(): express.Express {
           service: "walrus",
           vuln_data_freshness,
           vuln_sync_status,
+          degradations,
         }),
       );
     } catch (err) {

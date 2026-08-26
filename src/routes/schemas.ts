@@ -312,12 +312,30 @@ export const PackageVulnsResponseSchema = z
 
 // ── GET /health ───────────────────────────────────────────────────────────────
 
+export const DegradationSchema = z
+  .object({
+    component: z.string().openapi({ example: "vuln-sync-nvd" }),
+    reason: z.string(),
+  })
+  .openapi("Degradation");
+
 export const HealthResponseSchema = z
   .object({
-    status: z.string().openapi({ example: "ok" }),
+    status: z.string().openapi({
+      example: "ok",
+      description:
+        "Reserved for major events: it stays `ok` while the service can serve, even when " +
+        "`degradations` is non-empty. Poll `degradations` for partial failure.",
+    }),
     service: z.string().openapi({ example: "walrus" }),
     vuln_data_freshness: DataFreshnessSchema.nullable(),
     vuln_sync_status: VulnSyncStatusSchema.nullable(),
+    degradations: z.array(DegradationSchema).openapi({
+      description:
+        "Parts of the system currently not doing their job unattended — stale or failing " +
+        "vulnerability ingestion, stuck or disabled autonomous backfills. Empty means " +
+        "self-healing is healthy. Shown as a banner on the admin UI.",
+    }),
   })
   .openapi("HealthResponse");
 

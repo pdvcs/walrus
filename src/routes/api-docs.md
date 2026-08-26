@@ -472,9 +472,16 @@ curl -XPOST .../internal/vuln-sync/cvss -H 'content-type: application/json' \
     "nvd": { "last_attempt": null, "last_success": null, "last_failure": null, "last_ok": null },
     "kev": { "last_attempt": null, "last_success": null, "last_failure": null, "last_ok": null },
     "osv": { "last_attempt": null, "last_success": null, "last_failure": null, "last_ok": null }
-  }
+  },
+  "degradations": []
 }
 ```
+
+`status` is reserved for major events and stays `"ok"` while the service can serve.
+`degradations` lists parts of unattended operation that currently need attention — stale or
+failing vulnerability ingestion, stuck or disabled autonomous backfills — as
+`{ "component", "reason" }` entries. Empty means self-healing is healthy. The same list is
+shown as a banner on the admin UI.
 
 ### GET /api
 

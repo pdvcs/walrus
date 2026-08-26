@@ -25,4 +25,17 @@ describe("GET /health", () => {
     expect(res.body.vuln_sync_status).toHaveProperty("kev.last_failure");
     expect(res.body.vuln_sync_status).toHaveProperty("osv.last_attempt");
   });
+
+  it("reports degradations without leaving status ok (status is for major events)", async () => {
+    const app = createApp();
+    const res = await request(app).get("/health");
+    expect(res.status).toBe(200);
+    // Degradations are additive information; status stays "ok" regardless of them.
+    expect(res.body.status).toBe("ok");
+    expect(Array.isArray(res.body.degradations)).toBe(true);
+    for (const d of res.body.degradations) {
+      expect(d).toHaveProperty("component");
+      expect(d).toHaveProperty("reason");
+    }
+  });
 });

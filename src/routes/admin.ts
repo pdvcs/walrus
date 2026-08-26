@@ -106,8 +106,9 @@ export interface VersionVulnBadge {
   /**
    * True when GET /download returns 403 for this version. This is the gate itself
    * (getVersionAvailabilityStatus), not a threshold over the counts above — the counts include
-   * fail-open range matches that do not gate, and the gate keys off cvss_v3_score rather than the
-   * severity label. Deriving one from the other would misreport in both directions.
+   * fail-open range matches that do not gate, and the gate keys off CVSS base scores
+   * (meetsCriticalGate) rather than the severity label. Deriving one from the other would
+   * misreport in both directions.
    */
   blocked: boolean;
 }
@@ -996,15 +997,43 @@ export function renderSharedHtml(
     .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 20px; }
     .empty { color: #9ca3af; font-size: 0.85rem; margin-top: 16px; }
     #msg { min-height: 1.2em; margin-top: 8px; font-size: 0.82rem; color: #6b7280; }
+    .degraded-banner { background: #fef3c7; border-bottom: 1px solid #fcd34d; color: #92400e; padding: 10px 24px; font-size: 0.85rem; }
+    .degraded-banner strong { text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.75rem; }
+    .degraded-banner ul { margin: 6px 0 0 18px; }
+    .degraded-banner li { margin-top: 2px; }
+    .degraded-banner code { background: #fde68a; padding: 0 4px; border-radius: 4px; font-size: 0.8em; }
   </style>
 </head>
 <body>
   ${renderAdminNav(activeNav)}
+  <div id="degraded-banner"></div>
   <div class="wrap">
     ${body}
   </div>
 <script>
 ${scripts}
+</script>
+<script>
+// Degradation banner (PO decision 2026-08-26): walrus's vulnerability ingestion runs
+// unattended, so the admin homepage is where an operator learns it has stopped working.
+// Fed by /health's degradations array; /health keeps status "ok" for these.
+(async () => {
+  try {
+    const r = await fetch('/health');
+    if (!r.ok) return;
+    const d = await r.json();
+    const degradations = d.degradations || [];
+    if (degradations.length === 0) return;
+    const el = document.getElementById('degraded-banner');
+    const esc = (s) => { const t = document.createElement('div'); t.textContent = s == null ? '' : String(s); return t.innerHTML; };
+    el.className = 'degraded-banner';
+    el.innerHTML = '<strong>&#9888; System degraded</strong> — walrus is serving, but '
+      + degradations.length + ' part(s) of unattended operation need attention:'
+      + '<ul>' + degradations.map(x =>
+          '<li><code>' + esc(x.component) + '</code> ' + esc(x.reason) + '</li>'
+        ).join('') + '</ul>';
+  } catch (e) { /* the banner must never break an admin page */ }
+})();
 </script>${rawTail}
 </body>
 </html>`;
