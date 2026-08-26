@@ -104,9 +104,31 @@ export function getVersionAvailabilityStatus(
   version: string,
   affects: AffectsWithCveRow[],
 ): VersionAvailabilityStatus {
-  return hasConcreteCriticalMatch(version, affects.filter(isKnownCritical))
-    ? "blocked"
-    : "available";
+  return findBlockingCve(version, affects) === null ? "available" : "blocked";
+}
+
+/**
+ * The CVE row responsible for blocking this version, or null when it is servable.
+ *
+ * Availability history needs to record *why* a version became blocked, not just that it did.
+ * Deriving that from a boolean predicate would mean re-running the match a second time and
+ * risking the two drifting, so the predicate is expressed once here and
+ * `getVersionAvailabilityStatus` is defined in terms of it.
+ *
+ * Where several critical CVEs match, the first concrete match wins — the answer to "why is
+ * this blocked?" only needs to be *a* true reason, and the rest stay visible via
+ * /packages/{name}/vulns.
+ */
+export function findBlockingCve(
+  version: string,
+  affects: AffectsWithCveRow[],
+): AffectsWithCveRow | null {
+  for (const row of affects) {
+    if (!isKnownCritical(row)) continue;
+    const result = evaluateRange(version, toRange(row));
+    if (result.matched && result.reason !== "range-uncomparable") return row;
+  }
+  return null;
 }
 
 /**
@@ -148,10 +170,9 @@ function isKnownCritical(row: AffectsWithCveRow): boolean {
 }
 
 function hasConcreteCriticalMatch(version: string, criticalRows: AffectsWithCveRow[]): boolean {
-  return criticalRows.some((row) => {
-    const result = evaluateRange(version, toRange(row));
-    return result.matched && result.reason !== "range-uncomparable";
-  });
+  // criticalRows is pre-filtered by callers; findBlockingCve re-checks, which is harmless
+  // and keeps the match rule in one place.
+  return findBlockingCve(version, criticalRows) !== null;
 }
 
 function countBySeverity(vulns: VersionVuln[]): VersionCounts {

@@ -2,6 +2,8 @@ import { Pool } from "pg";
 import { listDistinctCpePairs } from "../db/queries/package-aliases.js";
 import { getVulnBackfillJob, updateVulnBackfillJob } from "../db/queries/vuln-backfill-jobs.js";
 import { hashCpePairs, markBackfillComplete } from "./vuln-backfill-autostart.js";
+import { recordAvailabilityTransitions } from "./availability-history.js";
+import { log } from "../common/log.js";
 import { NvdClient } from "../vuln/sync/nvd-client.js";
 import { backfillNvd, IngestCounts } from "../vuln/sync/nvd-sync.js";
 import { withVulnSyncLock } from "../vuln/sync/lock.js";
@@ -40,6 +42,10 @@ export async function runVulnBackfillJob(
         hashCpePairs(await listDistinctCpePairs(pool, packageName)),
       );
     }
+    // A backfill ingests historical CVEs, so it blocks versions as readily as any sync.
+    await recordAvailabilityTransitions(pool, { source: "backfill", trigger: "internal" }).catch(
+      (err: unknown) => log.error({ err }, "Failed to record availability transitions"),
+    );
     return result;
   } catch (error) {
     await updateVulnBackfillJob(pool, jobId, {

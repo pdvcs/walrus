@@ -2,6 +2,7 @@ import { OpenAPIRegistry, OpenApiGeneratorV31 } from "@asteasolutions/zod-to-ope
 import { z } from "zod";
 import { Router } from "express";
 import {
+  AvailabilityHistoryResponseSchema,
   CoolingOffErrorSchema,
   ErrorSchema,
   HealthResponseSchema,
@@ -287,6 +288,33 @@ registry.registerPath({
     },
     404: {
       description: "Unknown CVE (or affects no tracked package)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/v1/packages/{name}/availability",
+  summary: "Recorded download-availability transitions for a package's versions",
+  operationId: "getAvailabilityHistory",
+  tags: ["Vulnerabilities"],
+  request: {
+    params: z.object({ name: z.string().openapi({ description: "Package name" }) }),
+    query: z.object({
+      version: z.string().optional().openapi({
+        description: "Limit to one version's history. Omit for the package's recent changes.",
+      }),
+    }),
+  },
+  responses: {
+    200: {
+      description:
+        "Gate transitions, newest first. Rows are written only when a version's status actually changes, and record which ingestion caused it. This is history, not a re-derivation of the current CVE rows — it answers when a version became blocked and why.",
+      content: { "application/json": { schema: AvailabilityHistoryResponseSchema } },
+    },
+    404: {
+      description: "Unknown package",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },

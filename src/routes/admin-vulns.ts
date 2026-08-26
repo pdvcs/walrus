@@ -20,6 +20,11 @@ export interface AdminVulnsRouteDeps {
   getSyncStatus: () => Promise<VulnSyncStatus>;
   vulnSyncImpls: VulnSyncImpls;
   logAdminAction: (details: Record<string, unknown>) => Promise<void>;
+  /** Record gate transitions after an admin-triggered sync, exactly as /internal does. */
+  recordAvailability?: (source: string) => Promise<{
+    newlyBlocked: Array<{ package_name: string; version: string; cve_id: string | null }>;
+    newlyAvailable: Array<{ package_name: string; version: string }>;
+  }>;
   /** Operator hints (e.g. "run vuln:backfill") shown above the freshness panel. */
   getHints?: () => Promise<string[]>;
   startVulnBackfill: (
@@ -111,7 +116,20 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
       }
 
       const outcomes = await runVulnSync(source, deps.vulnSyncImpls, parsed.opts);
-      await deps.logAdminAction({ action: "vuln-sync", source, outcomes });
+      const availability = outcomes.some((o: SourceOutcome) => o.ok)
+        ? await deps.recordAvailability?.(source).catch(() => undefined)
+        : undefined;
+      await deps.logAdminAction({
+        action: "vuln-sync",
+        source,
+        outcomes,
+        ...(availability
+          ? {
+              newly_blocked: availability.newlyBlocked.length,
+              newly_available: availability.newlyAvailable.length,
+            }
+          : {}),
+      });
       const wantsHtml = req.headers.accept?.includes("text/html");
       const alreadyRunning = source !== "all" && outcomes[0]?.code === "already_running";
       if (wantsHtml) {

@@ -318,6 +318,37 @@ export const HealthResponseSchema = z
   })
   .openapi("HealthResponse");
 
+// ── GET /api/v1/packages/:name/availability ──────────────────────────────────
+
+export const AvailabilityTransitionSchema = z
+  .object({
+    version: z.string(),
+    status: z.enum(["blocked", "available"]),
+    cve_id: z.string().nullable().openapi({
+      description: "The CVE that caused a `blocked` transition. Null on `available`.",
+    }),
+    cvss_v3_score: z.number().nullable(),
+    severity: z.string().nullable(),
+    source: z.string().openapi({
+      description: "Ingestion that produced the change: nvd | kev | osv | cvss | backfill.",
+      example: "cvss",
+    }),
+    trigger: z.string().openapi({
+      description: "`internal` for a scheduled run, `admin` for an operator.",
+      example: "internal",
+    }),
+    at: z.string().datetime(),
+  })
+  .openapi("AvailabilityTransition");
+
+export const AvailabilityHistoryResponseSchema = z
+  .object({
+    package: z.string(),
+    version: z.string().nullable(),
+    transitions: z.array(AvailabilityTransitionSchema),
+  })
+  .openapi("AvailabilityHistoryResponse");
+
 // ── GET /download/:package/:version/:os/:arch ─────────────────────────────────
 
 export const CoolingOffErrorSchema = z

@@ -30,6 +30,15 @@ export interface InternalRouteDeps {
    * leaves no evidence of when it happened.
    */
   logAdminAction?: (details: Record<string, unknown>) => Promise<void>;
+  /**
+   * Re-evaluate the critical-CVE gate after ingestion and record what changed. Runs for
+   * every source, not just `cvss`: an `nvd` sync ingesting a fresh critical CVE blocks a
+   * version just as effectively.
+   */
+  recordAvailability?: (source: string) => Promise<{
+    newlyBlocked: Array<{ package_name: string; version: string; cve_id: string | null }>;
+    newlyAvailable: Array<{ package_name: string; version: string }>;
+  }>;
   startVulnBackfill?: (
     since?: string,
     packageName?: string,
@@ -127,7 +136,25 @@ export function createInternalRouter(deps: InternalRouteDeps): Router {
       }
 
       const outcomes = await runVulnSync(source, deps.vulnSync, parsed.opts);
-      await deps.logAdminAction?.({ action: "vuln-sync", source, outcomes });
+
+      // After the write, not before: this records what actually changed rather than what a
+      // run was projected to change. Failing to record history must not fail the sync that
+      // already succeeded, so it is logged and swallowed.
+      const availability = outcomes.some((o) => o.ok)
+        ? await deps.recordAvailability?.(source).catch(() => undefined)
+        : undefined;
+
+      await deps.logAdminAction?.({
+        action: "vuln-sync",
+        source,
+        outcomes,
+        ...(availability
+          ? {
+              newly_blocked: availability.newlyBlocked.length,
+              newly_available: availability.newlyAvailable.length,
+            }
+          : {}),
+      });
       const allOk = outcomes.every((o) => o.ok);
       const alreadyRunning = source !== "all" && outcomes[0]?.code === "already_running";
       const hints = deps.vulnHints ? await deps.vulnHints() : [];

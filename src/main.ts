@@ -30,6 +30,11 @@ import { crossReferenceVersions, getVersionAvailabilityStatus } from "./services
 import { queryVulns, VulnQueryDeps } from "./services/vuln-query.js";
 import { getVulnHints } from "./services/vuln-hints.js";
 import { autoBackfillPendingPackages } from "./services/vuln-backfill-autostart.js";
+import {
+  listAvailabilityHistory,
+  listRecentTransitions,
+  recordAvailabilityTransitions,
+} from "./services/availability-history.js";
 import { insertAdminAction } from "./db/queries/admin-actions.js";
 import { resolvePackage } from "./vuln/resolver.js";
 import {
@@ -265,6 +270,8 @@ export function createApp(): express.Express {
       getHints: () => getVulnHints(pool, { autoBackfillEnabled: config.VULN_AUTO_BACKFILL }),
       vulnSyncImpls,
       logAdminAction: (details) => insertAdminAction(pool, { action_type: "vuln-sync", details }),
+      recordAvailability: (source) =>
+        recordAvailabilityTransitions(pool, { source, trigger: "admin" }),
       startVulnBackfill,
       getVulnBackfill: (id) => getVulnBackfillJob(pool, id),
     }),
@@ -291,6 +298,8 @@ export function createApp(): express.Express {
       },
       listAffectsForPackage: (name) => listAffectsWithCveForPackage(pool, name),
       getDataFreshness: () => getDataFreshness(pool),
+      listAvailabilityHistory: (name, version) => listAvailabilityHistory(pool, name, version),
+      listRecentTransitions: (name) => listRecentTransitions(pool, name),
     }),
   );
 
@@ -491,6 +500,8 @@ export function createApp(): express.Express {
           performed_by: "internal",
           details,
         }),
+      recordAvailability: (source) =>
+        recordAvailabilityTransitions(pool, { source, trigger: "internal" }),
       startVulnBackfill,
       getVulnBackfill: (id) => getVulnBackfillJob(pool, id),
       autoBackfill: async () => {

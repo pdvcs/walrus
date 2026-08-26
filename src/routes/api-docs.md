@@ -356,6 +356,55 @@ curl 'http://localhost:8080/api/v1/packages/openjdk/vulns'
 }
 ```
 
+### GET /api/v1/packages/:name/availability
+
+When a version became download-blocked, and which CVE caused it. Optional `?version=` limits
+it to one version's history; without it you get the package's recent changes, newest first.
+
+This is **history**, not a re-derivation of the current CVE rows — those only describe the
+present. Ingestion runs unattended (see the ops runbook), so a scheduled job can turn a served
+version into a `403` with no human watching; this endpoint is how you find out what happened
+and when.
+
+Rows are written only when a version's gate status actually **changes**. A version that stays
+available forever produces none, and two-hourly ingestion does not append a row per run for a
+version whose status has not moved. Both directions are recorded: a version blocked and later
+unblocked — because its CVE was rescored below the gate, say — retains both transitions.
+
+**Retention:** unbounded by design. Growth is driven by real status changes rather than by run
+count, so the table stays small; rows are removed only when their package is deleted, via
+`ON DELETE CASCADE`.
+
+```json
+{
+  "package": "golang",
+  "version": "1.26.4",
+  "transitions": [
+    {
+      "version": "1.26.4",
+      "status": "blocked",
+      "cve_id": "CVE-2026-39821",
+      "cvss_v3_score": 9.6,
+      "severity": "CRITICAL",
+      "source": "kev",
+      "trigger": "internal",
+      "at": "2026-08-26T18:49:47.733Z"
+    }
+  ]
+}
+```
+
+`source` is the ingestion that caused the change (`nvd | kev | osv | cvss | all | backfill`) —
+any source can block a version, not just CVSS enrichment. `trigger` is `internal` for a
+scheduled run or `admin` for an operator. `cve_id` is null on an `available` transition:
+nothing _causes_ a version to become servable except the absence of a blocking match.
+
+**Status codes**
+
+- `404` — package not found
+
+---
+
 ### Ingestion triggers (internal / admin)
 
 Vuln data is refreshed by external cron hitting `POST /internal/vuln-sync/:source`
