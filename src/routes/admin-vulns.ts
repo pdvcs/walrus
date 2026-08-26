@@ -363,11 +363,12 @@ function renderExplorer(ctx: {
 
       if (proposals.length > 0) {
         html += '<table><thead><tr><th>CVE</th><th>Severity</th><th>CVSS v3</th>'
-          + '<th>CVSS v2</th><th>Source</th><th>Crosses gate</th></tr></thead><tbody>'
+          + '<th>CVSS v4</th><th>CVSS v2</th><th>Source</th><th>Crosses gate</th></tr></thead><tbody>'
           + proposals.map(x =>
               '<tr><td>' + esc(x.cve_id) + '</td>'
               + '<td class="sev-' + esc(x.severity) + '">' + esc(x.severity) + '</td>'
               + '<td>' + esc(x.cvss_v3_score == null ? '—' : x.cvss_v3_score) + '</td>'
+              + '<td>' + esc(x.cvss_v4_score == null ? '—' : x.cvss_v4_score) + '</td>'
               + '<td>' + esc(x.cvss_v2_score == null ? '—' : x.cvss_v2_score) + '</td>'
               + '<td>' + esc(x.severity_source) + '</td>'
               + '<td>' + (x.crosses_critical_gate ? 'yes' : 'no') + '</td></tr>'
@@ -490,9 +491,12 @@ function renderResult(r: VulnQueryResult): string {
         v.affected.matched_because === "range-uncomparable"
           ? ` <span class="badge badge-vuln-high">uncomparable</span>`
           : "";
+      // Show the base score behind the severity label: v3 when present, else v4
+      // (same bands), else v2 — matching extractCvss's severity precedence.
+      const score = v.cvss_v3_score ?? v.cvss_v4_score ?? v.cvss_v2_score;
       return `<tr>
         <td><a href="https://nvd.nist.gov/vuln/detail/${esc(v.cve_id)}" target="_blank" rel="noopener">${esc(v.cve_id)}</a></td>
-        <td class="sev-${esc(v.severity ?? "")}">${esc(v.severity ?? "—")}${v.cvss_v3_score !== null ? ` (${v.cvss_v3_score})` : ""}</td>
+        <td class="sev-${esc(v.severity ?? "")}">${esc(v.severity ?? "—")}${score !== null ? ` (${score})` : ""}</td>
         <td>${esc(v.affected.range)}${unc}</td>
         <td>${v.fixed_in ? esc(v.fixed_in) : "—"}</td>
         <td>${kev || "—"}</td>

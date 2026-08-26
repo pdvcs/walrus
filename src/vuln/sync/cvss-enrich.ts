@@ -23,7 +23,7 @@ import {
 } from "../../db/queries/cves.js";
 import { listVersions } from "../../db/queries/versions.js";
 import { listPackages } from "../../db/queries/packages.js";
-import { getVersionAvailabilityStatus } from "../../services/vuln-service.js";
+import { getVersionAvailabilityStatus, meetsCriticalGate } from "../../services/vuln-service.js";
 
 type Logger = (msg: string) => void;
 
@@ -33,6 +33,7 @@ export interface CvssProposal {
   severity: string;
   severity_source: string;
   cvss_v3_score: number | null;
+  cvss_v4_score: number | null;
   cvss_v2_score: number | null;
   /** True when this would newly satisfy the >= 9.0 download gate. */
   crosses_critical_gate: boolean;
@@ -51,8 +52,6 @@ export interface CvssEnrichResult extends Record<string, unknown> {
   errors: number;
   proposals: CvssProposal[];
 }
-
-const CRITICAL_SCORE = 9.0;
 
 /**
  * Fetch missing-severity CVEs from NVD and apply (or, with `dryRun`, only
@@ -108,8 +107,16 @@ export async function enrichMissingCvss(
       severity: cvss.severity,
       severity_source: cvss.severitySource,
       cvss_v3_score: cvss.score,
+      cvss_v4_score: cvss.v4Score,
       cvss_v2_score: cvss.v2Score,
-      crosses_critical_gate: cvss.score !== null && cvss.score >= CRITICAL_SCORE,
+      // The gate predicate itself, so the preview cannot drift from what the
+      // download route will actually enforce once the proposal is applied.
+      crosses_critical_gate: meetsCriticalGate({
+        cvss_v3_score: cvss.score,
+        cvss_v4_score: cvss.v4Score,
+        cvss_v2_score: cvss.v2Score,
+        severity: cvss.severity,
+      }),
     });
 
     if (opts.dryRun) continue;
@@ -118,6 +125,8 @@ export async function enrichMissingCvss(
       id,
       cvss_v3_score: cvss.score,
       cvss_v3_vector: cvss.vector,
+      cvss_v4_score: cvss.v4Score,
+      cvss_v4_vector: cvss.v4Vector,
       cvss_v2_score: cvss.v2Score,
       cvss_v2_vector: cvss.v2Vector,
       severity: cvss.severity,
@@ -166,6 +175,7 @@ export async function previewGateDelta(
         severity: p.severity,
         severity_source: p.severity_source,
         cvss_v3_score: p.cvss_v3_score === null ? null : String(p.cvss_v3_score),
+        cvss_v4_score: p.cvss_v4_score === null ? null : String(p.cvss_v4_score),
         cvss_v2_score: p.cvss_v2_score === null ? null : String(p.cvss_v2_score),
       };
     });

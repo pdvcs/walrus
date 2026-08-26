@@ -9,10 +9,12 @@ export interface CveRow {
   modified_at: Date | null;
   cvss_v3_score: string | null; // NUMERIC comes back as string from pg
   cvss_v3_vector: string | null;
+  cvss_v4_score: string | null; // NUMERIC comes back as string from pg
+  cvss_v4_vector: string | null;
   cvss_v2_score: string | null; // NUMERIC comes back as string from pg
   cvss_v2_vector: string | null;
   severity: string | null;
-  /** Which CVSS version produced `severity`: 'nvd-cvss-v3' | 'nvd-cvss-v2'. */
+  /** Which CVSS version produced `severity`: 'nvd-cvss-v3' | 'nvd-cvss-v4' | 'nvd-cvss-v2'. */
   severity_source: string | null;
   description: string | null;
   is_kev: boolean;
@@ -27,6 +29,8 @@ export interface CveUpsert {
   modified_at: string | null;
   cvss_v3_score: number | null;
   cvss_v3_vector: string | null;
+  cvss_v4_score?: number | null;
+  cvss_v4_vector?: string | null;
   cvss_v2_score: number | null;
   cvss_v2_vector: string | null;
   severity: string | null;
@@ -69,6 +73,7 @@ export interface AffectsWithCveRow {
   severity: string | null;
   severity_source: string | null;
   cvss_v3_score: string | null;
+  cvss_v4_score: string | null;
   cvss_v2_score: string | null;
   description: string | null;
   is_kev: boolean;
@@ -93,13 +98,16 @@ export interface AffectedPackageRow {
 export async function upsertCveFull(q: Queryable, cve: CveUpsert): Promise<void> {
   await q.query(
     `INSERT INTO cves (id, published_at, modified_at, cvss_v3_score, cvss_v3_vector,
+                       cvss_v4_score, cvss_v4_vector,
                        cvss_v2_score, cvss_v2_vector, severity, severity_source, description, raw, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now())
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now())
      ON CONFLICT (id) DO UPDATE SET
        published_at    = EXCLUDED.published_at,
        modified_at     = EXCLUDED.modified_at,
        cvss_v3_score   = EXCLUDED.cvss_v3_score,
        cvss_v3_vector  = EXCLUDED.cvss_v3_vector,
+       cvss_v4_score   = EXCLUDED.cvss_v4_score,
+       cvss_v4_vector  = EXCLUDED.cvss_v4_vector,
        cvss_v2_score   = EXCLUDED.cvss_v2_score,
        cvss_v2_vector  = EXCLUDED.cvss_v2_vector,
        severity        = EXCLUDED.severity,
@@ -113,6 +121,8 @@ export async function upsertCveFull(q: Queryable, cve: CveUpsert): Promise<void>
       cve.modified_at,
       cve.cvss_v3_score,
       cve.cvss_v3_vector,
+      cve.cvss_v4_score ?? null,
+      cve.cvss_v4_vector ?? null,
       cve.cvss_v2_score,
       cve.cvss_v2_vector,
       cve.severity,
@@ -217,6 +227,7 @@ export async function clearKevExcept(q: Queryable, ids: string[]): Promise<numbe
 export async function getCveById(pool: Pool, id: string): Promise<CveRow | null> {
   const { rows } = await pool.query<CveRow>(
     `SELECT id, published_at, modified_at, cvss_v3_score, cvss_v3_vector,
+            cvss_v4_score, cvss_v4_vector,
             cvss_v2_score, cvss_v2_vector, severity, severity_source,
             description, is_kev, kev_added_at, raw, updated_at
      FROM cves WHERE id = $1`,
@@ -233,7 +244,7 @@ export async function listAffectsWithCveForPackage(
   const { rows } = await pool.query<AffectsWithCveRow>(
     `SELECT ca.cve_id, ca.version_start, ca.version_start_excl, ca.version_end,
             ca.version_end_excl, ca.exact_version, ca.fixed_in, ca.source,
-            c.severity, c.severity_source, c.cvss_v3_score, c.cvss_v2_score,
+            c.severity, c.severity_source, c.cvss_v3_score, c.cvss_v4_score, c.cvss_v2_score,
             c.description, c.is_kev, c.raw
      FROM cve_affects ca JOIN cves c ON c.id = ca.cve_id
      WHERE ca.package_name = $1
@@ -257,6 +268,8 @@ export async function updateCveCvss(
     id: string;
     cvss_v3_score: number | null;
     cvss_v3_vector: string | null;
+    cvss_v4_score: number | null;
+    cvss_v4_vector: string | null;
     cvss_v2_score: number | null;
     cvss_v2_vector: string | null;
     severity: string | null;
@@ -267,16 +280,20 @@ export async function updateCveCvss(
     `UPDATE cves SET
        cvss_v3_score   = $2,
        cvss_v3_vector  = $3,
-       cvss_v2_score   = $4,
-       cvss_v2_vector  = $5,
-       severity        = $6,
-       severity_source = $7,
+       cvss_v4_score   = $4,
+       cvss_v4_vector  = $5,
+       cvss_v2_score   = $6,
+       cvss_v2_vector  = $7,
+       severity        = $8,
+       severity_source = $9,
        updated_at      = now()
      WHERE id = $1`,
     [
       cve.id,
       cve.cvss_v3_score,
       cve.cvss_v3_vector,
+      cve.cvss_v4_score,
+      cve.cvss_v4_vector,
       cve.cvss_v2_score,
       cve.cvss_v2_vector,
       cve.severity,

@@ -24,13 +24,16 @@ export interface IngestCounts {
 }
 
 /** Which CVSS version produced a row's `severity`. */
-export type SeveritySource = "nvd-cvss-v3" | "nvd-cvss-v2";
+export type SeveritySource = "nvd-cvss-v3" | "nvd-cvss-v4" | "nvd-cvss-v2";
 
 export interface ExtractedCvss {
-  /** CVSS v3 base score; null when the CVE is only scored under v2. */
+  /** CVSS v3 base score; null when the CVE is only scored under v4 and/or v2. */
   score: number | null;
   vector: string | null;
-  /** CVSS v2 base score, populated independently of v3. */
+  /** CVSS v4 base score, populated independently of v3/v2. */
+  v4Score: number | null;
+  v4Vector: string | null;
+  /** CVSS v2 base score, populated independently of v3/v4. */
   v2Score: number | null;
   v2Vector: string | null;
   severity: string | null;
@@ -60,24 +63,35 @@ function readMetric(
 /**
  * Pick the best CVSS metrics, tolerating NVD's variants.
  *
- * v3 wins when present. v2 is a fallback rather than an equal: it has no
- * CRITICAL band (v2 HIGH spans 7.0-10.0, where v3 splits HIGH 7.0-8.9 from
- * CRITICAL 9.0+), so a v2-derived severity is not comparable to a v3 one and
- * `severitySource` records which produced it. v2 score/vector are stored in
- * their own fields either way, so a CVE scored under both keeps both.
+ * Severity precedence is v3 → v4 → v2. v3 stays primary so already-scored rows
+ * do not churn; v4 sits above v2 because it shares v3's severity bands
+ * (CRITICAL 9.0+), where v2 has no CRITICAL band at all (v2 HIGH spans
+ * 7.0-10.0) — so a v2-derived severity is not comparable to a v3/v4 one and
+ * `severitySource` records which produced it. Each version's score/vector is
+ * stored in its own fields regardless of which wins the severity, so a CVE
+ * scored under several keeps them all.
  */
 export function extractCvss(item: NvdCveItem): ExtractedCvss {
   const metrics = (item.cve.metrics ?? {}) as Record<string, Array<Record<string, unknown>>>;
   const v3 = readMetric(metrics, "cvssMetricV31") ?? readMetric(metrics, "cvssMetricV30");
+  const v4 = readMetric(metrics, "cvssMetricV40");
   const v2 = readMetric(metrics, "cvssMetricV2");
 
   return {
     score: v3?.score ?? null,
     vector: v3?.vector ?? null,
+    v4Score: v4?.score ?? null,
+    v4Vector: v4?.vector ?? null,
     v2Score: v2?.score ?? null,
     v2Vector: v2?.vector ?? null,
-    severity: v3?.severity ?? v2?.severity ?? null,
-    severitySource: v3?.severity ? "nvd-cvss-v3" : v2?.severity ? "nvd-cvss-v2" : null,
+    severity: v3?.severity ?? v4?.severity ?? v2?.severity ?? null,
+    severitySource: v3?.severity
+      ? "nvd-cvss-v3"
+      : v4?.severity
+        ? "nvd-cvss-v4"
+        : v2?.severity
+          ? "nvd-cvss-v2"
+          : null,
   };
 }
 
@@ -162,7 +176,8 @@ export async function ingestCveItems(
     for (const item of items) {
       const cve = item.cve;
       const desc = cve.descriptions?.find((d) => d.lang === "en")?.value ?? null;
-      const { score, vector, v2Score, v2Vector, severity, severitySource } = extractCvss(item);
+      const { score, vector, v4Score, v4Vector, v2Score, v2Vector, severity, severitySource } =
+        extractCvss(item);
 
       await upsertCveFull(client, {
         id: cve.id,
@@ -170,6 +185,8 @@ export async function ingestCveItems(
         modified_at: cve.lastModified ?? null,
         cvss_v3_score: score,
         cvss_v3_vector: vector,
+        cvss_v4_score: v4Score,
+        cvss_v4_vector: v4Vector,
         cvss_v2_score: v2Score,
         cvss_v2_vector: v2Vector,
         severity,

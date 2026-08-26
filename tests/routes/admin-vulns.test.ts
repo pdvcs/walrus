@@ -32,7 +32,10 @@ function resolvedResult(): VulnQueryResult {
       {
         cve_id: "CVE-2023-0001",
         severity: "CRITICAL",
+        severity_source: "nvd-cvss-v3",
         cvss_v3_score: 9.8,
+        cvss_v4_score: null,
+        cvss_v2_score: null,
         summary: "boom",
         affected: { range: "< 20", matched_because: "11.0.2 < 20" },
         fixed_in: "20",
@@ -144,6 +147,7 @@ describe("admin vuln explorer + sync (isolated)", () => {
               severity: "CRITICAL",
               severity_source: "nvd-cvss-v3",
               cvss_v3_score: 9.9,
+              cvss_v4_score: null,
               cvss_v2_score: null,
               crosses_critical_gate: true,
             },

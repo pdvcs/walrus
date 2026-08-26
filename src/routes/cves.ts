@@ -47,6 +47,8 @@ export function createCvesRouter(deps: CvesRouteDeps): Router {
           severity_source: cve.severity_source,
           cvss_v3_score: cve.cvss_v3_score !== null ? Number(cve.cvss_v3_score) : null,
           cvss_v3_vector: cve.cvss_v3_vector,
+          cvss_v4_score: cve.cvss_v4_score == null ? null : Number(cve.cvss_v4_score),
+          cvss_v4_vector: cve.cvss_v4_vector,
           cvss_v2_score: cve.cvss_v2_score == null ? null : Number(cve.cvss_v2_score),
           cvss_v2_vector: cve.cvss_v2_vector,
           description: cve.description,

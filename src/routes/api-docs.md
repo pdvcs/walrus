@@ -43,7 +43,7 @@ as servable, not which groups are listed — a group with nothing servable still
 Examples: [openjdk](/api/v1/packages/openjdk/groups), [golang](/api/v1/packages/golang/groups), [uv](/api/v1/packages/uv/groups)
 
 `latest_available` is the latest cached version in the group that is free of known
-critical CVEs (CVSS v3 score >= 9.0, or a score-less CVE labeled CRITICAL). When every
+critical CVEs (any CVSS base score — v3, v4, or v2 — >= 9.0, or a score-less CVE labeled CRITICAL). When every
 cached version in a group carries a critical CVE — or is still inside its cooling-off
 period — it is `null`, meaning nothing safe to recommend right now, **not** nothing cached.
 Walrus never points this field at a version it knows to be critically vulnerable, nor at one
@@ -83,8 +83,8 @@ an embargoed version reports `cooling_off` with the timestamp it is released. Pe
 All versions for a package, with platform availability and a version-level security status.
 Examples: [openjdk](/api/v1/packages/openjdk/versions), [golang](/api/v1/packages/golang/versions), [uv](/api/v1/packages/uv/versions)
 
-`status` is `blocked` when the version concretely matches a known critical CVE (CVSS v3
-score >= 9.0, or a score-less CVE labeled CRITICAL) — this takes precedence over everything
+`status` is `blocked` when the version concretely matches a known critical CVE (any CVSS
+base score — v3, v4, or v2 — >= 9.0, or a score-less CVE labeled CRITICAL) — this takes precedence over everything
 else. It is `cooling_off` when no platform is servable yet because every candidate artifact is
 inside its release embargo; `available_at` then carries the moment the first one is released.
 Otherwise it is `available`. Range-uncomparable matches remain visible through the package
@@ -195,7 +195,8 @@ Example: [openjdk group 21, linux/x86-64](/api/v1/packages/openjdk/versions/21/l
 Download a binary. Streams directly from storage.
 
 Downloads are refused when the requested version concretely matches a known critical CVE
-(CVSS v3 >= 9.0, or a score-less CVE labeled CRITICAL).
+(any CVSS base score — v3, v4, or v2 — >= 9.0, or a score-less CVE labeled CRITICAL).
+CVEs known to be exploited in the wild (CISA KEV) are flagged but do not block on their own.
 
 **Response headers** `200`
 

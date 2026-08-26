@@ -17,7 +17,10 @@ function affects(overrides: Partial<AffectsWithCveRow>): AffectsWithCveRow {
     fixed_in: null,
     source: "nvd",
     severity: "HIGH",
+    severity_source: "nvd-cvss-v3",
     cvss_v3_score: "7.5",
+    cvss_v4_score: null,
+    cvss_v2_score: null,
     description: null,
     is_kev: false,
     raw: null,
@@ -196,6 +199,82 @@ describe("getVersionAvailabilityStatus", () => {
         cve_id: "CVE-CRIT",
         cvss_v3_score: "9.8",
         exact_version: "not-a-version",
+        version_end: null,
+      }),
+    ];
+    expect(getVersionAvailabilityStatus("1.24.13", rows)).toBe("available");
+  });
+
+  // PO decision 2026-08-26 (ADR-005): ANY CVSS base score >= 9.0 blocks, whichever
+  // version produced it. v2 has no CRITICAL band, so before this a v2-only 10.0
+  // never blocked; v4-only CVEs were invisible entirely.
+  it("blocks on a v2-only score >= 9.0 despite a non-critical severity label", () => {
+    const rows = [
+      affects({
+        cve_id: "CVE-V2-CRIT",
+        severity: "HIGH", // the most v2 can say
+        severity_source: "nvd-cvss-v2",
+        cvss_v3_score: null,
+        cvss_v2_score: "10.0",
+        exact_version: "1.24.13",
+        version_end: null,
+      }),
+    ];
+    expect(getVersionAvailabilityStatus("1.24.13", rows)).toBe("blocked");
+  });
+
+  it("does not block on a v2-only score below the threshold", () => {
+    const rows = [
+      affects({
+        cve_id: "CVE-V2-HIGH",
+        severity: "HIGH",
+        severity_source: "nvd-cvss-v2",
+        cvss_v3_score: null,
+        cvss_v2_score: "8.9",
+        exact_version: "1.24.13",
+        version_end: null,
+      }),
+    ];
+    expect(getVersionAvailabilityStatus("1.24.13", rows)).toBe("available");
+  });
+
+  it("blocks on a v4-only score >= 9.0", () => {
+    const rows = [
+      affects({
+        cve_id: "CVE-V4-CRIT",
+        severity: "CRITICAL",
+        severity_source: "nvd-cvss-v4",
+        cvss_v3_score: null,
+        cvss_v4_score: "9.5",
+        exact_version: "1.24.13",
+        version_end: null,
+      }),
+    ];
+    expect(getVersionAvailabilityStatus("1.24.13", rows)).toBe("blocked");
+  });
+
+  it("blocks when v3 sits below the gate but another version's score crosses it (any-of)", () => {
+    const rows = [
+      affects({
+        cve_id: "CVE-MIXED",
+        severity: "HIGH",
+        cvss_v3_score: "7.5",
+        cvss_v2_score: "9.3",
+        exact_version: "1.24.13",
+        version_end: null,
+      }),
+    ];
+    expect(getVersionAvailabilityStatus("1.24.13", rows)).toBe("blocked");
+  });
+
+  it("does not block on KEV alone — exploited-in-the-wild is signal, not a blocker", () => {
+    const rows = [
+      affects({
+        cve_id: "CVE-KEV",
+        severity: "HIGH",
+        cvss_v3_score: "7.8",
+        is_kev: true,
+        exact_version: "1.24.13",
         version_end: null,
       }),
     ];

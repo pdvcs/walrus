@@ -64,6 +64,13 @@ describe("extractCvss", () => {
       baseSeverity,
     },
   ];
+  // v4 keeps baseSeverity inside cvssData, like v3.
+  const v4 = (baseScore: number, baseSeverity: string) => [
+    {
+      type: "Primary",
+      cvssData: { version: "4.0", vectorString: "CVSS:4.0/AV:N", baseScore, baseSeverity },
+    },
+  ];
 
   it("prefers v3.1 for severity while still recording v2 alongside it", () => {
     const r = extractCvss(
@@ -101,11 +108,42 @@ describe("extractCvss", () => {
     expect(extractCvss(withMetrics({ cvssMetricV2: metric })).severity).toBe("HIGH");
   });
 
+  it("reads a v4-only CVE — the gap that left Deferred-backlog scores invisible", () => {
+    const r = extractCvss(withMetrics({ cvssMetricV40: v4(9.5, "CRITICAL") }));
+    expect(r.severity).toBe("CRITICAL");
+    expect(r.severitySource).toBe("nvd-cvss-v4");
+    expect(r.v4Score).toBe(9.5);
+    expect(r.v4Vector).toBe("CVSS:4.0/AV:N");
+    // v3 columns stay null: a v4 score is NOT a v3 score.
+    expect(r.score).toBeNull();
+  });
+
+  it("prefers v3 severity over v4 but records both scores", () => {
+    const r = extractCvss(
+      withMetrics({ cvssMetricV31: v3(8.8, "HIGH"), cvssMetricV40: v4(9.3, "CRITICAL") }),
+    );
+    expect(r.severitySource).toBe("nvd-cvss-v3");
+    expect(r.severity).toBe("HIGH");
+    expect(r.score).toBe(8.8);
+    expect(r.v4Score).toBe(9.3);
+  });
+
+  it("prefers v4 severity over v2 (v4 shares v3's bands; v2 has no CRITICAL)", () => {
+    const r = extractCvss(
+      withMetrics({ cvssMetricV40: v4(9.1, "CRITICAL"), cvssMetricV2: v2(9.8, "HIGH") }),
+    );
+    expect(r.severitySource).toBe("nvd-cvss-v4");
+    expect(r.severity).toBe("CRITICAL");
+    expect(r.v2Score).toBe(9.8);
+  });
+
   it("returns all-null with no severity source when there are no metrics", () => {
     const r = extractCvss(withMetrics({}));
     expect(r).toEqual({
       score: null,
       vector: null,
+      v4Score: null,
+      v4Vector: null,
       v2Score: null,
       v2Vector: null,
       severity: null,

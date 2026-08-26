@@ -180,6 +180,7 @@ describe("POST /internal/vuln-sync/cvss dry runs", () => {
     severity: "CRITICAL",
     severity_source: "nvd-cvss-v3",
     cvss_v3_score: 9.8,
+    cvss_v4_score: null,
     cvss_v2_score: null,
     crosses_critical_gate: true,
   };
@@ -331,6 +332,7 @@ describe("POST /internal/vuln-sync/:source auditing", () => {
               severity: "CRITICAL",
               severity_source: "nvd-cvss-v3",
               cvss_v3_score: 9.1,
+              cvss_v4_score: null,
               cvss_v2_score: null,
               crosses_critical_gate: true,
             },

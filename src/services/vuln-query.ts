@@ -31,6 +31,7 @@ export interface VulnItem {
   severity: string | null;
   severity_source: string | null;
   cvss_v3_score: number | null;
+  cvss_v4_score: number | null;
   cvss_v2_score: number | null;
   summary: string | null;
   affected: { range: string; matched_because: string | null };
@@ -139,6 +140,7 @@ export async function queryVulns(
       severity: row.severity,
       severity_source: row.severity_source,
       cvss_v3_score: row.cvss_v3_score !== null ? Number(row.cvss_v3_score) : null,
+      cvss_v4_score: row.cvss_v4_score == null ? null : Number(row.cvss_v4_score),
       cvss_v2_score: row.cvss_v2_score == null ? null : Number(row.cvss_v2_score),
       summary: truncate(row.description, 300),
       affected: { range: describeRange(toRange(row)), matched_because: entry.reason },

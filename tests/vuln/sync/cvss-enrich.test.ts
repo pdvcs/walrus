@@ -42,6 +42,31 @@ function nvdReturning(score: number | null, severity = "CRITICAL"): NvdClient {
   } as unknown as NvdClient;
 }
 
+/** An NVD client whose CVE is scored ONLY under CVSS v4.0 (Deferred-backlog shape). */
+function nvdReturningV4Only(score: number, severity = "CRITICAL"): NvdClient {
+  return {
+    cveById: async (id: string) =>
+      id !== CVE
+        ? null
+        : {
+            cve: {
+              id: CVE,
+              metrics: {
+                cvssMetricV40: [
+                  {
+                    cvssData: {
+                      baseScore: score,
+                      vectorString: "CVSS:4.0/AV:N",
+                      baseSeverity: severity,
+                    },
+                  },
+                ],
+              },
+            },
+          },
+  } as unknown as NvdClient;
+}
+
 describe("cvss enrichment", () => {
   let pool: Pool;
 
@@ -159,5 +184,52 @@ describe("cvss enrichment", () => {
     ]);
     expect(rows[0].severity).toBe("CRITICAL");
     expect(Number(rows[0].cvss_v3_score)).toBe(9.6);
+  });
+
+  // Before v4 support, this CVE was recorded as no_metrics — a terminal sentinel —
+  // and a version affected by a v4-only 9.5 kept serving forever.
+  it("scores a v4-only CVE, crosses the gate, and blocks the cached version", async () => {
+    await seedCandidate();
+
+    const preview = await enrichMissingCvss(pool, nvdReturningV4Only(9.5), { dryRun: true });
+    expect(preview.no_metrics).toBe(0);
+    const proposal = preview.proposals.find((p) => p.cve_id === CVE);
+    expect(proposal).toMatchObject({
+      severity: "CRITICAL",
+      severity_source: "nvd-cvss-v4",
+      cvss_v3_score: null,
+      cvss_v4_score: 9.5,
+      crosses_critical_gate: true,
+    });
+    const deltas = await previewGateDelta(pool, preview.proposals);
+    expect(deltas.find((d) => d.package_name === PKG)?.newly_blocked).toContain(VERSION);
+
+    const result = await enrichMissingCvss(pool, nvdReturningV4Only(9.5));
+    expect(result.updated).toBe(1);
+    const { rows } = await pool.query(
+      `SELECT severity, severity_source, cvss_v3_score, cvss_v4_score, cvss_v4_vector
+       FROM cves WHERE id = $1`,
+      [CVE],
+    );
+    expect(rows[0].severity).toBe("CRITICAL");
+    expect(rows[0].severity_source).toBe("nvd-cvss-v4");
+    expect(rows[0].cvss_v3_score).toBeNull();
+    expect(Number(rows[0].cvss_v4_score)).toBe(9.5);
+    expect(rows[0].cvss_v4_vector).toBe("CVSS:4.0/AV:N");
+  });
+
+  it("proposes a sub-threshold v4-only score without crossing the gate", async () => {
+    await seedCandidate();
+
+    const preview = await enrichMissingCvss(pool, nvdReturningV4Only(6.9, "MEDIUM"), {
+      dryRun: true,
+    });
+    const proposal = preview.proposals.find((p) => p.cve_id === CVE);
+    expect(proposal).toMatchObject({
+      severity: "MEDIUM",
+      severity_source: "nvd-cvss-v4",
+      cvss_v4_score: 6.9,
+      crosses_critical_gate: false,
+    });
   });
 });

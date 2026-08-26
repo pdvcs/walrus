@@ -68,7 +68,7 @@ export const VersionSchema = z
     is_lts: z.boolean(),
     status: z.enum(["available", "blocked", "cooling_off"]).openapi({
       description:
-        "Whether the version can be fetched. `blocked` is a concrete match to a known critical CVE (CVSS >= 9.0, or score-less CRITICAL) and takes precedence. `cooling_off` means no platform is servable yet because every candidate artifact is inside its release embargo. `available` means at least one platform is downloadable now, or is pending for ordinary sync reasons.",
+        "Whether the version can be fetched. `blocked` is a concrete match to a known critical CVE (any CVSS base score — v3, v4, or v2 — >= 9.0, or score-less CRITICAL) and takes precedence. `cooling_off` means no platform is servable yet because every candidate artifact is inside its release embargo. `available` means at least one platform is downloadable now, or is pending for ordinary sync reasons.",
     }),
     available_at: z.string().datetime().nullable().optional().openapi({
       description:
@@ -183,9 +183,10 @@ export const VulnItemSchema = z
     cve_id: z.string(),
     severity: z.string().nullable(),
     // Which CVSS version produced `severity`. v2 has no CRITICAL band (v2 HIGH
-    // spans 7.0-10.0), so a v2-sourced severity is not comparable to a v3 one.
+    // spans 7.0-10.0), so a v2-sourced severity is not comparable to a v3/v4 one.
     severity_source: z.string().nullable(),
     cvss_v3_score: z.number().nullable(),
+    cvss_v4_score: z.number().nullable(),
     cvss_v2_score: z.number().nullable(),
     summary: z.string().nullable(),
     affected: z.object({
@@ -265,6 +266,8 @@ export const CveDetailResponseSchema = z
     severity_source: z.string().nullable(),
     cvss_v3_score: z.number().nullable(),
     cvss_v3_vector: z.string().nullable(),
+    cvss_v4_score: z.number().nullable(),
+    cvss_v4_vector: z.string().nullable(),
     cvss_v2_score: z.number().nullable(),
     cvss_v2_vector: z.string().nullable(),
     description: z.string().nullable(),

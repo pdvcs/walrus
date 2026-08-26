@@ -263,6 +263,11 @@ Freshness timestamps represent the **last successful** source run. `/health` and
 also expose the latest attempt outcome and failure time, so a failed refresh cannot make stale data
 appear current.
 
+The download gate blocks a version on **any** CVSS base score — v3, v4, or v2 — at or above 9.0,
+or a score-less CRITICAL severity (`meetsCriticalGate`, ADR-005). KEV (exploited in the wild) is
+flagged everywhere but does not block on its own — PO decision, may be revisited.
+
+
 ### 4. After setup: what runs itself, and what does not
 
 Once the one-time backfill in §2 has been done, vulnerability ingestion is autonomous — no
