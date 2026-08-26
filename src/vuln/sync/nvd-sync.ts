@@ -218,7 +218,19 @@ export async function ingestCveItems(
 
 type Logger = (msg: string) => void;
 const DAY_MS = 24 * 3600 * 1000;
-const MAX_NVD_DATE_WINDOW_MS = 119 * DAY_MS;
+/** The API caps lastMod windows at 120 days; stay under with room for margins. */
+export const MAX_NVD_DATE_WINDOW_MS = 119 * DAY_MS;
+/**
+ * Safety margin subtracted from each incremental window's start.
+ *
+ * NVD's lastModStartDate index lags real time: a CVE modified just before a window's
+ * end can become queryable only after the query executed, so with abutting windows it
+ * falls permanently between them — silently, and (per the gate's data flow) biased
+ * toward under-blocking. Starting each window a little earlier re-fetches the boundary
+ * zone every run; per-CVE ingestion is idempotent (`upsertCveFull` + affects rebuild),
+ * so the overlap costs a handful of re-walked records and closes the gap.
+ */
+export const NVD_LASTMOD_LAG_MARGIN_MS = 2 * 3600 * 1000;
 
 export interface PublicationWindow extends Record<string, string> {
   pubStartDate: string;
@@ -320,16 +332,28 @@ export async function backfillNvd(
  * bootstraps a 119-day lookback window rather than erroring, so the /internal
  * trigger works before a full backfill (which remains the way to get history).
  * The cursor advances only on success.
+ *
+ * The window is `[cursor - lag margin, now]` rather than abutting the previous
+ * run's end: NVD's modification index lags, and an abutting window would let a
+ * late-indexed CVE fall permanently between runs. See NVD_LASTMOD_LAG_MARGIN_MS.
  */
 export async function incrementalNvdSync(
   pool: Pool,
   nvd: NvdClient,
-  opts: { log?: Logger } = {},
+  opts: { log?: Logger; now?: Date } = {},
 ): Promise<IngestCounts> {
   const log = opts.log ?? (() => {});
   const cursor = await getSyncCursor(pool, "nvd-cve");
-  const now = new Date();
-  const start = cursor ? new Date(cursor) : new Date(now.getTime() - MAX_NVD_DATE_WINDOW_MS);
+  const now = opts.now ?? new Date();
+  // Overlap backwards, never forwards: the fresh-DB bootstrap keeps its full lookback
+  // (there is no previous window to bridge), while an existing cursor re-fetches the
+  // boundary zone ahead of it. End still bounds at `now`, so everything indexed up to
+  // now stays covered by this window.
+  const start = new Date(
+    cursor
+      ? new Date(cursor).getTime() - NVD_LASTMOD_LAG_MARGIN_MS
+      : now.getTime() - MAX_NVD_DATE_WINDOW_MS,
+  );
   const end = new Date(Math.min(now.getTime(), start.getTime() + MAX_NVD_DATE_WINDOW_MS));
 
   try {

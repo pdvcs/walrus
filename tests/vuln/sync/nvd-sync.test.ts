@@ -15,6 +15,8 @@ import {
   extractCvss,
   ingestCveItems,
   incrementalNvdSync,
+  MAX_NVD_DATE_WINDOW_MS,
+  NVD_LASTMOD_LAG_MARGIN_MS,
 } from "../../../src/vuln/sync/nvd-sync.js";
 
 const TEST_DB_URL =
@@ -388,27 +390,124 @@ describe("nvd-sync ingestion", () => {
     beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
     afterAll(() => server.close());
 
-    it("advances the cursor on success", async () => {
+    /** Capture the lastMod window of each /cves request, deduped across pagination pages. */
+    function captureWindows(): Array<{ start: string; end: string }> {
+      const seen: Array<{ start: string; end: string }> = [];
+      server.events.on("request:start", ({ request }) => {
+        const url = new URL(request.url);
+        if (url.pathname !== "/rest/json/cves/2.0") return;
+        const s = url.searchParams.get("lastModStartDate");
+        const e = url.searchParams.get("lastModEndDate");
+        if (
+          s &&
+          e &&
+          (seen.length === 0 ||
+            seen[seen.length - 1].start !== s ||
+            seen[seen.length - 1].end !== e)
+        ) {
+          seen.push({ start: s, end: e });
+        }
+      });
+      return seen;
+    }
+
+    function mockPages(payload: unknown) {
       server.use(
         http.get("https://services.nvd.nist.gov/rest/json/cves/2.0", ({ request }) => {
-          const url = new URL(request.url);
           // Only the first page has content; second page (startIndex beyond total) empty.
-          if (Number(url.searchParams.get("startIndex")) > 0) {
+          if (Number(new URL(request.url).searchParams.get("startIndex")) > 0) {
             return HttpResponse.json({
               resultsPerPage: 0,
-              startIndex: Number(url.searchParams.get("startIndex")),
+              startIndex: Number(new URL(request.url).searchParams.get("startIndex")),
               totalResults: items.length,
               vulnerabilities: [],
             });
           }
-          return HttpResponse.json(notepadFixture);
+          return HttpResponse.json(payload);
         }),
       );
+    }
+
+    it("advances the cursor on success", async () => {
+      mockPages(notepadFixture);
       const nvd = new NvdClient({ apiKey: "k", backoffBaseMs: 1 }, async () => {});
       const counts = await incrementalNvdSync(pool, nvd, {});
       expect(counts.affects).toBeGreaterThan(0);
       const cursor = await getSyncCursor(pool, "nvd-cve");
       expect(cursor).not.toBeNull();
+    });
+
+    it("starts each window a lag margin before the cursor, and advances to the window end", async () => {
+      // WAL-47: NVD's lastMod index lags, so abutting windows permanently skip CVEs
+      // indexed just after a run. The next window must re-cover [cursor - margin].
+      const now = new Date("2026-08-26T21:00:00.000Z");
+      const cursorAt = new Date(now.getTime() - 3_600_000); // previous run 1h ago
+      await pool.query(
+        `INSERT INTO vuln_sync_state (source, cursor, last_run, last_ok)
+         VALUES ('nvd-cve', $1, now(), true)`,
+        [cursorAt.toISOString()],
+      );
+      mockPages(notepadFixture);
+      const windows = captureWindows();
+      const nvd = new NvdClient({ apiKey: "k", backoffBaseMs: 1 }, async () => {});
+
+      await incrementalNvdSync(pool, nvd, { now });
+      expect(windows[0].start).toBe(
+        new Date(cursorAt.getTime() - NVD_LASTMOD_LAG_MARGIN_MS).toISOString(),
+      );
+      expect(windows[0].end).toBe(now.toISOString());
+      const advancedTo = new Date((await getSyncCursor(pool, "nvd-cve"))!);
+
+      // The following run overlaps this one's tail instead of abutting it.
+      const next = new Date(advancedTo.getTime() + 2 * 3_600_000);
+      await pool.query(`DELETE FROM vuln_sync_state WHERE source = 'nvd-cve'`);
+      await pool.query(
+        `INSERT INTO vuln_sync_state (source, cursor, last_run, last_ok)
+         VALUES ('nvd-cve', $1, now(), true)`,
+        [advancedTo.toISOString()],
+      );
+      await incrementalNvdSync(pool, nvd, { now: next });
+      expect(windows[1].start).toBe(
+        new Date(advancedTo.getTime() - NVD_LASTMOD_LAG_MARGIN_MS).toISOString(),
+      );
+      expect(windows[1].end).toBe(next.toISOString());
+    });
+
+    it("keeps the full lookback on a fresh DB (no previous window to bridge)", async () => {
+      const now = new Date("2026-08-26T21:00:00.000Z");
+      mockPages(notepadFixture);
+      const windows = captureWindows();
+      const nvd = new NvdClient({ apiKey: "k", backoffBaseMs: 1 }, async () => {});
+
+      await incrementalNvdSync(pool, nvd, { now });
+      expect(windows[0].start).toBe(new Date(now.getTime() - MAX_NVD_DATE_WINDOW_MS).toISOString());
+      expect(windows[0].end).toBe(now.toISOString());
+    });
+
+    it("re-ingests the overlap without duplicating affects rows", async () => {
+      const cve = items.find((item) => item.cve.id === "CVE-2019-16294")!;
+      server.use(
+        http.get("https://services.nvd.nist.gov/rest/json/cves/2.0", ({ request }) => {
+          const startIndex = Number(new URL(request.url).searchParams.get("startIndex"));
+          // Same item on every query — both runs see identical data across the overlap.
+          return HttpResponse.json({
+            resultsPerPage: startIndex === 0 ? 1 : 0,
+            startIndex,
+            totalResults: 1,
+            vulnerabilities: startIndex === 0 ? [cve] : [],
+          });
+        }),
+      );
+
+      const nvd = new NvdClient({ apiKey: "k", backoffBaseMs: 1 }, async () => {});
+      const t0 = new Date("2026-08-26T20:00:00.000Z");
+      await incrementalNvdSync(pool, nvd, { now: t0 });
+      const first = await affectsCount(pool, PKG);
+      expect(first).toBeGreaterThan(0);
+
+      // Second run starts inside the first's coverage (cursor - margin < t0).
+      await incrementalNvdSync(pool, nvd, { now: new Date(t0.getTime() + 600_000) });
+      expect(await affectsCount(pool, PKG)).toBe(first);
     });
 
     it("removes obsolete affects for a known CVE that no longer matches a tracked CPE", async () => {
