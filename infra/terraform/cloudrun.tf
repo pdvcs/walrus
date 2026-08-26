@@ -123,3 +123,59 @@ resource "google_cloud_run_v2_job" "vuln_backfill" {
     }
   }
 }
+
+# Package sync as a Job rather than an HTTP endpoint. The sync downloads artifacts that run
+# to hundreds of MB, which no request deadline accommodates: Cloud Scheduler abandons a
+# request after 30 minutes at most, and Cloud Run throttles CPU once a response is sent, so
+# "respond early and keep working" is not safe either. See ADR-004 commitment 1.
+resource "google_cloud_run_v2_job" "sync" {
+  name     = "walrus-sync"
+  location = var.region
+
+  template {
+    template {
+      service_account = google_service_account.walrus_api.email
+      timeout         = var.sync_job_timeout
+      # No retries: the job already continues past a single package's failure, and a whole
+      # re-run would re-resolve every package. The next scheduled run is the retry.
+      max_retries = 0
+
+      volumes {
+        name = "cloudsql"
+        cloud_sql_instance {
+          instances = ["${var.project_id}:${var.region}:walrus-postgres"]
+        }
+      }
+
+      containers {
+        image   = "${var.region}-docker.pkg.dev/${var.project_id}/walrus/walrus-api:${var.image_tag}"
+        command = ["node", "dist/commands/sync-job.js"]
+        env {
+          name  = "STORAGE_BACKEND"
+          value = "gcs"
+        }
+        env {
+          name  = "GCS_BUCKET"
+          value = var.gcs_bucket_name
+        }
+        env {
+          name  = "DOWNLOAD_CONCURRENCY"
+          value = "8"
+        }
+        env {
+          name = "DATABASE_URL"
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.database_url.secret_id
+              version = "latest"
+            }
+          }
+        }
+        volume_mounts {
+          name       = "cloudsql"
+          mount_path = "/cloudsql"
+        }
+      }
+    }
+  }
+}

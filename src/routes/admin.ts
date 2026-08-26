@@ -32,7 +32,7 @@ export interface AdminRouteDeps {
   runSyncAll: (opts: {
     dryRun: boolean;
     triggerType: "admin";
-  }) => Promise<Array<{ package: string; result: SyncRunResult }>>;
+  }) => Promise<Array<{ package: string; result?: SyncRunResult; skipped?: string }>>;
   startSyncAsync: (packageName: string, opts: { triggerType: "admin" }) => Promise<number>;
   startHistoricalBackfill?: (
     packageName: string,
@@ -154,7 +154,11 @@ export function createAdminRouter(deps: AdminRouteDeps): Router {
         const results = await deps.runSyncAll({ dryRun: true, triggerType: "admin" });
         res.json({
           dry_run: true,
-          jobs: results.map((entry) => ({ package: entry.package, result: entry.result })),
+          jobs: results.map((entry) => ({
+            package: entry.package,
+            result: entry.result,
+            skipped: entry.skipped,
+          })),
         });
         return;
       }

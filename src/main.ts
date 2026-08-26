@@ -10,7 +10,12 @@ import { reconcileAllPackageVulns } from "./services/vuln-config.js";
 import { createVulnSyncImpls } from "./vuln/sync/impls.js";
 import { DownloadService, ChecksumAlgorithm } from "./services/download-service.js";
 import { RetentionService } from "./services/retention-service.js";
-import { SyncService, SyncRunOptions, SyncRunResult } from "./services/sync-service.js";
+import {
+  SyncAlreadyRunningError,
+  SyncService,
+  SyncRunOptions,
+  SyncRunResult,
+} from "./services/sync-service.js";
 import { createPackagesRouter } from "./routes/packages.js";
 import { createDownloadRouter } from "./routes/download.js";
 import { buildRedownloadPath, createAdminRouter } from "./routes/admin.js";
@@ -131,14 +136,24 @@ async function runSync(packageName: string, options: SyncRunOptions): Promise<Sy
 
 async function runSyncAll(
   options: SyncRunOptions,
-): Promise<Array<{ package: string; result: SyncRunResult }>> {
+): Promise<Array<{ package: string; result?: SyncRunResult; skipped?: string }>> {
   const entries = Array.from(syncServices.entries());
-  const results: Array<{ package: string; result: SyncRunResult }> = [];
+  const results: Array<{ package: string; result?: SyncRunResult; skipped?: string }> = [];
   for (const [packageName, service] of entries) {
     const pkg = await getPackage(pool, packageName);
     if (pkg?.enabled === false) continue;
-    const result = await service.run(options);
-    results.push({ package: packageName, result });
+    try {
+      results.push({ package: packageName, result: await service.run(options) });
+    } catch (error) {
+      // One package already syncing is a normal outcome of overlapping triggers, not a
+      // failed run — report it and carry on rather than aborting the remaining packages.
+      if (error instanceof SyncAlreadyRunningError) {
+        log.info({ package: packageName }, "Skipping package: sync already running");
+        results.push({ package: packageName, skipped: "already_running" });
+        continue;
+      }
+      throw error;
+    }
   }
   return results;
 }

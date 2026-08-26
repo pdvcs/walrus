@@ -72,6 +72,12 @@ variable "vuln_sync_cvss_schedule" {
   default     = "10 9 * * *"
 }
 
+variable "sync_job_timeout" {
+  description = "Max duration for one walrus-sync Cloud Run Job execution"
+  type        = string
+  default     = "3600s"
+}
+
 variable "sql_deletion_protection" {
   description = "Enable deletion protection on the Cloud SQL instance (set to false for teardown)"
   type        = bool

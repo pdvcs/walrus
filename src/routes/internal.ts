@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { SyncRunResult } from "../services/sync-service.js";
+import { SyncAlreadyRunningError, SyncRunResult } from "../services/sync-service.js";
 import {
   isVulnSyncSource,
   parseVulnSyncOptions,
@@ -18,7 +18,7 @@ export interface InternalRouteDeps {
   runSyncAll: (opts: {
     dryRun: boolean;
     triggerType: "scheduled";
-  }) => Promise<Array<{ package: string; result: SyncRunResult }>>;
+  }) => Promise<Array<{ package: string; result?: SyncRunResult; skipped?: string }>>;
   /** Vuln sync implementations, injected from main.ts (real NVD/KEV/OSV) or tests (fakes). */
   vulnSync: VulnSyncImpls;
   /** Operator hints (e.g. "run vuln:backfill"); appended to the sync response when non-empty. */
@@ -48,13 +48,27 @@ export function createInternalRouter(deps: InternalRouteDeps): Router {
       const dryRun = body.dry_run === true;
 
       if (packageName) {
-        const result = await deps.runSync(packageName, { dryRun, triggerType: "scheduled" });
-        res.status(202).json({ package: packageName, dry_run: dryRun, result });
+        let result;
+        try {
+          result = await deps.runSync(packageName, { dryRun, triggerType: "scheduled" });
+        } catch (error) {
+          // A trigger that overlaps a running sync is expected, not an error. 409 keeps it
+          // out of the 5xx bucket; Cloud Scheduler still sees a non-2xx and will retry.
+          if (error instanceof SyncAlreadyRunningError) {
+            res
+              .status(409)
+              .json({ code: "already_running", package: packageName, error: error.message });
+            return;
+          }
+          throw error;
+        }
+        // The work is complete by the time this returns, so 200 — not 202.
+        res.status(200).json({ package: packageName, dry_run: dryRun, result });
         return;
       }
 
       const results = await deps.runSyncAll({ dryRun, triggerType: "scheduled" });
-      res.status(202).json({ dry_run: dryRun, results });
+      res.status(200).json({ dry_run: dryRun, results });
     } catch (err) {
       next(err);
     }

@@ -1,16 +1,26 @@
+# Executes the walrus-sync Cloud Run Job rather than POSTing /internal/sync. The request
+# only has to start the execution, so the attempt deadline no longer bounds how long a sync
+# may take, and the work runs in its own container instead of outliving a response.
+# Authenticates with an OAuth token because the target is a Google API, not our service.
 resource "google_cloud_scheduler_job" "sync" {
-  name      = "walrus-sync"
-  region    = var.region
-  schedule  = var.sync_schedule
-  time_zone = "UTC"
+  name             = "walrus-sync"
+  region           = var.region
+  schedule         = var.sync_schedule
+  time_zone        = "UTC"
+  attempt_deadline = "320s"
+
+  retry_config {
+    retry_count          = 1
+    min_backoff_duration = "60s"
+  }
 
   http_target {
     http_method = "POST"
-    uri         = "${google_cloud_run_v2_service.walrus.uri}/internal/sync"
+    uri         = "https://${var.region}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${var.project_id}/jobs/${google_cloud_run_v2_job.sync.name}:run"
 
-    oidc_token {
+    oauth_token {
       service_account_email = google_service_account.walrus_scheduler.email
-      audience              = google_cloud_run_v2_service.walrus.uri
+      scope                 = "https://www.googleapis.com/auth/cloud-platform"
     }
   }
 }

@@ -1,10 +1,23 @@
 import { describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { DiscoveredVersion } from "../../src/discovery/types.js";
-import { SyncService } from "../../src/services/sync-service.js";
+import { SyncAlreadyRunningError, SyncService } from "../../src/services/sync-service.js";
 import { PackageConfig } from "../../src/types/package-config.js";
 import { DownloadService } from "../../src/services/download-service.js";
 import { RetentionService } from "../../src/services/retention-service.js";
+
+/**
+ * SyncService now takes a per-package advisory lock around every real run, so the fake pool
+ * has to serve `connect()`. `acquired` flips the lock's answer.
+ */
+function lockablePool(acquired = true): Pool {
+  return {
+    connect: async () => ({
+      query: async () => ({ rows: [{ acquired }] }),
+      release: () => {},
+    }),
+  } as unknown as Pool;
+}
 
 const pkg: PackageConfig = {
   name: "uv",
@@ -93,7 +106,7 @@ describe("SyncService", () => {
       getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
     };
 
-    const service = new SyncService({} as Pool, pkg, downloadService, retentionService, {
+    const service = new SyncService(lockablePool(), pkg, downloadService, retentionService, {
       deps,
       syncConcurrency: 2,
       downloadConcurrency: 2,
@@ -157,7 +170,7 @@ describe("SyncService", () => {
     };
 
     const service = new SyncService(
-      {} as Pool,
+      lockablePool(),
       pkg,
       {} as DownloadService,
       {} as RetentionService,
@@ -211,7 +224,7 @@ describe("SyncService", () => {
     };
 
     const service = new SyncService(
-      {} as Pool,
+      lockablePool(),
       pkgWithGroups,
       {} as DownloadService,
       {} as RetentionService,
@@ -272,7 +285,7 @@ describe("SyncService", () => {
     };
 
     const service = new SyncService(
-      {} as Pool,
+      lockablePool(),
       pkgWithCoolingOff,
       {} as DownloadService,
       {} as RetentionService,
@@ -324,7 +337,7 @@ describe("SyncService", () => {
     };
 
     const service = new SyncService(
-      {} as Pool,
+      lockablePool(),
       pkgWithCoolingOff,
       {} as DownloadService,
       {} as RetentionService,
@@ -372,7 +385,7 @@ describe("SyncService", () => {
     };
 
     const service = new SyncService(
-      {} as Pool,
+      lockablePool(),
       pkgWithCoolingOff,
       {} as DownloadService,
       {} as RetentionService,
@@ -414,7 +427,7 @@ describe("SyncService", () => {
     };
 
     const service = new SyncService(
-      {} as Pool,
+      lockablePool(),
       pkgWithCoolingOff,
       {} as DownloadService,
       {} as RetentionService,
@@ -457,7 +470,7 @@ describe("SyncService", () => {
     };
 
     const service = new SyncService(
-      {} as Pool,
+      lockablePool(),
       pkgWithCoolingOff,
       {} as DownloadService,
       {} as RetentionService,
@@ -508,7 +521,7 @@ describe("SyncService", () => {
     };
 
     const service = new SyncService(
-      {} as Pool,
+      lockablePool(),
       pkgWithCoolingOff,
       {} as DownloadService,
       {} as RetentionService,
@@ -550,7 +563,7 @@ describe("SyncService", () => {
     };
 
     const service = new SyncService(
-      {} as Pool,
+      lockablePool(),
       pkg,
       {} as DownloadService,
       {} as RetentionService,
@@ -567,5 +580,44 @@ describe("SyncService", () => {
     expect(deps.upsertPackage).not.toHaveBeenCalled();
     expect(deps.createSyncJob).not.toHaveBeenCalled();
     expect(deps.downloadArtifact).not.toHaveBeenCalled();
+  });
+});
+
+describe("SyncService concurrency", () => {
+  it("refuses a second run for the same package instead of racing it", async () => {
+    const service = new SyncService(
+      lockablePool(false),
+      pkg,
+      {} as unknown as DownloadService,
+      {} as unknown as RetentionService,
+    );
+
+    await expect(service.run({ triggerType: "scheduled" })).rejects.toThrow(
+      SyncAlreadyRunningError,
+    );
+  });
+
+  it("does not take the lock for a dry run, which writes nothing", async () => {
+    let connected = false;
+    const pool = {
+      connect: async () => {
+        connected = true;
+        return { query: async () => ({ rows: [{ acquired: false }] }), release: () => {} };
+      },
+    } as unknown as Pool;
+
+    const service = new SyncService(
+      pool,
+      pkg,
+      {} as unknown as DownloadService,
+      {} as unknown as RetentionService,
+      { deps: { discoverVersions: vi.fn().mockResolvedValue([]) } as never },
+    );
+
+    const result = await service.run({ dryRun: true });
+
+    expect(result.dryRun).toBe(true);
+    // A contended lock must not block a read-only preview.
+    expect(connected).toBe(false);
   });
 });

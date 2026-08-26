@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { Pool } from "pg";
 import { mapWithConcurrency } from "../common/async-utils.js";
 import { generateSortKey } from "../common/version-utils.js";
+import { AdvisoryLockUnavailableError, withAdvisoryLock } from "../common/advisory-lock.js";
 import { computeCoolingOffUntil, selectRetentionWindow } from "../common/retention-window.js";
 import { log } from "../common/log.js";
 import { getStrategy } from "../discovery/index.js";
@@ -61,6 +62,20 @@ export interface SyncServiceOptions {
   deps?: Partial<SyncDeps>;
 }
 
+const SYNC_LOCK_NAMESPACE = "walrus:package-sync";
+
+/**
+ * Raised when a sync for this package is already in flight. Locking is per package, not
+ * global: two different packages never touch the same rows, so serialising them would only
+ * make a full run slower. Two runs of the *same* package race on its versions and artifacts.
+ */
+export class SyncAlreadyRunningError extends Error {
+  constructor(readonly packageName: string) {
+    super(`sync for package '${packageName}' is already running`);
+    this.name = "SyncAlreadyRunningError";
+  }
+}
+
 export class SyncService {
   private readonly syncConcurrency: number;
   private readonly downloadConcurrency: number;
@@ -111,13 +126,38 @@ export class SyncService {
       };
     }
 
-    const job = await this._setupJob(options);
-    return this._doSync(job, options);
+    return this.withLock(async () => {
+      const job = await this._setupJob(options);
+      return this._doSync(job, options);
+    });
+  }
+
+  /**
+   * Hold the package's sync lock for the whole run. The lock is a session advisory lock, so
+   * a crashed process releases it rather than stranding the next scheduled run.
+   */
+  private async withLock<T>(fn: () => Promise<T>): Promise<T> {
+    const key = this.packageConfig.name;
+    try {
+      return await withAdvisoryLock(this.pool, SYNC_LOCK_NAMESPACE, key, fn);
+    } catch (err) {
+      if (
+        err instanceof AdvisoryLockUnavailableError &&
+        err.namespace === SYNC_LOCK_NAMESPACE &&
+        err.key === key
+      ) {
+        throw new SyncAlreadyRunningError(key);
+      }
+      throw err;
+    }
   }
 
   async startAsync(options: SyncRunOptions = {}): Promise<number> {
     const job = await this._setupJob(options);
-    this._doSync(job, options).catch(async (err) => {
+    // The lock is taken *inside* the detached chain so it is held for the whole background
+    // run, not just until this function returns. Contention marks the job failed with a
+    // clear reason rather than silently running a second, racing sync.
+    this.withLock(() => this._doSync(job, options)).catch(async (err) => {
       log.error({ jobId: job.id, err }, "Background sync crashed");
       await this.deps
         .updateSyncJob(this.pool, job.id, {

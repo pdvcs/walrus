@@ -47,6 +47,16 @@ resource "google_cloud_run_v2_service_iam_member" "walrus_scheduler_invoker" {
   member   = "serviceAccount:${google_service_account.walrus_scheduler.email}"
 }
 
+# walrus-scheduler: run the sync Job. Distinct from the service invoker binding above —
+# executing a Cloud Run Job is a separate permission from invoking a Cloud Run service.
+resource "google_cloud_run_v2_job_iam_member" "walrus_scheduler_job_runner" {
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_job.sync.name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_service_account.walrus_scheduler.email}"
+}
+
 # Public API access
 resource "google_cloud_run_v2_service_iam_member" "walrus_public_invoker" {
   project  = var.project_id

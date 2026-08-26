@@ -193,6 +193,13 @@ source does not touch the others:
 Minutes are offset from the package sync (minute 0) and from each other, since `nvd` and `cvss`
 share one advisory lock and a contended run is wasted work.
 
+Note the package sync is not one of these: it runs as the `walrus-sync` **Cloud Run Job**,
+executed directly by Cloud Scheduler rather than triggered over HTTP. Artifact downloads run
+to hundreds of MB and outlast any request deadline, so the work belongs in its own container
+(ADR-004). Each package also takes a per-package advisory lock, so an overlapping trigger
+skips that package rather than racing it — visible as `skipped: "already_running"` in the
+response from `/internal/sync`, or `409` when a single package is requested.
+
 `cvss` **is** scheduled, by PO decision — see ADR-002. Enrichment can newly satisfy the
 
 > = 9.0 download gate, turning versions that serve today into 403s; here that is the intended
@@ -262,14 +269,14 @@ Once the one-time backfill in §2 has been done, vulnerability ingestion is auto
 only routine action left for an operator is adding a package — and that one currently still
 needs a manual step.
 
-| Event                                  | Handled by                           | Autonomous?         |
-| -------------------------------------- | ------------------------------------ | ------------------- |
-| New CVEs published / rescored          | `nvd` incremental, 2-hourly          | Yes                 |
-| CVE added to CISA KEV                  | `kev`, daily                         | Yes                 |
-| OSV advisory added or changed          | `osv`, weekly (re-queries every pkg) | Yes                 |
-| CVE arrives with no severity           | `cvss`, daily                        | Yes                 |
-| Version passes its cooling-off period  | Next package sync                    | Yes                 |
-| **New package, or new CPE pair added** | **Targeted NVD backfill**            | **No — see WAL-37** |
+| Event                                  | Handled by                            | Autonomous?         |
+| -------------------------------------- | ------------------------------------- | ------------------- |
+| New CVEs published / rescored          | `nvd` incremental, 2-hourly           | Yes                 |
+| CVE added to CISA KEV                  | `kev`, daily                          | Yes                 |
+| OSV advisory added or changed          | `osv`, weekly (re-queries every pkg)  | Yes                 |
+| CVE arrives with no severity           | `cvss`, daily                         | Yes                 |
+| Version passes its cooling-off period  | Next package sync (`walrus-sync` Job) | Yes                 |
+| **New package, or new CPE pair added** | **Targeted NVD backfill**             | **No — see WAL-37** |
 
 The last row is the gap. Incremental NVD sync is cursor-based (`lastModStartDate`), so it
 only sees recently-modified CVEs; a newly tracked package's _historical_ CVEs are structurally
