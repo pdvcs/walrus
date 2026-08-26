@@ -30,7 +30,14 @@ export function createVulnSyncImpls(pool: Pool): VulnSyncImpls {
     osv: () =>
       withVulnSyncLock(pool, "osv", async () => {
         const r = await osvSyncAll(pool);
-        return { ...r };
+        return {
+          packages: r.packages,
+          vulns: r.vulns,
+          affectsUpserted: r.affectsUpserted,
+          stubCves: r.stubCves,
+          skippedNoCve: r.skippedNoCve,
+          failures: r.failures.length,
+        };
       }),
     // Shares the "nvd" lock: it is NVD traffic, and must not race NVD ingestion
     // rewriting the same cves rows.

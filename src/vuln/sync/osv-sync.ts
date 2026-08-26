@@ -5,6 +5,7 @@
  * by the unique constraint). See plan §5, WAL-8.
  */
 import { Pool } from "pg";
+import { log } from "../../common/log.js";
 import {
   upsertCveStub,
   deleteAffectsForPackageAndSource,
@@ -38,6 +39,8 @@ export interface OsvSyncResult {
   affectsUpserted: number;
   stubCves: number;
   skippedNoCve: number;
+  /** Packages whose query or apply failed; the source fails only when every one did. */
+  failures: Array<{ package: string; error: string }>;
 }
 
 /** Query OSV for every vuln affecting a package (paginated). */
@@ -177,15 +180,16 @@ export async function osvSyncAll(
   fetchFn: typeof fetch = fetch,
 ): Promise<OsvSyncResult> {
   const packages = await listPackagesWithOsv(pool);
-  const result: OsvSyncResult = {
+  const result: OsvSyncResult & { failures: Array<{ package: string; error: string }> } = {
     packages: 0,
     vulns: 0,
     affectsUpserted: 0,
     stubCves: 0,
     skippedNoCve: 0,
+    failures: [],
   };
-  try {
-    for (const p of packages) {
+  for (const p of packages) {
+    try {
       const vulns = await queryOsvPackage(p.osv_ecosystem, p.osv_name, fetchFn);
       const r = await applyOsvVulns(pool, p.package_name, p.osv_ecosystem, p.osv_name, vulns);
       result.packages++;
@@ -193,11 +197,27 @@ export async function osvSyncAll(
       result.affectsUpserted += r.affectsUpserted;
       result.stubCves += r.stubCves;
       result.skippedNoCve += r.skippedNoCve;
+    } catch (err) {
+      // Per-package tolerance: one flaky query (a bad ecosystem name, a poisoned
+      // response) must not stall the other packages' weekly cross-check. The source
+      // fails only when nothing at all succeeded — then staleness degradations fire
+      // as designed; a partial run leaves last_ok=true because most data refreshed.
+      result.failures.push({
+        package: p.package_name,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
-    await setSyncState(pool, "osv", new Date().toISOString(), true);
-  } catch (err) {
-    await setSyncState(pool, "osv", null, false);
-    throw err;
   }
+  if (result.failures.length > 0) {
+    log.warn(
+      { failed: result.failures.map((f) => f.package), total: packages.length },
+      "OSV sync: some packages failed",
+    );
+  }
+
+  // Source-level success is decided here rather than by exception: every package
+  // failed means the cross-check produced nothing and next week's run repeats it.
+  const ok = result.packages > 0 || packages.length === 0;
+  await setSyncState(pool, "osv", ok ? new Date().toISOString() : null, ok);
   return result;
 }

@@ -23,8 +23,24 @@ export interface KevResult {
   skippedUnknown: number;
 }
 
+/**
+ * A parsed-but-empty catalog is almost always a malformed upstream (a JSON error body,
+ * a truncated document) rather than reality — CISA has never published a KEV with zero
+ * entries, and silently clearing every flag on one would hide confirmed-exploited CVEs
+ * from badges and counts for a week. Refuse it and let the run fail instead.
+ */
+function assertPlausible(catalog: KevCatalog): void {
+  if (!Array.isArray(catalog.vulnerabilities) || catalog.vulnerabilities.length === 0) {
+    throw new Error(
+      "KEV catalog contains no vulnerabilities — refusing to apply " +
+        "(likely an upstream error, not an empty catalog)",
+    );
+  }
+}
+
 /** Apply a KEV catalog to the cves table. */
 export async function applyKev(pool: Pool, catalog: KevCatalog): Promise<KevResult> {
+  assertPlausible(catalog);
   const entries = catalog.vulnerabilities.map((v) => ({ id: v.cveID, added: v.dateAdded }));
   const ids = entries.map((e) => e.id);
 
@@ -57,9 +73,18 @@ export async function kevSync(pool: Pool, fetchFn: typeof fetch = fetch): Promis
       signal: AbortSignal.timeout(config.VULN_HTTP_TIMEOUT_MS),
     });
     if (!res.ok) throw new Error(`KEV download failed: HTTP ${res.status}`);
-    const catalog = (await res.json()) as KevCatalog;
-    const result = await applyKev(pool, catalog);
-    await setSyncState(pool, "kev", catalog.catalogVersion, true);
+    // Validate shape before applying: `as KevCatalog` trusts nothing after this check,
+    // but an array-typed hole would otherwise flow into clearKevExcept below.
+    const parsed: unknown = await res.json();
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      !Array.isArray((parsed as KevCatalog).vulnerabilities)
+    ) {
+      throw new Error("KEV download is not a recognizable catalog (missing vulnerabilities[])");
+    }
+    const result = await applyKev(pool, parsed as KevCatalog);
+    await setSyncState(pool, "kev", (parsed as KevCatalog).catalogVersion, true);
     return result;
   } catch (err) {
     await setSyncState(pool, "kev", null, false);

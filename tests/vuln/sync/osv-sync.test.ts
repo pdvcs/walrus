@@ -186,12 +186,72 @@ describe("osv-sync", () => {
     expect(await osvAffectsForCve(pool, PKG, BOTH)).toBe(0);
     expect(await osvAffectsCount(pool, PKG)).toBeGreaterThan(0);
   });
+
+  // WAL-52: one flaky package used to throw out of the loop and mark the whole source
+  // failed, stalling every other package's weekly cross-check behind it.
+  it("tolerates a failing package and still refreshes the others", async () => {
+    await seedSecondPackage(pool);
+
+    server.use(
+      http.post("https://api.osv.dev/v1/query", async ({ request }) => {
+        const body = (await request.json()) as { package?: { name?: string } };
+        if (body.package?.name === "does-not-exist") {
+          return HttpResponse.json({ error: "boom" }, { status: 500 });
+        }
+        return HttpResponse.json({ vulns: osvFixture.vulns });
+      }),
+    );
+
+    const res = await osvSyncAll(pool);
+
+    expect(res.failures).toHaveLength(1);
+    expect(res.failures[0]).toMatchObject({ package: PKG2 });
+    expect(res.packages).toBe(1); // the healthy package still synced
+    expect(await osvAffectsCount(pool, PKG)).toBeGreaterThan(0);
+    expect(await getSyncCursor(pool, "osv")).not.toBeNull(); // partial run still counts
+  });
+
+  it("marks the source failed when every package fails, without throwing", async () => {
+    await seedSecondPackage(pool);
+
+    server.use(
+      http.post("https://api.osv.dev/v1/query", () =>
+        HttpResponse.json({ error: "down" }, { status: 500 }),
+      ),
+    );
+    const res = await osvSyncAll(pool);
+
+    expect(res.packages).toBe(0);
+    expect(res.failures).toHaveLength(2);
+    const { rows } = await pool.query(`SELECT last_ok FROM vuln_sync_state WHERE source = 'osv'`);
+    expect(rows[0].last_ok).toBe(false); // staleness degradations fire from here
+  });
 });
 
 function cveId(vuln: OsvVuln): string | undefined {
   return vuln.id.match(/^CVE-/)
     ? vuln.id
     : vuln.aliases?.find((alias) => /^CVE-\d{4}-\d+$/.test(alias));
+}
+
+/** A second package with a deliberately broken OSV mapping (unknown ecosystem name). */
+async function seedSecondPackage(pool: Pool): Promise<void> {
+  await upsertPackage(pool, {
+    name: PKG2,
+    display_name: "Go 2",
+    vendor: "Google",
+    description: null,
+    website: null,
+    config_hash: "h2",
+    enabled: true,
+  });
+  await reconcilePackageVuln(pool, {
+    packageName: PKG2,
+    aliases: ["go 2"],
+    cpes: [],
+    osvEcosystem: "NoSuchEcosystem",
+    osvName: "does-not-exist",
+  });
 }
 
 async function osvAffectsCount(pool: Pool, pkg: string): Promise<number> {
