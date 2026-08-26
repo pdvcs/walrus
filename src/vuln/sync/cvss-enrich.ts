@@ -23,6 +23,7 @@ import {
 } from "../../db/queries/cves.js";
 import { listVersions } from "../../db/queries/versions.js";
 import { listPackages } from "../../db/queries/packages.js";
+import { setSyncState } from "../../db/queries/vuln-sync-state.js";
 import { getVersionAvailabilityStatus, meetsCriticalGate } from "../../services/vuln-service.js";
 
 type Logger = (msg: string) => void;
@@ -57,6 +58,11 @@ export interface CvssEnrichResult extends Record<string, unknown> {
  * Fetch missing-severity CVEs from NVD and apply (or, with `dryRun`, only
  * report) their CVSS. Failures on a single CVE are counted and skipped rather
  * than aborting the walk — one bad id should not strand the rest.
+ *
+ * Real runs record their lifecycle in vuln_sync_state (start marker → success,
+ * or failure on throw) so staleness degradations and /health can see this
+ * source like any other; it is the one scheduled trigger that can newly block
+ * downloads. A dry run writes nothing anywhere — that is its contract.
  */
 export async function enrichMissingCvss(
   pool: Pool,
@@ -75,7 +81,38 @@ export async function enrichMissingCvss(
     proposals: [],
   };
   log(`cvss-enrich: ${ids.length} CVE(s) with no severity${opts.dryRun ? " (dry run)" : ""}`);
+  // `null` marks an attempt begun without an outcome yet — see setSyncState.
+  if (!opts.dryRun) await setSyncState(pool, "cvss", null, null);
 
+  try {
+    await walkMissingSeverity(pool, nvd, ids, result, opts, log);
+  } catch (err) {
+    if (!opts.dryRun) await setSyncState(pool, "cvss", null, false);
+    throw err;
+  }
+  if (!opts.dryRun) await setSyncState(pool, "cvss", null, true);
+
+  log(
+    `cvss-enrich: fetched ${result.fetched}, ${opts.dryRun ? "would update" : "updated"} ` +
+      `${opts.dryRun ? result.proposals.length : result.updated}, ` +
+      `${result.not_found} not in NVD, ${result.no_metrics} without CVSS, ${result.errors} errored`,
+  );
+  return result;
+}
+
+/**
+ * The per-CVE walk itself, shared by real runs and dry-run previews. Counts and
+ * applies into `result`. Per-CVE fetch failures are counted and skipped, so only
+ * a systemic failure (a broken pool, a dead client) escapes to the caller.
+ */
+async function walkMissingSeverity(
+  pool: Pool,
+  nvd: NvdClient,
+  ids: string[],
+  result: CvssEnrichResult,
+  opts: { dryRun?: boolean },
+  log: Logger,
+): Promise<void> {
   for (const id of ids) {
     let item;
     try {
@@ -134,13 +171,6 @@ export async function enrichMissingCvss(
     });
     result.updated++;
   }
-
-  log(
-    `cvss-enrich: fetched ${result.fetched}, ${opts.dryRun ? "would update" : "updated"} ` +
-      `${opts.dryRun ? result.proposals.length : result.updated}, ` +
-      `${result.not_found} not in NVD, ${result.no_metrics} without CVSS, ${result.errors} errored`,
-  );
-  return result;
 }
 
 export interface GateDelta {

@@ -128,6 +128,7 @@ export const DataFreshnessSchema = z
     nvd_last_sync: z.string().nullable(),
     kev_last_sync: z.string().nullable(),
     osv_last_sync: z.string().nullable(),
+    cvss_last_sync: z.string().nullable(),
   })
   .openapi("DataFreshness");
 
@@ -145,6 +146,7 @@ export const VulnSyncStatusSchema = z
     nvd: VulnSourceStatusSchema,
     kev: VulnSourceStatusSchema,
     osv: VulnSourceStatusSchema,
+    cvss: VulnSourceStatusSchema,
   })
   .openapi("VulnSyncStatus");
 

@@ -215,15 +215,16 @@ function renderExplorer(ctx: {
       <span>NVD: ${fmtTs(ctx.freshness.nvd_last_sync)} ${fmtSourceStatus(ctx.syncStatus.nvd)}</span>
       <span>KEV: ${fmtTs(ctx.freshness.kev_last_sync)} ${fmtSourceStatus(ctx.syncStatus.kev)}</span>
       <span>OSV: ${fmtTs(ctx.freshness.osv_last_sync)} ${fmtSourceStatus(ctx.syncStatus.osv)}</span>
+      <span>CVSS: ${fmtTs(ctx.freshness.cvss_last_sync)} ${fmtSourceStatus(ctx.syncStatus.cvss)}</span>
       <form method="post" action="/admin/v1/vuln-sync/nvd" style="display:inline"><button class="btn btn-sm btn-secondary">Sync NVD now</button></form>
       <form method="post" action="/admin/v1/vuln-sync/kev" style="display:inline"><button class="btn btn-sm btn-secondary">Sync KEV now</button></form>
       <form method="post" action="/admin/v1/vuln-sync/osv" style="display:inline"><button class="btn btn-sm btn-secondary">Sync OSV now</button></form>
       <form method="post" action="/admin/v1/vuln-backfill" style="display:inline"><button class="btn btn-sm btn-secondary">Start NVD backfill</button></form>
     </div>`;
 
-  // cvss has no freshness row: it shares the nvd lock and sync state. It gets its own
-  // panel because it is the one trigger that can change what /download serves -- the
-  // preview is not a convenience here, it is the step that makes applying safe.
+  // CVSS enrichment is triggerable below rather than by a sync button, because it is the
+  // one write that can change what /download serves -- the preview is not a convenience
+  // here, it is the step that makes applying safe.
   const enrichPanel = `
     <div class="enrich">
       <div class="enrich-head">

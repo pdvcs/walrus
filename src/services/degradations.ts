@@ -1,5 +1,9 @@
 import { Pool } from "pg";
-import { getVulnSyncStatus, VulnSourceStatus, VulnSyncStatus } from "../db/queries/vuln-sync-state.js";
+import {
+  getVulnSyncStatus,
+  VulnSourceStatus,
+  VulnSyncStatus,
+} from "../db/queries/vuln-sync-state.js";
 import { getVulnHints } from "./vuln-hints.js";
 
 /**
@@ -26,14 +30,18 @@ export interface Degradation {
 /**
  * How stale each source's last *successful* run may be before it is degraded.
  *
- * Generous multiples of the scheduled cadence (nvd 2-hourly, kev daily, osv weekly —
- * infra/terraform/scheduler.tf), so a single failed or contended run never trips them;
- * only a pattern of failure, or a scheduler that has stopped firing, does.
+ * Generous multiples of the scheduled cadence (nvd 2-hourly, kev daily, osv weekly,
+ * cvss daily — infra/terraform/scheduler.tf), so a single failed or contended run never
+ * trips them; only a pattern of failure, or a scheduler that has stopped firing, does.
+ * cvss runs are idempotent and deadline-bounded like nvd, but at kev-like daily cadence —
+ * and it is the one trigger that can newly block downloads, so it gets no extra slack
+ * beyond what a missed-run pattern already allows.
  */
 export const STALENESS_THRESHOLDS_MS = {
   nvd: 12 * 3600 * 1000, // ~6 missed 2-hourly runs
   kev: 48 * 3600 * 1000, // 2 missed daily runs
   osv: 8 * 24 * 3600 * 1000, // a missed weekly run plus a day
+  cvss: 48 * 3600 * 1000, // 2 missed daily runs
 } as const;
 
 type StalenessSource = keyof typeof STALENESS_THRESHOLDS_MS;
@@ -52,6 +60,20 @@ function sourceDegradation(
   const threshold = STALENESS_THRESHOLDS_MS[source];
 
   if (!status.last_success) {
+    // Never succeeded. A first attempt still in flight (start marker written, no outcome
+    // yet, nothing failed) has not had its chance — degrade only once that marker ages
+    // past the threshold, mirroring the generosity applied to established sources.
+    if (status.last_attempt && status.last_ok === null && !status.last_failure) {
+      const age = now.getTime() - new Date(status.last_attempt).getTime();
+      if (age <= threshold) return null;
+      return {
+        component,
+        reason:
+          `${source} ingestion started ${fmtAgeHours(age)} ago and has never completed ` +
+          `successfully — the run may be stuck or repeatedly cut off. Vulnerability data ` +
+          `from this source is missing entirely.`,
+      };
+    }
     return {
       component,
       reason:
@@ -95,7 +117,7 @@ function sourceDegradation(
  */
 export function computeSyncDegradations(status: VulnSyncStatus, now: Date): Degradation[] {
   const out: Degradation[] = [];
-  for (const source of ["nvd", "kev", "osv"] as const) {
+  for (const source of ["nvd", "kev", "osv", "cvss"] as const) {
     const d = sourceDegradation(source, status[source], now);
     if (d) out.push(d);
   }
@@ -108,8 +130,9 @@ export function computeSyncDegradations(status: VulnSyncStatus, now: Date): Degr
  *
  * Sync staleness is only meaningful when something is actually tracked: a deployment with
  * no `[vulnerabilities]` sections has nothing to ingest, and reporting "NVD never synced"
- * there would train operators to ignore the banner. The gate is per source — NVD and KEV
- * matter once any CPE pair exists, OSV once any package has an OSV mapping.
+ * there would train operators to ignore the banner. The gate is per source — NVD matters
+ * once any CPE pair exists, OSV once any package has an OSV mapping, KEV and cvss once
+ * either path can produce CVEs worth scoring or flagging.
  */
 export async function getDegradations(
   pool: Pool,
@@ -129,6 +152,7 @@ export async function getDegradations(
       "vuln-sync-nvd": hasCpes,
       "vuln-sync-kev": hasCpes || hasOsv, // KEV flags CVE rows from either path
       "vuln-sync-osv": hasOsv,
+      "vuln-sync-cvss": hasCpes || hasOsv, // enrichment candidates arise from either path
     };
     const all = computeSyncDegradations(await getVulnSyncStatus(pool), now);
     degradations.push(...all.filter((d) => relevant[d.component]));

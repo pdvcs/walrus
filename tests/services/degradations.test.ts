@@ -25,6 +25,7 @@ function status(overrides: Partial<VulnSyncStatus> = {}): VulnSyncStatus {
     nvd: healthy(),
     kev: healthy(),
     osv: healthy(),
+    cvss: healthy(),
     ...overrides,
   };
 }
@@ -57,7 +58,12 @@ describe("computeSyncDegradations", () => {
 
   it("flags a source that has never succeeded", () => {
     const s = status({
-      kev: { last_attempt: iso(60_000), last_success: null, last_failure: iso(60_000), last_ok: false },
+      kev: {
+        last_attempt: iso(60_000),
+        last_success: null,
+        last_failure: iso(60_000),
+        last_ok: false,
+      },
     });
     const out = computeSyncDegradations(s, NOW);
     expect(out).toHaveLength(1);
@@ -94,5 +100,42 @@ describe("computeSyncDegradations", () => {
     expect(out).toHaveLength(1);
     expect(out[0].reason).toContain("last succeeded");
     expect(out[0].reason).toContain("failed");
+  });
+
+  it("flags cvss on its own daily-cadence threshold", () => {
+    const s = status({ cvss: healthy(STALENESS_THRESHOLDS_MS.cvss + 3_600_000) });
+    const out = computeSyncDegradations(s, NOW);
+    expect(out).toHaveLength(1);
+    expect(out[0].component).toBe("vuln-sync-cvss");
+    expect(out[0].reason).toContain("last succeeded");
+  });
+
+  it("stays quiet while a cvss run is in flight (last_ok null) and the last success is recent", () => {
+    const s = status({ cvss: { ...healthy(), last_ok: null } });
+    expect(computeSyncDegradations(s, NOW)).toEqual([]);
+  });
+
+  it("stays quiet for an in-flight run even with no prior success — only a pattern degrades", () => {
+    // A run that has begun but not yet succeeded: last_attempt fresh, nothing else known.
+    const s = status({
+      cvss: { last_attempt: iso(60_000), last_success: null, last_failure: null, last_ok: null },
+    });
+    expect(computeSyncDegradations(s, NOW)).toEqual([]);
+  });
+
+  it("degrades an in-flight run whose start marker has aged past the threshold", () => {
+    // Started but never finished, and the marker is old: the run is stuck or being cut off.
+    const s = status({
+      cvss: {
+        last_attempt: iso(STALENESS_THRESHOLDS_MS.cvss + 3_600_000),
+        last_success: null,
+        last_failure: null,
+        last_ok: null,
+      },
+    });
+    const out = computeSyncDegradations(s, NOW);
+    expect(out).toHaveLength(1);
+    expect(out[0].component).toBe("vuln-sync-cvss");
+    expect(out[0].reason).toContain("never completed");
   });
 });

@@ -76,7 +76,8 @@ describe("cvss enrichment", () => {
   });
 
   async function cleanup() {
-    await pool.query(`DELETE FROM cves WHERE id = $1`, [CVE]);
+    await pool.query(`DELETE FROM vuln_sync_state WHERE source = 'cvss'`);
+    await pool.query(`DELETE FROM cves WHERE id LIKE $1`, [`${CVE}%`]);
     await pool.query(`DELETE FROM version_availability_events WHERE package_name = $1`, [PKG]);
     await pool.query(`DELETE FROM versions WHERE package_name = $1`, [PKG]);
     await pool.query(`DELETE FROM packages WHERE name = $1`, [PKG]);
@@ -184,6 +185,62 @@ describe("cvss enrichment", () => {
     ]);
     expect(rows[0].severity).toBe("CRITICAL");
     expect(Number(rows[0].cvss_v3_score)).toBe(9.6);
+  });
+
+  // WAL-50: the one scheduled trigger that can newly block downloads must be visible to
+  // /health and staleness degradations, like nvd/kev/osv are. A dry run must write nothing.
+  it("records sync-state for a real run, leaves nothing for a dry run", async () => {
+    await seedCandidate();
+
+    const stateBefore = async () =>
+      (await pool.query(`SELECT last_ok FROM vuln_sync_state WHERE source = 'cvss'`)).rows;
+
+    await enrichMissingCvss(pool, nvdReturning(9.6), { dryRun: true });
+    expect(await stateBefore()).toEqual([]); // dry run writes nothing anywhere
+
+    await enrichMissingCvss(pool, nvdReturning(9.6));
+    const { rows } = await pool.query(
+      `SELECT last_ok, last_success_at IS NOT NULL AS has_success
+       FROM vuln_sync_state WHERE source = 'cvss'`,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].last_ok).toBe(true); // walk completed — errors stay candidates either way
+    expect(rows[0].has_success).toBe(true);
+  });
+
+  it("counts total fetch failure as a completed run, leaving candidates for next time", async () => {
+    // Per-CVE fetch errors are swallowed by design (a transient outage must not strand
+    // the backlog or burn a sentinel); the run itself completes and reports ok.
+    await seedCandidate();
+    await upsertCveFull(pool, {
+      id: `${CVE}-B`,
+      published_at: null,
+      modified_at: null,
+      cvss_v3_score: null,
+      cvss_v3_vector: null,
+      severity: null,
+      description: null,
+      raw: { cve: { id: `${CVE}-B` } },
+    });
+
+    const nvdErroring = {
+      cveById: async () => {
+        throw new Error("NVD unreachable");
+      },
+    } as unknown as NvdClient;
+    const result = await enrichMissingCvss(pool, nvdErroring);
+    expect(result.errors).toBe(2);
+    expect(result.updated).toBe(0);
+
+    const { rows } = await pool.query(`SELECT last_ok FROM vuln_sync_state WHERE source = 'cvss'`);
+    expect(rows[0].last_ok).toBe(true);
+
+    const { rows: candidates } = await pool.query(
+      `SELECT count(*)::int AS n FROM cves WHERE severity IS NULL AND severity_source IS NULL
+       AND id IN ($1, $2)`,
+      [CVE, `${CVE}-B`],
+    );
+    expect(candidates[0].n).toBe(2); // stayed candidates — no sentinel on transient errors
   });
 
   // Before v4 support, this CVE was recorded as no_metrics — a terminal sentinel —

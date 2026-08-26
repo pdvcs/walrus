@@ -17,6 +17,7 @@ export interface DataFreshness {
   nvd_last_sync: string | null;
   kev_last_sync: string | null;
   osv_last_sync: string | null;
+  cvss_last_sync: string | null;
 }
 
 export interface VulnQueryDeps {

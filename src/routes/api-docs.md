@@ -236,7 +236,7 @@ Walrus subsumes CVE-lookup for the packages it tracks (see
 [engineering/docs/design.md](../../engineering/docs/design.md) and ADR-001). Data comes from
 NVD (primary), CISA KEV (exploited-in-the-wild flag), and OSV (cross-check). Every response
 carries a standing `disclaimer` and a `data_freshness` object (`nvd_last_sync` / `kev_last_sync`
-/ `osv_last_sync`, nullable until the first sync).
+/ `osv_last_sync` / `cvss_last_sync`, nullable until the first sync).
 
 > **Disclaimer:** Absence of results does not imply a product/version is safe — the underlying
 > public sources may lag or be incomplete.
@@ -275,7 +275,12 @@ curl 'http://localhost:8080/api/v1/vulns?product=openjdk&version=11.0.2'
     }
   ],
   "counts": { "total": 1, "critical": 0, "high": 1, "medium": 0, "low": 0, "kev": 0 },
-  "data_freshness": { "nvd_last_sync": "…", "kev_last_sync": "…", "osv_last_sync": "…" },
+  "data_freshness": {
+    "nvd_last_sync": "…",
+    "kev_last_sync": "…",
+    "osv_last_sync": "…",
+    "cvss_last_sync": "…"
+  },
   "disclaimer": "Absence of results does not imply…"
 }
 ```
@@ -467,11 +472,17 @@ curl -XPOST .../internal/vuln-sync/cvss -H 'content-type: application/json' \
 {
   "status": "ok",
   "service": "walrus",
-  "vuln_data_freshness": { "nvd_last_sync": null, "kev_last_sync": null, "osv_last_sync": null },
+  "vuln_data_freshness": {
+    "nvd_last_sync": null,
+    "kev_last_sync": null,
+    "osv_last_sync": null,
+    "cvss_last_sync": null
+  },
   "vuln_sync_status": {
     "nvd": { "last_attempt": null, "last_success": null, "last_failure": null, "last_ok": null },
     "kev": { "last_attempt": null, "last_success": null, "last_failure": null, "last_ok": null },
-    "osv": { "last_attempt": null, "last_success": null, "last_failure": null, "last_ok": null }
+    "osv": { "last_attempt": null, "last_success": null, "last_failure": null, "last_ok": null },
+    "cvss": { "last_attempt": null, "last_success": null, "last_failure": null, "last_ok": null }
   },
   "degradations": []
 }

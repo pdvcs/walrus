@@ -1,7 +1,13 @@
 import { Pool } from "pg";
 import { Queryable } from "../queryable.js";
 
-export type VulnSyncSource = "nvd-cve" | "kev" | "osv";
+/**
+ * Sync sources recorded in vuln_sync_state. `cvss` (the enrichment pass) has no
+ * cursor — its work list is a live query (`severity IS NULL`), and the walk is
+ * resumable by construction — so it writes outcome state only, with cursor
+ * always null.
+ */
+export type VulnSyncSource = "nvd-cve" | "kev" | "osv" | "cvss";
 
 export interface VulnSyncStateRow {
   source: string;
@@ -23,6 +29,7 @@ export interface VulnSyncStatus {
   nvd: VulnSourceStatus;
   kev: VulnSourceStatus;
   osv: VulnSourceStatus;
+  cvss: VulnSourceStatus;
 }
 
 /** Read the ingestion cursor for one source, or null if never run. */
@@ -37,12 +44,19 @@ export async function getSyncCursor(q: Queryable, source: VulnSyncSource): Promi
 /**
  * Record a sync run. `cursor` is only advanced when non-null (a failed run passes
  * null to preserve the previous cursor while still marking last_ok=false).
+ *
+ * `ok` is three-valued: `true` stamps success, `false` stamps failure, and
+ * `null` marks an attempt that has begun without recording either outcome —
+ * preserving any prior success/failure timestamps. The start marker is what lets
+ * a run killed mid-flight (a scheduler deadline cancel) still show a fresh
+ * last_attempt, instead of leaving nothing until its next scheduled trigger.
+ * The CASE expressions treat SQL NULL as false, so no branch fires for it.
  */
 export async function setSyncState(
   q: Queryable,
   source: VulnSyncSource,
   cursor: string | null,
-  ok: boolean,
+  ok: boolean | null,
 ): Promise<void> {
   await q.query(
     `INSERT INTO vuln_sync_state
@@ -75,6 +89,7 @@ export async function getDataFreshness(pool: Pool): Promise<{
   nvd_last_sync: string | null;
   kev_last_sync: string | null;
   osv_last_sync: string | null;
+  cvss_last_sync: string | null;
 }> {
   const rows = await getAllSyncState(pool);
   const bySource = new Map(rows.map((r) => [r.source, r.last_success_at]));
@@ -82,6 +97,7 @@ export async function getDataFreshness(pool: Pool): Promise<{
     nvd_last_sync: bySource.get("nvd-cve")?.toISOString() ?? null,
     kev_last_sync: bySource.get("kev")?.toISOString() ?? null,
     osv_last_sync: bySource.get("osv")?.toISOString() ?? null,
+    cvss_last_sync: bySource.get("cvss")?.toISOString() ?? null,
   };
 }
 
@@ -98,5 +114,5 @@ export async function getVulnSyncStatus(pool: Pool): Promise<VulnSyncStatus> {
       last_ok: row?.last_ok ?? null,
     };
   };
-  return { nvd: status("nvd-cve"), kev: status("kev"), osv: status("osv") };
+  return { nvd: status("nvd-cve"), kev: status("kev"), osv: status("osv"), cvss: status("cvss") };
 }
