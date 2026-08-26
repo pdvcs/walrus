@@ -178,8 +178,52 @@ SELECT count(*) FROM cve_affects ca JOIN packages p ON p.name = ca.package_name 
 
 ### 3. Cron cadence (incremental)
 
-Point your scheduler (Cloud Scheduler, k8s CronJob, …) at the `/internal` triggers. Suggested
-cadence — NVD changes often, KEV daily, OSV is a weekly cross-check:
+On GCP these are provisioned by Terraform (`infra/terraform/scheduler.tf`) as one Cloud Scheduler
+job per source, authenticating with the same OIDC service account as the package sync. Cadence —
+NVD changes often, KEV daily, OSV is a weekly cross-check — is set by variable, so overriding one
+source does not touch the others:
+
+| Job                     | Variable                  | Default        |
+| ----------------------- | ------------------------- | -------------- |
+| `walrus-vuln-sync-nvd`  | `vuln_sync_nvd_schedule`  | `20 */2 * * *` |
+| `walrus-vuln-sync-kev`  | `vuln_sync_kev_schedule`  | `40 7 * * *`   |
+| `walrus-vuln-sync-osv`  | `vuln_sync_osv_schedule`  | `10 8 * * 1`   |
+| `walrus-vuln-sync-cvss` | `vuln_sync_cvss_schedule` | `10 9 * * *`   |
+
+Minutes are offset from the package sync (minute 0) and from each other, since `nvd` and `cvss`
+share one advisory lock and a contended run is wasted work.
+
+`cvss` **is** scheduled, by PO decision — see ADR-002. Enrichment can newly satisfy the
+
+> = 9.0 download gate, turning versions that serve today into 403s; here that is the intended
+> behaviour rather than a hazard to gate behind a human. Safety outweighs availability, and
+> "we err on the side of denial once a CVE scores above the limit" is a policy that can be stated
+> to compliance. It stays excluded from `/vuln-sync/all` so routine ingestion stays fast — the job
+> triggers the source directly.
+
+One consequence to hold in mind: a consumer's download can start failing on walrus's schedule
+rather than on any change they made. `/api/v1/packages/:name/vulns` shows which CVE is
+responsible, and `/admin/v1/vulns` → CVSS enrichment (or `dry_run` on the API) previews what a
+run would block before it runs.
+
+Every `/internal/vuln-sync/:source` trigger — success or failure — is written to `admin_actions`
+with `performed_by = 'internal'`, so an unattended gate change is distinguishable from an
+operator's click, which leaves `performed_by` null:
+
+```sql
+SELECT created_at, coalesce(performed_by, 'admin UI') AS by, details
+FROM admin_actions WHERE action_type = 'vuln-sync' ORDER BY id DESC LIMIT 20;
+```
+
+The row carries the per-source outcome counts, not the identity of the versions that crossed the
+gate — see ADR-002 for that limitation.
+
+Cloud Scheduler's default attempt deadline is 180 seconds, short enough to abandon an incremental
+NVD walk mid-flight; the jobs set it explicitly (1,800s is Scheduler's maximum, below the Cloud Run
+service's 3,600s, so Scheduler is the binding limit). The NVD job does not retry: its cursor only
+advances on success, so the next scheduled run repeats the same window anyway.
+
+Off GCP, point your own scheduler (k8s CronJob, …) at the same `/internal` triggers:
 
 | Source | Endpoint                       | Cadence                                                            |
 | ------ | ------------------------------ | ------------------------------------------------------------------ |
@@ -211,6 +255,39 @@ the job's 24-hour timeout is the overall watchdog and its database advisory lock
 Freshness timestamps represent the **last successful** source run. `/health` and the admin panel
 also expose the latest attempt outcome and failure time, so a failed refresh cannot make stale data
 appear current.
+
+### 4. After setup: what runs itself, and what does not
+
+Once the one-time backfill in §2 has been done, vulnerability ingestion is autonomous. The
+only routine action left for an operator is adding a package — and that one currently still
+needs a manual step.
+
+| Event                                  | Handled by                           | Autonomous?         |
+| -------------------------------------- | ------------------------------------ | ------------------- |
+| New CVEs published / rescored          | `nvd` incremental, 2-hourly          | Yes                 |
+| CVE added to CISA KEV                  | `kev`, daily                         | Yes                 |
+| OSV advisory added or changed          | `osv`, weekly (re-queries every pkg) | Yes                 |
+| CVE arrives with no severity           | `cvss`, daily                        | Yes                 |
+| Version passes its cooling-off period  | Next package sync                    | Yes                 |
+| **New package, or new CPE pair added** | **Targeted NVD backfill**            | **No — see WAL-37** |
+
+The last row is the gap. Incremental NVD sync is cursor-based (`lastModStartDate`), so it
+only sees recently-modified CVEs; a newly tracked package's _historical_ CVEs are structurally
+unreachable by it. Until WAL-37 lands, adding a package means also running a targeted backfill
+for it:
+
+```bash
+curl -X POST "$WALRUS_URL/internal/vuln-backfill" \
+  -H 'Content-Type: application/json' -d '{"package":"<name>"}'
+```
+
+Nothing warns you if you forget. The `getVulnHints` nudge only fires when `cve_affects` holds
+zero NVD rows across the _whole_ database, so after the first backfill it never fires again —
+the package is simply served with CVE history that was never ingested.
+
+The other sources need no equivalent step: OSV re-queries every tracked package in full each
+run, KEV flags rows in the global `cves` table, and `cvss` walks every severity-less CVE. NVD
+is the only cursor-based source, so it is the only one blind to a new package's history.
 
 ### Data-source attribution
 

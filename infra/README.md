@@ -7,7 +7,10 @@ Deploys Walrus to GCP using Cloud Run, Cloud SQL (Postgres 18), GCS, and Cloud S
 - **Cloud Run** (min 1 instance) — Walrus API
 - **Cloud SQL Postgres 18** — metadata (public IP, IAM-restricted via Auth Proxy)
 - **GCS Bucket** — cached binary artifacts
-- **Cloud Scheduler** — POSTs `/internal/sync` every 6h (OIDC-authenticated)
+- **Cloud Scheduler** — POSTs `/internal/sync` every 6h, plus one job per vulnerability
+  source (`walrus-vuln-sync-{nvd,kev,osv,cvss}`) on its own cadence (all OIDC-authenticated).
+  `cvss` enrichment is scheduled deliberately: it can newly block downloads, and here that is
+  the point — see ADR-002.
 - **Artifact Registry** — Docker images
 - **Secret Manager** — `walrus-database-url`
 

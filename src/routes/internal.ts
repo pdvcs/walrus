@@ -23,6 +23,13 @@ export interface InternalRouteDeps {
   vulnSync: VulnSyncImpls;
   /** Operator hints (e.g. "run vuln:backfill"); appended to the sync response when non-empty. */
   vulnHints?: () => Promise<string[]>;
+  /**
+   * Audit sink for vuln-sync triggers. These runs are machine-driven — `cvss` is on a
+   * schedule and can newly block downloads (ADR-002) — so the trail must record them the
+   * same way it records an operator clicking "Sync now", or an unattended gate change
+   * leaves no evidence of when it happened.
+   */
+  logAdminAction?: (details: Record<string, unknown>) => Promise<void>;
   startVulnBackfill?: (
     since?: string,
     packageName?: string,
@@ -74,12 +81,9 @@ export function createInternalRouter(deps: InternalRouteDeps): Router {
           res.status(503).json({ error: "cvss preview is not available" });
           return;
         }
+        let result;
         try {
-          res.status(200).json({
-            source,
-            dry_run: true,
-            preview: await preview({ limit: parsed.opts.limit }),
-          });
+          result = await preview({ limit: parsed.opts.limit });
         } catch (err) {
           if (err instanceof VulnSyncAlreadyRunningError) {
             res.status(409).json({ code: "already_running", error: err.message });
@@ -87,10 +91,18 @@ export function createInternalRouter(deps: InternalRouteDeps): Router {
           }
           throw err;
         }
+        await deps.logAdminAction?.({
+          action: "vuln-sync-preview",
+          source,
+          proposals: result.proposals.length,
+          newly_blocked: result.newly_blocked.reduce((n, d) => n + d.newly_blocked.length, 0),
+        });
+        res.status(200).json({ source, dry_run: true, preview: result });
         return;
       }
 
       const outcomes = await runVulnSync(source, deps.vulnSync, parsed.opts);
+      await deps.logAdminAction?.({ action: "vuln-sync", source, outcomes });
       const allOk = outcomes.every((o) => o.ok);
       const alreadyRunning = source !== "all" && outcomes[0]?.code === "already_running";
       const hints = deps.vulnHints ? await deps.vulnHints() : [];

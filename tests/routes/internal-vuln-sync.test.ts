@@ -13,6 +13,7 @@ function appWith(
     start: (since?: string) => Promise<{ job: VulnBackfillJobRow; alreadyRunning?: boolean }>;
     get: (id: string) => Promise<VulnBackfillJobRow | null>;
   },
+  logAdminAction?: (details: Record<string, unknown>) => Promise<void>,
 ) {
   const app = express();
   app.use(express.json());
@@ -25,6 +26,7 @@ function appWith(
       runSyncAll: async () => [],
       vulnSync,
       vulnHints,
+      logAdminAction,
       startVulnBackfill: backfill?.start,
       getVulnBackfill: backfill?.get,
     }),
@@ -272,5 +274,94 @@ describe("POST /internal/vuln-sync/cvss dry runs", () => {
     const res = await request(app).post("/internal/vuln-sync/cvss").send({ dry_run: true });
     expect(res.status).toBe(409);
     expect(res.body.code).toBe("already_running");
+  });
+});
+
+describe("POST /internal/vuln-sync/:source auditing", () => {
+  it("records the outcome of a machine-triggered sync", async () => {
+    const audited: Record<string, unknown>[] = [];
+    const app = appWith(
+      { kev: async () => ({ flagged: 2 }) },
+      undefined,
+      undefined,
+      async (d) => void audited.push(d),
+    );
+
+    const res = await request(app).post("/internal/vuln-sync/kev");
+
+    expect(res.status).toBe(200);
+    expect(audited).toHaveLength(1);
+    expect(audited[0].action).toBe("vuln-sync");
+    expect(audited[0].source).toBe("kev");
+    expect((audited[0].outcomes as { summary: Record<string, number> }[])[0].summary).toEqual({
+      flagged: 2,
+    });
+  });
+
+  it("records a failed sync too, so a silent gap is not mistaken for no run", async () => {
+    const audited: Record<string, unknown>[] = [];
+    const app = appWith(
+      {
+        nvd: async () => {
+          throw new Error("nvd upstream down");
+        },
+      },
+      undefined,
+      undefined,
+      async (d) => void audited.push(d),
+    );
+
+    const res = await request(app).post("/internal/vuln-sync/nvd");
+
+    expect(res.status).toBe(207);
+    expect(audited).toHaveLength(1);
+    expect((audited[0].outcomes as { ok: boolean }[])[0].ok).toBe(false);
+  });
+
+  it("records a cvss preview with the count of versions it would block", async () => {
+    const audited: Record<string, unknown>[] = [];
+    const app = appWith(
+      {
+        cvssPreview: async () => ({
+          candidates: 2,
+          fetched: 2,
+          proposals: [
+            {
+              cve_id: "CVE-2026-3333",
+              severity: "CRITICAL",
+              severity_source: "nvd-cvss-v3",
+              cvss_v3_score: 9.1,
+              cvss_v2_score: null,
+              crosses_critical_gate: true,
+            },
+          ],
+          newly_blocked: [{ package_name: "golang", newly_blocked: ["1.26.4", "1.26.5"] }],
+        }),
+      },
+      undefined,
+      undefined,
+      async (d) => void audited.push(d),
+    );
+
+    const res = await request(app).post("/internal/vuln-sync/cvss").send({ dry_run: true });
+
+    expect(res.status).toBe(200);
+    expect(audited[0].action).toBe("vuln-sync-preview");
+    expect(audited[0].newly_blocked).toBe(2);
+  });
+
+  it("does not audit a run rejected before it started", async () => {
+    const audited: Record<string, unknown>[] = [];
+    const app = appWith(
+      { nvd: async () => ({ cves: 1 }) },
+      undefined,
+      undefined,
+      async (d) => void audited.push(d),
+    );
+
+    const res = await request(app).post("/internal/vuln-sync/nvd").send({ dry_run: true });
+
+    expect(res.status).toBe(400);
+    expect(audited).toHaveLength(0);
   });
 });

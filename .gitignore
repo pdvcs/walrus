@@ -19,3 +19,7 @@ data/
 infra/terraform/.terraform/
 infra/terraform/*.tfstate
 infra/terraform/*.tfstate.backup
+
+# only track docs/ for now
+engineering/*
+!engineering/docs/

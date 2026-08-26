@@ -466,6 +466,15 @@ export function createApp(): express.Express {
       runSyncAll: (opts) => runSyncAll(opts),
       vulnSync: vulnSyncImpls,
       vulnHints: () => getVulnHints(pool),
+      // performed_by distinguishes these from the admin UI's rows: /internal is
+      // machine-triggered (Cloud Scheduler), so the trail can tell an unattended
+      // gate change from one an operator made.
+      logAdminAction: (details) =>
+        insertAdminAction(pool, {
+          action_type: "vuln-sync",
+          performed_by: "internal",
+          details,
+        }),
       startVulnBackfill,
       getVulnBackfill: (id) => getVulnBackfillJob(pool, id),
     }),

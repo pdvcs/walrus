@@ -43,6 +43,35 @@ variable "sync_schedule" {
   default     = "0 */6 * * *"
 }
 
+# Vuln ingestion cadences follow engineering/docs/build-release.md §3. Minutes are
+# offset from the package sync (minute 0) and from each other so the sources do not
+# contend for the same instance -- nvd and cvss also share one advisory lock.
+variable "vuln_sync_nvd_schedule" {
+  description = "Cron schedule for the incremental NVD vuln sync (UTC)"
+  type        = string
+  default     = "20 */2 * * *"
+}
+
+variable "vuln_sync_kev_schedule" {
+  description = "Cron schedule for the CISA KEV vuln sync (UTC)"
+  type        = string
+  default     = "40 7 * * *"
+}
+
+variable "vuln_sync_osv_schedule" {
+  description = "Cron schedule for the OSV cross-check vuln sync (UTC)"
+  type        = string
+  default     = "10 8 * * 1"
+}
+
+# Daily, and well clear of the nvd job's :20 — the two share one advisory lock.
+# Scheduled deliberately: see ADR-002.
+variable "vuln_sync_cvss_schedule" {
+  description = "Cron schedule for the CVSS enrichment repair pass (UTC)"
+  type        = string
+  default     = "10 9 * * *"
+}
+
 variable "sql_deletion_protection" {
   description = "Enable deletion protection on the Cloud SQL instance (set to false for teardown)"
   type        = bool
