@@ -34,14 +34,30 @@ async function seedPackageWithVersion(pool: Pool, version: string) {
 }
 
 /** Make CVE critical enough to trip the >= 9.0 gate for `version`. */
-async function addCriticalCve(pool: Pool, version: string, score: string) {
+async function addCriticalCve(
+  pool: Pool,
+  version: string,
+  score: string,
+  extra: Partial<{
+    cvss_v3_score: string | null;
+    cvss_v4_score: string;
+    cvss_v2_score: string;
+    severity: string;
+    severity_source: string;
+  }> = {},
+) {
   await upsertCveFull(pool, {
     id: CVE,
     published_at: null,
     modified_at: null,
-    cvss_v3_score: score,
+    cvss_v3_score: extra.cvss_v3_score ?? score,
     cvss_v3_vector: null,
-    severity: "CRITICAL",
+    cvss_v4_score: extra.cvss_v4_score ?? null,
+    cvss_v4_vector: null,
+    cvss_v2_score: extra.cvss_v2_score ?? null,
+    cvss_v2_vector: null,
+    severity: extra.severity ?? "CRITICAL",
+    severity_source: extra.severity_source ?? "nvd-cvss-v3",
     description: null,
     raw: { cve: { id: CVE } },
   });
@@ -108,8 +124,33 @@ describe("version availability history", () => {
     expect(history[0].status).toBe("blocked");
     expect(history[0].cve_id).toBe(CVE);
     expect(Number(history[0].cvss_v3_score)).toBe(9.6);
+    expect(history[0].severity_source).toBe("nvd-cvss-v3");
     expect(history[0].source).toBe("cvss");
     expect(history[0].trigger_type).toBe("internal");
+  });
+
+  // Review walrus-0826-review-02.md §3.1: the gate is any-of across score versions, so a
+  // CVE whose v3 (8.1/HIGH) is sub-threshold but whose v4 is 9.1 blocks legitimately — and
+  // before the provenance columns the event showed only "8.1/HIGH blocked", evidence that
+  // contradicted the policy it enforced. Live example: CVE-2026-6100 on python.
+  it("explains a v4-caused block: all scores recorded plus which one produced severity", async () => {
+    await seedPackageWithVersion(pool, version);
+    await addCriticalCve(pool, version, "8.1", {
+      cvss_v4_score: "9.1",
+      severity: "HIGH",
+      severity_source: "nvd-cvss-v4",
+    });
+
+    await recordAvailabilityTransitions(pool, { source: "nvd", trigger: "internal" });
+
+    const history = await listAvailabilityHistory(pool, PKG, version);
+    expect(history).toHaveLength(1);
+    expect(history[0].status).toBe("blocked");
+    expect(Number(history[0].cvss_v3_score)).toBe(8.1); // stored as-is — the truth about v3
+    expect(Number(history[0].cvss_v4_score)).toBe(9.1); // …and the number that blocked
+    expect(history[0].cvss_v2_score).toBeNull();
+    expect(history[0].severity).toBe("HIGH");
+    expect(history[0].severity_source).toBe("nvd-cvss-v4"); // pointing at the tripped score
   });
 
   it("does not re-record a version that was already blocked", async () => {

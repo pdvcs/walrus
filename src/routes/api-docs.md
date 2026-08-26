@@ -390,8 +390,11 @@ count, so the table stays small; rows are removed only when their package is del
       "version": "1.26.4",
       "status": "blocked",
       "cve_id": "CVE-2026-39821",
-      "cvss_v3_score": 9.6,
+      "cvss_v3_score": null,
+      "cvss_v4_score": 9.5,
+      "cvss_v2_score": null,
       "severity": "CRITICAL",
+      "severity_source": "nvd-cvss-v4",
       "source": "kev",
       "trigger": "internal",
       "at": "2026-08-26T18:49:47.733Z"
@@ -404,6 +407,13 @@ count, so the table stays small; rows are removed only when their package is del
 any source can block a version, not just CVSS enrichment. `trigger` is `internal` for a
 scheduled run or `admin` for an operator. `cve_id` is null on an `available` transition:
 nothing _causes_ a version to become servable except the absence of a blocking match.
+
+The gate blocks on any CVSS base score >= 9.0 (v3, v4, or v2), so each transition carries
+every score version the blocking CVE had at the time, plus `severity_source` saying which one
+produced `severity` (`nvd-cvss-v3 | nvd-cvss-v4 | nvd-cvss-v2`) — a block recorded with a
+sub-threshold v3 score and `severity_source: nvd-cvss-v4` was tripped by the v4 number.
+Events written before this provenance was recorded (August 2026 and earlier) carry scores
+only for v3, which may not state the full reason under today's policy.
 
 **Status codes**
 

@@ -350,8 +350,29 @@ export const AvailabilityTransitionSchema = z
     cve_id: z.string().nullable().openapi({
       description: "The CVE that caused a `blocked` transition. Null on `available`.",
     }),
-    cvss_v3_score: z.number().nullable(),
+    cvss_v3_score: z
+      .number()
+      .nullable()
+      .openapi({
+        description:
+          "CVSS v3 base score of the blocking CVE at transition time, when stored. " +
+          "A block may be explained by v4 or v2 instead — see `severity_source`.",
+      }),
+    cvss_v4_score: z.number().nullable().openapi({
+      description: "CVSS v4 base score of the blocking CVE at transition time, when stored.",
+    }),
+    cvss_v2_score: z.number().nullable().openapi({
+      description: "CVSS v2 base score of the blocking CVE at transition time, when stored.",
+    }),
     severity: z.string().nullable(),
+    severity_source: z
+      .string()
+      .nullable()
+      .openapi({
+        description:
+          "Which CVSS version produced `severity`: nvd-cvss-v3 | nvd-cvss-v4 | nvd-cvss-v2. " +
+          "Null on `available`, on unscored rows, and on events recorded before this column existed.",
+      }),
     source: z.string().openapi({
       description: "Ingestion that produced the change: nvd | kev | osv | cvss | backfill.",
       example: "cvss",

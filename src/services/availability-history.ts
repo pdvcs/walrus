@@ -31,7 +31,11 @@ export interface AvailabilityTransition {
   status: VersionAvailabilityStatus;
   cve_id: string | null;
   cvss_v3_score: string | null;
+  cvss_v4_score: string | null;
+  cvss_v2_score: string | null;
   severity: string | null;
+  /** Which CVSS version produced `severity` — recorded so a block can be explained. */
+  severity_source: string | null;
   source: string;
   trigger_type: string;
   created_at: Date;
@@ -96,15 +100,22 @@ export async function recordAvailabilityTransitions(
 
       await pool.query(
         `INSERT INTO version_availability_events
-           (package_name, version, status, cve_id, cvss_v3_score, severity, source, trigger_type)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+           (package_name, version, status, cve_id, cvss_v3_score, cvss_v4_score,
+            cvss_v2_score, severity, severity_source, source, trigger_type)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
         [
           pkg.name,
           version.version,
           status,
           blocking?.cve_id ?? null,
           blocking?.cvss_v3_score ?? null,
+          blocking?.cvss_v4_score ?? null,
+          blocking?.cvss_v2_score ?? null,
           blocking?.severity ?? null,
+          // The gate is any-of across score versions (ADR-005); recording only the
+          // producing severity left a v3-only trace on v4-caused blocks — evidence that
+          // contradicted the policy. All stored scores plus provenance go in together.
+          blocking?.severity_source ?? null,
           attribution.source,
           attribution.trigger,
         ],
@@ -143,8 +154,8 @@ export async function listAvailabilityHistory(
   limit = 50,
 ): Promise<AvailabilityTransition[]> {
   const { rows } = await pool.query<AvailabilityTransition>(
-    `SELECT package_name, version, status, cve_id, cvss_v3_score, severity,
-            source, trigger_type, created_at
+    `SELECT package_name, version, status, cve_id, cvss_v3_score, cvss_v4_score,
+            cvss_v2_score, severity, severity_source, source, trigger_type, created_at
        FROM version_availability_events
       WHERE package_name = $1 AND version = $2
       ORDER BY id DESC
@@ -161,8 +172,8 @@ export async function listRecentTransitions(
   limit = 100,
 ): Promise<AvailabilityTransition[]> {
   const { rows } = await pool.query<AvailabilityTransition>(
-    `SELECT package_name, version, status, cve_id, cvss_v3_score, severity,
-            source, trigger_type, created_at
+    `SELECT package_name, version, status, cve_id, cvss_v3_score, cvss_v4_score,
+            cvss_v2_score, severity, severity_source, source, trigger_type, created_at
        FROM version_availability_events
       WHERE package_name = $1
       ORDER BY id DESC

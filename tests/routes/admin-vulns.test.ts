@@ -97,11 +97,13 @@ describe("admin vuln explorer + sync (isolated)", () => {
           nvd_last_sync: null,
           kev_last_sync: null,
           osv_last_sync: null,
+          cvss_last_sync: null,
         }),
         getSyncStatus: async () => ({
           nvd: { last_attempt: null, last_success: null, last_failure: null, last_ok: null },
           kev: { last_attempt: null, last_success: null, last_failure: null, last_ok: null },
           osv: { last_attempt: null, last_success: null, last_failure: null, last_ok: null },
+          cvss: { last_attempt: null, last_success: null, last_failure: null, last_ok: null },
         }),
         vulnSyncImpls: { kev: async () => ({ flagged: 3, cleared: 0, skippedUnknown: 0 }) },
         logAdminAction: (details) => insertAdminAction(pool, { action_type: "vuln-sync", details }),
@@ -189,6 +191,7 @@ describe("admin vuln explorer + sync (isolated)", () => {
           nvd_last_sync: success,
           kev_last_sync: null,
           osv_last_sync: null,
+          cvss_last_sync: null,
         }),
         getSyncStatus: async () => ({
           nvd: {
@@ -199,6 +202,7 @@ describe("admin vuln explorer + sync (isolated)", () => {
           },
           kev: { last_attempt: null, last_success: null, last_failure: null, last_ok: null },
           osv: { last_attempt: null, last_success: null, last_failure: null, last_ok: null },
+          cvss: { last_attempt: null, last_success: null, last_failure: null, last_ok: null },
         }),
       }),
     ).get("/admin/v1/vulns");

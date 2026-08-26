@@ -15,6 +15,8 @@ import { getDataFreshness } from "../../src/db/queries/vuln-sync-state.js";
 import { getPackage } from "../../src/db/queries/packages.js";
 import { generateSortKey } from "../../src/common/version-utils.js";
 import { createPackageVulnsRouter } from "../../src/routes/package-vulns.js";
+import { listAvailabilityHistory } from "../../src/services/availability-history.js";
+import type { AvailabilityTransition } from "../../src/services/availability-history.js";
 
 const TEST_DB_URL =
   process.env.DATABASE_URL ?? "postgresql://walrus:walrus@localhost:5432/walrus_test";
@@ -36,6 +38,9 @@ function buildApp(pool: Pool) {
       },
       listAffectsForPackage: (name) => listAffectsWithCveForPackage(pool, name),
       getDataFreshness: () => getDataFreshness(pool),
+      listAvailabilityHistory: (name, version) => listAvailabilityHistory(pool, name, version),
+      // Recent-transitions shape shares the same response schema; history covers the parse.
+      listRecentTransitions: async () => [] as AvailabilityTransition[],
     }),
   );
   return app;
@@ -154,5 +159,96 @@ describe("GET /api/v1/packages/:name/vulns", () => {
   it("unknown package → 404", async () => {
     const res = await request(app).get(`/api/v1/packages/does-not-exist/vulns`);
     expect(res.status).toBe(404);
+  });
+});
+
+describe("GET /api/v1/packages/:name/availability", () => {
+  let pool: Pool;
+  let app: express.Express;
+
+  beforeAll(async () => {
+    pool = new Pool({ connectionString: TEST_DB_URL });
+    await runMigrations();
+    await pool.query(`DELETE FROM version_availability_events WHERE package_name = $1`, [TRACKED]);
+    await pool.query(`DELETE FROM versions WHERE package_name = $1`, [TRACKED]);
+    await pool.query(`DELETE FROM packages WHERE name = $1`, [TRACKED]);
+
+    await upsertPackage(pool, {
+      name: TRACKED,
+      display_name: TRACKED,
+      vendor: "T",
+      description: null,
+      website: null,
+      config_hash: "h",
+      enabled: true,
+    });
+    await insertVersion(pool, {
+      package_name: TRACKED,
+      version: "11.0.2",
+      version_group: "11",
+      is_lts: true,
+      version_sort: generateSortKey("11.0.2"),
+    });
+
+    // A v4-caused block (review-02 §3.1's shape): v3 alone looks sub-threshold, and the
+    // event must carry every score plus provenance to explain why serving stopped.
+    const transition = {
+      package_name: TRACKED,
+      version: "11.0.2",
+      status: "blocked" as const,
+      cve_id: CVE,
+      cvss_v3_score: "8.1",
+      cvss_v4_score: "9.1",
+      cvss_v2_score: null,
+      severity: "HIGH",
+      severity_source: "nvd-cvss-v4",
+      source: "nvd",
+      trigger_type: "internal",
+      created_at: new Date(),
+    };
+    await pool.query(
+      `INSERT INTO version_availability_events
+         (package_name, version, status, cve_id, cvss_v3_score, cvss_v4_score,
+          cvss_v2_score, severity, severity_source, source, trigger_type, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+      [
+        transition.package_name,
+        transition.version,
+        transition.status,
+        transition.cve_id,
+        transition.cvss_v3_score,
+        transition.cvss_v4_score,
+        transition.cvss_v2_score,
+        transition.severity,
+        transition.severity_source,
+        transition.source,
+        transition.trigger_type,
+        transition.created_at,
+      ],
+    );
+
+    app = buildApp(pool);
+  });
+
+  afterAll(async () => {
+    await pool.query(`DELETE FROM version_availability_events WHERE package_name = $1`, [TRACKED]);
+    await pool.query(`DELETE FROM versions WHERE package_name = $1`, [TRACKED]);
+    await pool.query(`DELETE FROM packages WHERE name = $1`, [TRACKED]);
+    await pool.end();
+  });
+
+  it("returns transitions with score provenance, passing the response schema", async () => {
+    const res = await request(app).get(`/api/v1/packages/${TRACKED}/availability?version=11.0.2`);
+    expect(res.status).toBe(200);
+    expect(res.body.package).toBe(TRACKED);
+    const t = res.body.transitions[0];
+    expect(t.cve_id).toBe(CVE);
+    // NUMERIC arrives as text from pg; the route maps it onto the numeric schema.
+    expect(t.cvss_v3_score).toBe(8.1);
+    expect(t.cvss_v4_score).toBe(9.1);
+    expect(t.cvss_v2_score).toBeNull();
+    expect(t.severity).toBe("HIGH");
+    expect(t.severity_source).toBe("nvd-cvss-v4");
+    expect(t.trigger).toBe("internal");
   });
 });
