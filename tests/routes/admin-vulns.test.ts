@@ -129,7 +129,7 @@ describe("admin vuln explorer + sync (isolated)", () => {
     const res = await request(buildApp()).get("/admin/v1/vulns");
     expect(res.status).toBe(200);
     expect(res.headers["content-type"]).toMatch(/text\/html/);
-    expect(res.text).toMatch(/Vulnerability explorer/);
+    expect(res.text).toMatch(/Vulnerability Explorer/);
     expect(res.text).toMatch(/Data sources/);
     expect(res.text).toMatch(/Sync KEV/);
     // Chips carry data-ts for the client-side relative-time rendering, and the

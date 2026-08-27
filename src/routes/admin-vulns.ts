@@ -323,7 +323,7 @@ function renderExplorer(ctx: {
     : `<p class="empty">Enter a product to look up known CVEs.</p>`;
 
   const body = `
-    <h1>Vulnerability explorer</h1>
+    <h1>Vulnerability Explorer</h1>
     ${syncErrorBanner}
     ${syncedBanner}
     ${backfillBanner}
