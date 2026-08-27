@@ -97,6 +97,7 @@ export interface AffectedPackageRow {
   exact_version: string | null;
   fixed_in: string | null;
   source: string;
+  version_na: boolean;
 }
 
 // ── Upserts ─────────────────────────────────────────────────────────────────
@@ -353,7 +354,8 @@ export async function listAffectedPackagesForCve(
 ): Promise<AffectedPackageRow[]> {
   const { rows } = await pool.query<AffectedPackageRow>(
     `SELECT ca.package_name, p.display_name, ca.version_start, ca.version_start_excl,
-            ca.version_end, ca.version_end_excl, ca.exact_version, ca.fixed_in, ca.source
+            ca.version_end, ca.version_end_excl, ca.exact_version, ca.fixed_in, ca.source,
+            ca.version_na
      FROM cve_affects ca JOIN packages p ON p.name = ca.package_name
      WHERE ca.cve_id = $1 ORDER BY ca.package_name`,
     [cveId],

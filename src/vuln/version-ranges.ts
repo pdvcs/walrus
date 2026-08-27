@@ -176,6 +176,29 @@ export function evaluateRange(version: string, range: VersionRange): RangeResult
   return { matched: true, reason: clauses.join(" and ") };
 }
 
+/**
+ * Label for an affects row whose CPE carried NA (`-`) in its version component. Such a row
+ * names no version, so it must never be described as "all versions" — that reading is exactly
+ * what blocked every VS Code build on an extension advisory (WAL-69).
+ */
+export const NOT_APPLICABLE_RANGE = "not applicable (names no version)";
+
+/**
+ * `matched_because` for such a row. Not produced by `evaluateRange` — NA rows never reach it —
+ * but it sits beside the other NA vocabulary so the gate and the query path cannot drift.
+ */
+export const VERSION_NA = "version-not-applicable";
+
+/**
+ * Human-readable affected-range description for display paths.
+ *
+ * Prefer this over `describeRange` anywhere a stored affects row is being rendered: an NA row
+ * has no bounds, so `describeRange` alone would call it "all versions".
+ */
+export function describeAffectedRange(range: VersionRange, versionNa: boolean): string {
+  return versionNa ? NOT_APPLICABLE_RANGE : describeRange(range);
+}
+
 /** Human-readable range description for API responses ("< 8.5.6", ">= 1.0, <= 2.0"). */
 export function describeRange(range: VersionRange): string {
   if (range.exactVersion) return `== ${range.exactVersion}`;

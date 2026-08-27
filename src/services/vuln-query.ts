@@ -7,9 +7,10 @@ import { Resolution } from "../vuln/resolver.js";
 import { AffectsWithCveRow } from "../db/queries/cves.js";
 import { VULN_DISCLAIMER } from "../routes/schemas.js";
 import {
-  describeRange,
+  describeAffectedRange,
   evaluateRange,
   isComparable,
+  VERSION_NA,
   VersionRange,
 } from "../vuln/version-ranges.js";
 
@@ -122,7 +123,18 @@ export async function queryVulns(
       }
       continue;
     }
-    if (!entry.matchedRow || entry.reason === "range-uncomparable") {
+    // An NA row names no version, so there is nothing to evaluate against. It stays listed —
+    // "walrus knows about this advisory" — under its own reason, which keeps it separable from
+    // "this advisory applies to your version" (WAL-69). A concrete match on the same CVE
+    // supersedes it below.
+    if (row.version_na) {
+      if (!entry.matchedRow) {
+        entry.matchedRow = row;
+        entry.reason = VERSION_NA;
+      }
+      continue;
+    }
+    if (!entry.matchedRow || entry.reason === "range-uncomparable" || entry.reason === VERSION_NA) {
       const result = evaluateRange(version!, toRange(row));
       if (result.matched) {
         entry.matchedRow = row;
@@ -144,7 +156,10 @@ export async function queryVulns(
       cvss_v4_score: row.cvss_v4_score == null ? null : Number(row.cvss_v4_score),
       cvss_v2_score: row.cvss_v2_score == null ? null : Number(row.cvss_v2_score),
       summary: truncate(row.description, 300),
-      affected: { range: describeRange(toRange(row)), matched_because: entry.reason },
+      affected: {
+        range: describeAffectedRange(toRange(row), row.version_na),
+        matched_because: entry.reason,
+      },
       fixed_in: row.fixed_in,
       is_kev: row.is_kev,
       sources,

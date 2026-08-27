@@ -12,6 +12,8 @@ import { VulnSyncAlreadyRunningError } from "../vuln/sync/lock.js";
 import type { VulnSourceStatus, VulnSyncStatus } from "../db/queries/vuln-sync-state.js";
 import type { VulnBackfillJobRow } from "../db/queries/vuln-backfill-jobs.js";
 import { buildPublicationWindows } from "../vuln/sync/nvd-sync.js";
+import { VERSION_NA } from "../vuln/version-ranges.js";
+import { CRITICAL_SCORE } from "../services/vuln-service.js";
 
 export interface AdminVulnsRouteDeps {
   /** Bound /vulns query (same code path as the public API). */
@@ -679,8 +681,15 @@ function renderResult(r: VulnQueryResult): string {
       // sub-threshold number and leaving the block unexplained.
       const scores = [v.cvss_v3_score, v.cvss_v4_score, v.cvss_v2_score].filter((s) => s !== null);
       const maxScore = scores.length > 0 ? Math.max(...scores) : null;
+      // Crossing the threshold is necessary but not sufficient: the row must also gate. A CPE
+      // naming no version (WAL-69) and a fail-open match are both excluded from the gate, so
+      // badging them "blocks at 9.8" told operators the opposite of what /download does — the
+      // explorer went on calling CVE-2024-43488 a blocker after the fix had unblocked vscode.
+      const gateable =
+        v.affected.matched_because !== VERSION_NA &&
+        v.affected.matched_because !== "range-uncomparable";
       const gates =
-        maxScore !== null && maxScore >= 9.0
+        gateable && maxScore !== null && maxScore >= CRITICAL_SCORE
           ? ` <span class="badge badge-blocked-gate">blocks at ${maxScore}</span>`
           : "";
       const scoreLabel = maxScore !== null ? ` (${maxScore})` : "";

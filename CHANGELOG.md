@@ -107,6 +107,13 @@ New deps: `fuzzball`, `semver` (runtime); `fast-check` (dev). `pg_trgm` extensio
   critical gate skips NA rows the way it already skips fail-open matches, while `*` with no
   bounds still means all versions. NA advisories stay visible on `/packages/:name/vulns` under
   `matched_because: "version-not-applicable"`.
+- **WAL-69 (Fixed):** The vulnerability explorer no longer badges a non-gating CVE
+  "blocks at 9.8". The gate exclusions (an NA-versioned CPE, a fail-open range match) were
+  applied to `/download` but not to the explorer's own rendering, which computed the badge from
+  the score alone — so the page went on naming CVE-2024-43488 a blocker after the fix had
+  unblocked VS Code. The affected-range column now reads "not applicable (names no version)"
+  rather than "all versions" for such rows, on the explorer, `/api/v1/vulns`, and the CVE
+  detail endpoint.
 
 ## Version 0.1.0: Initial Release
 

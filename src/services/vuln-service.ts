@@ -4,7 +4,7 @@
  * it is unit-testable without a DB; the route is a thin wrapper.
  */
 import { AffectsWithCveRow } from "../db/queries/cves.js";
-import { evaluateRange, VersionRange } from "../vuln/version-ranges.js";
+import { evaluateRange, VERSION_NA, VersionRange } from "../vuln/version-ranges.js";
 
 export interface CachedVersionInput {
   version: string;
@@ -35,12 +35,7 @@ export interface VersionVulnResult {
   vulns: VersionVuln[];
 }
 
-/**
- * `matched_because` for a row whose CPE carried NA in its version component. Not a range
- * evaluation result — `evaluateRange` never sees these rows — so it is defined here beside the
- * only code that produces it.
- */
-export const VERSION_NA = "version-not-applicable";
+export { VERSION_NA };
 
 function toRange(row: AffectsWithCveRow): VersionRange {
   return {
