@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import fc from "fast-check";
 import {
   extractVersionGroup,
   applyTagPattern,
@@ -74,6 +75,153 @@ describe("generateSortKey", () => {
     const pre = generateSortKey("1.0.0-alpha.1");
     const release = generateSortKey("1.0.0");
     expect(pre < release).toBe(true);
+  });
+
+  it("pads a version shorter than three components", () => {
+    expect(generateSortKey("2026.2")).toBe("002026.000002.000000~");
+    // ...which is deliberately the same key as its own zero-filled form.
+    expect(generateSortKey("2026.2")).toBe(generateSortKey("2026.2.0"));
+  });
+
+  it("keys a fourth component as a continuation of the third", () => {
+    expect(generateSortKey("2025.3.6.1")).toBe("002025.000003.000006~000001~");
+    expect(generateSortKey("2025.3.6.1.4")).toBe("002025.000003.000006~000001~000004~");
+  });
+
+  it("keys are byte-identical for everything semver parses", () => {
+    // WAL-63 AC5: the fix is confined to the non-semver branch, so no stored key for a
+    // semver-shaped version moves. Guarding it here means a future edit to the semver branch
+    // has to be a deliberate one that also migrates `versions.version_sort`.
+    expect(generateSortKey("1.24.1")).toBe("000001.000024.000001~");
+    expect(generateSortKey("21.0.3+9")).toBe("000021.000000.000003~");
+    expect(generateSortKey("4.0.0-rc-4")).toBe("000004.000000.000000-rc-4");
+    expect(generateSortKey("1.0.0-alpha.1")).toBe("000001.000000.000000-alpha.000001");
+  });
+});
+
+describe("generateSortKey ordering (WAL-63)", () => {
+  it("ranks a four-component build above the three-component version it extends", () => {
+    expect(sortVersionsDesc(["2025.3.6", "2025.3.6.1"])).toEqual(["2025.3.6.1", "2025.3.6"]);
+    expect(sortVersionsDesc(["2025.2.6.2", "2025.2.6", "2025.2.6.3"])).toEqual([
+      "2025.2.6.3",
+      "2025.2.6.2",
+      "2025.2.6",
+    ]);
+  });
+
+  it("interleaves component counts within one group", () => {
+    expect(sortVersionsDesc(["2026.2", "2026.2.0.1", "2026.2.1"])).toEqual([
+      "2026.2.1",
+      "2026.2.0.1",
+      "2026.2",
+    ]);
+  });
+
+  it("keys a fourth component the loose semver parser mis-reads", () => {
+    // semver loose turns "1.2.10.1" into 1.2.1-0.1 — a key below 1.2.2, for a build above
+    // 1.2.10. The sorter must not consult it for four-component versions.
+    expect(sortVersionsDesc(["1.2.10", "1.2.10.1", "1.2.11"])).toEqual([
+      "1.2.11",
+      "1.2.10.1",
+      "1.2.10",
+    ]);
+    expect(generateSortKey("0.0.10.0") > generateSortKey("0.0.10")).toBe(true);
+  });
+
+  it("keeps pre-releases below their release across component counts", () => {
+    expect(compareVersions("1.2.3-rc1", "1.2.3")).toBeLessThan(0);
+    expect(compareVersions("2025.3.6.1-eap", "2025.3.6.1")).toBeLessThan(0);
+    // ...and still above the shorter version the pre-release extends.
+    expect(compareVersions("2025.3.6.1-eap", "2025.3.6")).toBeGreaterThan(0);
+  });
+
+  it("orders the real IntelliJ IDEA window by release date", () => {
+    // Upstream dates, verified 2026-08-27 (engineering/plans/intellij-idea-onboarding.md).
+    const byDate = ["2025.3.6.1", "2025.3.6", "2025.2.6.3", "2025.2.6.2"];
+    expect(sortVersionsDesc(["2025.2.6.2", "2025.3.6", "2025.3.6.1", "2025.2.6.3"])).toEqual(
+      byDate,
+    );
+  });
+});
+
+describe("generateSortKey property: mixed component counts", () => {
+  /**
+   * Reference ordering: read a version shorter than three components as though the missing
+   * ones were zero (`2026.2` is `2026.2.0`, the reading semver gives it), then compare
+   * component-wise. When one is a prefix of the other the shorter ranks lower — `1.2.3.0` is a
+   * later build than `1.2.3`, not the same one.
+   */
+  function normalize(components: number[]): number[] {
+    return components.length >= 3 ? components : [...components, 0, 0].slice(0, 3);
+  }
+
+  function referenceCompare(a: number[], b: number[]): number {
+    const [x, y] = [normalize(a), normalize(b)];
+    for (let i = 0; i < Math.min(x.length, y.length); i++) {
+      if (x[i] !== y[i]) return x[i] - y[i];
+    }
+    return x.length - y.length;
+  }
+
+  const versionArb = fc
+    .array(fc.integer({ min: 0, max: 999_999 }), { minLength: 2, maxLength: 5 })
+    .map((components) => ({ components, text: components.join(".") }));
+
+  it("agrees with a component-wise reference ordering for 2-5 segments", () => {
+    fc.assert(
+      fc.property(fc.array(versionArb, { minLength: 2, maxLength: 12 }), (generated) => {
+        // Distinct versions only: `2026.2` and `2026.2.0` are one version under the reference
+        // ordering, so their relative order carries no information to check.
+        const seen = new Set<string>();
+        const versions = generated.filter((v) => {
+          const key = normalize(v.components).join(".");
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        const byKey = [...versions].sort((x, y) =>
+          generateSortKey(x.text) < generateSortKey(y.text) ? -1 : 1,
+        );
+        const byReference = [...versions].sort((x, y) =>
+          referenceCompare(x.components, y.components),
+        );
+        expect(byKey.map((v) => v.text)).toEqual(byReference.map((v) => v.text));
+      }),
+      { numRuns: 500 },
+    );
+  });
+
+  it("gives a strict numeric extension a strictly greater key", () => {
+    fc.assert(
+      fc.property(
+        versionArb,
+        fc.array(fc.integer({ min: 0, max: 999_999 }), { minLength: 1, maxLength: 3 }),
+        (base, extension) => {
+          const components = [...base.components, ...extension];
+          const extended = components.join(".");
+          // Equal only when the extension does nothing but fill the implicit zeros of a
+          // shorter-than-three-component version; otherwise strictly greater.
+          const expectedStrict =
+            normalize(components).join(".") !== normalize(base.components).join(".");
+          expect(generateSortKey(base.text) < generateSortKey(extended)).toBe(expectedStrict);
+          expect(generateSortKey(base.text) <= generateSortKey(extended)).toBe(true);
+        },
+      ),
+      { numRuns: 500 },
+    );
+  });
+
+  it("byte comparison and localeCompare agree over the key alphabet", () => {
+    // `selectRetentionWindow` orders keys with localeCompare while SQL and the rest of the
+    // codebase use byte comparison; retention would pick different versions if they disagreed.
+    fc.assert(
+      fc.property(versionArb, versionArb, (a, b) => {
+        const ka = generateSortKey(a.text);
+        const kb = generateSortKey(b.text);
+        expect(Math.sign(ka.localeCompare(kb))).toBe(Math.sign(ka < kb ? -1 : ka > kb ? 1 : 0));
+      }),
+      { numRuns: 500 },
+    );
   });
 });
 

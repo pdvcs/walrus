@@ -1,5 +1,6 @@
 import { Pool } from "pg";
 import { VersionRow } from "../../types/db.js";
+import { generateSortKey } from "../../common/version-utils.js";
 
 export async function insertVersion(
   pool: Pool,
@@ -363,4 +364,41 @@ export async function listVersionsOlderThanInGroup(
     [packageName, group, keepCount],
   );
   return rows;
+}
+
+/**
+ * Reassert `version_sort` from `version` for every row, using the current sort-key algorithm.
+ *
+ * `version_sort` is derived data, but `insertVersion` is `ON CONFLICT DO NOTHING`, so a row is
+ * keyed once at discovery and never re-keyed. A change to `generateSortKey` would therefore
+ * leave existing rows ordered by the retired scheme indefinitely — and production has no shell
+ * to run a fixup script from. Recomputing at boot keeps the stored column honest without a
+ * hand-written SQL copy of the padding rules, which would only drift from the real one.
+ *
+ * Returns the number of rows corrected. Steady state is 0; a non-zero count means the algorithm
+ * moved under existing data and is worth a log line.
+ */
+export async function resyncVersionSortKeys(pool: Pool): Promise<number> {
+  const { rows } = await pool.query<{ id: number; version: string; version_sort: string }>(
+    "SELECT id, version, version_sort FROM versions",
+  );
+
+  const ids: number[] = [];
+  const sorts: string[] = [];
+  for (const row of rows) {
+    const expected = generateSortKey(row.version);
+    if (expected !== row.version_sort) {
+      ids.push(row.id);
+      sorts.push(expected);
+    }
+  }
+  if (ids.length === 0) return 0;
+
+  await pool.query(
+    `UPDATE versions AS v SET version_sort = u.version_sort
+     FROM unnest($1::int[], $2::text[]) AS u(id, version_sort)
+     WHERE v.id = u.id`,
+    [ids, sorts],
+  );
+  return ids.length;
 }

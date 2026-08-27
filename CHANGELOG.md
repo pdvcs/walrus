@@ -96,6 +96,26 @@ New deps: `fuzzball`, `semver` (runtime); `fast-check` (dev). `pg_trgm` extensio
 - **WAL-32 (Security):** `GET /download/:package/:version/:os/:arch` returns `403` before
   artifact lookup or storage access when the requested version carries a known critical CVE.
 
+**Wave 12 — IntelliJ IDEA and multi-GB artifacts**
+
+- **WAL-63 (Fixed):** The version sorter ranked a four-component build below the
+  three-component version it extends — `2025.3.6` outranked its own `2025.3.6.1` — because a
+  stable key was terminated with `~` (126) while overflow components were separated with
+  `.` (46). `~` now both terminates a stable key and introduces every component past the third,
+  so a longer version's key is a strict extension of the shorter one's and sorts above it.
+  `version_sort` drives retention, so the effect was keeping a superseded build and pruning the
+  newer one in any group that mixes component counts.
+- **WAL-63 (Fixed):** `semver.parse(…, { loose: true })` does not merely reject a
+  four-component version: with a multi-digit patch it reads the fourth component as an
+  undelimited pre-release, turning `0.0.10.0` into `0.0.1-0.0` and keying it below `0.0.2`. The
+  sorter now routes on the version's own shape before consulting semver instead of treating a
+  failed parse as the signal. Keys for three-component versions — every version walrus currently
+  stores — are byte-identical to before.
+- **WAL-63 (Added):** `version_sort` is recomputed at boot for any row whose key no longer
+  matches the sorter. The column is written once at discovery and there is no shell in
+  production to run a fixup from, so a change to the algorithm would otherwise leave old rows
+  keyed by the retired scheme indefinitely.
+
 **Wave 13 — CPE version semantics**
 
 - **WAL-69 (Fixed):** A CPE whose version component is NA (`-`) no longer blocks every version.

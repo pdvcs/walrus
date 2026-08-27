@@ -66,6 +66,7 @@ import {
   listVersionGroups,
   listVersionGroupsWithLts,
   listVersions,
+  resyncVersionSortKeys,
 } from "./db/queries/versions.js";
 import {
   getArtifact,
@@ -115,6 +116,18 @@ for (const packageConfig of configs) {
     },
   );
   syncServices.set(packageConfig.name, syncService);
+}
+
+/**
+ * `version_sort` is written once per row and never revisited, so a change to the sort-key
+ * algorithm has to be applied to existing rows by something. Boot is that something — the
+ * service has no shell to run a fixup from (see `resyncVersionSortKeys`).
+ */
+async function repairDerivedSortKeys(): Promise<void> {
+  const repaired = await resyncVersionSortKeys(pool);
+  if (repaired > 0) {
+    log.info({ repaired }, "Recomputed stale version_sort keys");
+  }
 }
 
 async function recoverInterruptedState(): Promise<void> {
@@ -539,6 +552,7 @@ const app = createApp();
 
 if (require.main === module) {
   runMigrations()
+    .then(() => repairDerivedSortKeys())
     .then(() => recoverInterruptedState())
     .then(() => reconcileAllPackageVulns(pool, configs))
     .then(() => {

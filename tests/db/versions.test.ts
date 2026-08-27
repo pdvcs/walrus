@@ -12,7 +12,9 @@ import {
   listAvailableVersionsByGroup,
   listVersionsOlderThanInGroup,
   getMaxAvailableVersionSort,
+  resyncVersionSortKeys,
 } from "../../src/db/queries/versions.js";
+import { generateSortKey, sortVersionsDesc } from "../../src/common/version-utils.js";
 import { insertArtifact, updateArtifactStatus } from "../../src/db/queries/artifacts.js";
 
 const TEST_DB_URL =
@@ -519,6 +521,75 @@ describe("versions queries", () => {
       // v2 (higher sort) has a failed artifact; only v1 has available
       const result = await getMaxAvailableVersionSort(pool, PKG);
       expect(result).toBe("0001.0000.0000");
+    });
+  });
+
+  describe("version_sort ordering in SQL (WAL-63)", () => {
+    // AC4: the sort key is a stored column, so the ordering has to survive the database's
+    // collation — a JS-only comparator would pass the unit tests and still serve the wrong
+    // artifact. Mixed component counts and a pre-release in one set.
+    const versions = [
+      "2025.3.6",
+      "2025.3.6.1",
+      "2025.2.6.2",
+      "2025.2.6.3",
+      "2026.2",
+      "2026.2.0.1",
+      "2026.2.1",
+      "2026.2.1-eap",
+    ];
+
+    it("orders mixed component counts the same way the sorter does", async () => {
+      for (const version of versions) {
+        await insertVersion(pool, {
+          package_name: PKG,
+          version,
+          version_group: version.split(".").slice(0, 2).join("."),
+          is_lts: false,
+          version_sort: generateSortKey(version),
+        });
+      }
+
+      const { rows } = await pool.query<{ version: string }>(
+        "SELECT version FROM versions WHERE package_name = $1 ORDER BY version_sort DESC",
+        [PKG],
+      );
+
+      expect(rows.map((r) => r.version)).toEqual(sortVersionsDesc(versions));
+      expect(rows[0].version).toBe("2026.2.1");
+      // The build that WAL-63 was raised for: newer than the version it extends.
+      expect(rows.indexOf(rows.find((r) => r.version === "2025.3.6.1")!)).toBeLessThan(
+        rows.indexOf(rows.find((r) => r.version === "2025.3.6")!),
+      );
+    });
+  });
+
+  describe("resyncVersionSortKeys", () => {
+    it("rewrites keys left behind by an older algorithm, and is idempotent", async () => {
+      const stale = await insertVersion(pool, {
+        package_name: PKG,
+        version: "2025.3.6.1",
+        version_group: "2025.3",
+        is_lts: false,
+        version_sort: "002025.000003.000006.000001", // what the pre-WAL-63 sorter produced
+      });
+      const current = await insertVersion(pool, {
+        package_name: PKG,
+        version: "2025.3.6",
+        version_group: "2025.3",
+        is_lts: false,
+        version_sort: generateSortKey("2025.3.6"),
+      });
+
+      expect(await resyncVersionSortKeys(pool)).toBeGreaterThanOrEqual(1);
+
+      const repaired = await getVersion(pool, PKG, "2025.3.6.1");
+      expect(repaired!.version_sort).toBe(generateSortKey("2025.3.6.1"));
+      expect((await getVersion(pool, PKG, "2025.3.6"))!.version_sort).toBe(current.version_sort);
+      expect(repaired!.id).toBe(stale.id);
+
+      // Every row now matches the algorithm, so a second pass has nothing to do.
+      expect(await resyncVersionSortKeys(pool)).toBe(0);
     });
   });
 });
