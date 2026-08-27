@@ -628,6 +628,7 @@ function renderExplorer(ctx: {
     .filter-chip.filter-on { background:#1d4ed8; border-color:#1d4ed8; color:#fff; }
     .filter-count { margin:6px 0 0; }
     .hist-link { font-size:0.8rem; }
+    .badge-blocked-gate { background:#b91c1c; color:#fff; margin-left:6px; }
   </style>`;
 
   return renderSharedHtml("Vulnerabilities", "vulns", body, scripts, styleTail);
@@ -671,12 +672,21 @@ function renderResult(r: VulnQueryResult): string {
         v.affected.matched_because === "range-uncomparable"
           ? ` <span class="badge badge-vuln-high">uncomparable</span>`
           : "";
-      // Show the base score behind the severity label: v3 when present, else v4
-      // (same bands), else v2 — matching extractCvss's severity precedence.
-      const score = v.cvss_v3_score ?? v.cvss_v4_score ?? v.cvss_v2_score;
+      // The gate (ADR-005) blocks on ANY CVSS base score >= 9.0, so a HIGH-labeled CVE
+      // can still block: its v4 or v2 score may cross the threshold where v3 does not
+      // (live example: CVE-2026-6100, v3 8.1 / v4 9.1, blocks python 3.12.13). Show the
+      // max score and mark gate-crossers explicitly, rather than displaying one
+      // sub-threshold number and leaving the block unexplained.
+      const scores = [v.cvss_v3_score, v.cvss_v4_score, v.cvss_v2_score].filter((s) => s !== null);
+      const maxScore = scores.length > 0 ? Math.max(...scores) : null;
+      const gates =
+        maxScore !== null && maxScore >= 9.0
+          ? ` <span class="badge badge-blocked-gate">blocks at ${maxScore}</span>`
+          : "";
+      const scoreLabel = maxScore !== null ? ` (${maxScore})` : "";
       return `<tr>
         <td><a href="https://nvd.nist.gov/vuln/detail/${esc(v.cve_id)}" target="_blank" rel="noopener">${esc(v.cve_id)}</a></td>
-        <td class="sev-${esc(v.severity ?? "")}">${esc(v.severity ?? "—")}${score !== null ? ` (${score})` : ""}</td>
+        <td class="sev-${esc(v.severity ?? "")}">${esc(v.severity ?? "—")}${scoreLabel}${gates}</td>
         <td>${esc(v.affected.range)}${unc}</td>
         <td>${v.fixed_in ? esc(v.fixed_in) : "—"}</td>
         <td>${kev || "—"}</td>
