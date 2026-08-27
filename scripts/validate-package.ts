@@ -20,7 +20,7 @@ import { PackageConfig } from "../src/types/package-config.js";
 import { DiscoveredVersion } from "../src/discovery/types.js";
 import { computeVulnInput } from "../src/services/vuln-config.js";
 import { selectRetentionWindow } from "../src/common/retention-window.js";
-import { verifyCpePairs, defaultCpeProbe } from "../src/vuln/cpe-verify.js";
+import { defaultCpeProbe } from "../src/vuln/cpe-verify.js";
 
 const PACKAGES_DIR = path.join(process.cwd(), "packages");
 const SPOT_CHECK_PLATFORM = { os: "linux", arch: "x86-64" } as const;
@@ -95,7 +95,7 @@ async function headRequest(url: string): Promise<HeadResult> {
  */
 async function probeCpePairs(cpes: string[]): Promise<boolean> {
   console.log(`  ${c.dim("○")} Probing ${cpes.length} CPE pair(s) against the NVD dictionary...`);
-  const verification = await verifyCpePairs(defaultCpeProbe, cpes);
+  const verification = await defaultCpeProbe(cpes);
   let warned = false;
   for (const r of verification.results) {
     switch (r.status) {
