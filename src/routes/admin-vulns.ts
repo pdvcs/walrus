@@ -153,7 +153,11 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
 
   router.post("/vuln-backfill", async (req, res, next) => {
     try {
-      const body = (req.body ?? {}) as { since?: unknown; package?: unknown };
+      const body = (req.body ?? {}) as {
+        since?: unknown;
+        package?: unknown;
+        return_version?: unknown;
+      };
       const since = optionalString(body.since);
       const packageName = optionalString(body.package);
       if (since) buildPublicationWindows(since);
@@ -162,16 +166,22 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
       // navigating to a JSON body was a dead end for operators. API clients keep JSON.
       const wantsHtml = req.headers.accept?.includes("text/html");
       if (wantsHtml) {
+        // A package-scoped backfill is started from a package's own view, so the redirect has
+        // to land back on it — dropping the operator on an empty explorer would make them
+        // retype the lookup to see what the run they just started did.
+        const context = new URLSearchParams();
+        if (packageName) context.set("product", packageName);
+        const returnVersion = optionalString(body.return_version);
+        if (returnVersion) context.set("version", returnVersion);
+
         if (result.alreadyRunning) {
-          res.redirect(
-            303,
-            `/admin/v1/vulns?sync_error=${encodeURIComponent("A vulnerability backfill is already running")}`,
-          );
+          context.set("sync_error", "A vulnerability backfill is already running");
+          res.redirect(303, `/admin/v1/vulns?${context.toString()}`);
           return;
         }
-        const params = new URLSearchParams({ backfill_started: String(result.job?.id ?? "") });
-        if (since) params.set("backfill_since", since);
-        res.redirect(303, `/admin/v1/vulns?${params.toString()}`);
+        context.set("backfill_started", String(result.job?.id ?? ""));
+        if (since) context.set("backfill_since", since);
+        res.redirect(303, `/admin/v1/vulns?${context.toString()}`);
         return;
       }
       if (result.alreadyRunning)
@@ -631,9 +641,33 @@ function renderExplorer(ctx: {
     .filter-count { margin:6px 0 0; }
     .hist-link { font-size:0.8rem; }
     .badge-blocked-gate { background:#b91c1c; color:#fff; margin-left:6px; }
+    .pkg-backfill { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin:0 0 14px; }
+    .pkg-backfill label { font-size:0.8rem; color:#4b5563; }
+    .pkg-backfill input[type=date] { font-size:0.8rem; padding:3px 6px; }
+    .pkg-backfill-hint { font-size:0.75rem; color:#6b7280; }
   </style>`;
 
   return renderSharedHtml("Vulnerabilities", "vulns", body, scripts, styleTail);
+}
+
+/**
+ * Per-package NVD backfill, offered where the operator already is: looking at one package.
+ *
+ * The strip's "NVD backfill" walks every CPE pair of every package, which is the wrong tool for
+ * "this package's history is missing" — the case that actually arises, since incremental sync is
+ * cursor-based and can never reach a newly tracked package's older CVEs. The API has taken a
+ * `package` scope since WAL-37; only the UI was missing it (ADR-007).
+ */
+function renderPackageBackfill(slug: string, displayName: string, version?: string | null): string {
+  if (!slug) return "";
+  return `<form class="pkg-backfill" method="post" action="/admin/v1/vuln-backfill">
+    <input type="hidden" name="package" value="${escHtml(slug)}">
+    ${version ? `<input type="hidden" name="return_version" value="${escHtml(version)}">` : ""}
+    <label for="pkg-backfill-since">Backfill ${escHtml(displayName)} from</label>
+    <input id="pkg-backfill-since" type="date" name="since" max="${new Date().toISOString().slice(0, 10)}">
+    <button class="btn btn-sm btn-secondary" type="submit">Backfill this package</button>
+    <span class="pkg-backfill-hint">Walks this package's CPE pairs only. Leave the date empty for all history.</span>
+  </form>`;
 }
 
 function renderResult(r: VulnQueryResult): string {
@@ -657,7 +691,8 @@ function renderResult(r: VulnQueryResult): string {
     · ${r.counts.total} CVE(s)${r.counts.kev > 0 ? ` · <span class="badge badge-kev">${r.counts.kev} KEV</span>` : ""}
     · <a class="hist-link" href="/api/v1/packages/${esc(m.product_slug ?? "")}/availability${
       r.query.version ? `?version=${encodeURIComponent(r.query.version)}` : ""
-    }">availability history</a></p>`;
+    }">availability history</a></p>
+    ${renderPackageBackfill(m.product_slug ?? "", m.display_name ?? m.product_slug ?? "", r.query.version)}`;
 
   const warn = r.version_parse_warning
     ? `<div class="note note-warn">${esc(r.version_parse_warning)}</div>`

@@ -82,8 +82,11 @@ describe("admin vuln explorer + sync (isolated)", () => {
 
   function buildApp(overrides: Partial<Parameters<typeof createAdminVulnsRouter>[0]> = {}) {
     const app = express();
-    // Mirrors main.ts: the real app parses JSON bodies before the admin router sees them.
+    // Mirrors main.ts: the real app parses JSON *and* urlencoded bodies before the admin
+    // router sees them. The urlencoded parser is not optional here — the admin UI posts plain
+    // HTML forms, and without it every field is dropped silently (WAL-71).
     app.use(express.json());
+    app.use(express.urlencoded({ extended: false }));
     app.use(
       "/admin/v1",
       createAdminVulnsRouter({
@@ -316,6 +319,66 @@ describe("admin vuln explorer + sync (isolated)", () => {
     expect(res.status).toBe(303);
     const page = await request(app).get(res.headers.location);
     expect(page.text).toContain("backfill is already running");
+  });
+
+  // WAL-71: the per-package backfill button posts an HTML form, not JSON. A dropped body here
+  // does not fail loudly — `startVulnBackfill(undefined, undefined)` is a *valid* call meaning
+  // "backfill every package", so the button would quietly walk all of them.
+  it("carries the package scope from an urlencoded form post", async () => {
+    const seen: Array<string | undefined> = [];
+    const app = buildApp({
+      startVulnBackfill: async (_since, packageName) => {
+        seen.push(packageName);
+        return {
+          job: {
+            id: 7,
+            status: "queued" as const,
+            since_date: null,
+            cpe_pairs_total: 1,
+            cpe_pairs_done: 0,
+            error_message: null,
+            execution_name: "test:7",
+            started_at: null,
+            finished_at: null,
+            created_at: new Date(),
+            package_name: "vscode",
+          },
+        };
+      },
+    });
+
+    const res = await request(app)
+      .post("/admin/v1/vuln-backfill")
+      .set("Accept", "text/html; charset=utf-8")
+      .type("form")
+      .send("package=vscode&since=&return_version=1.135.0");
+
+    expect(seen).toEqual(["vscode"]);
+    const location = new URL(res.headers.location, "http://x");
+    // The operator started this from a package's own view; the redirect has to land back on it.
+    expect(location.searchParams.get("product")).toBe("vscode");
+    expect(location.searchParams.get("version")).toBe("1.135.0");
+  });
+
+  it("returns the operator to the package view when a backfill is already running", async () => {
+    const app = buildApp({ startVulnBackfill: async () => ({ alreadyRunning: true }) });
+
+    const res = await request(app)
+      .post("/admin/v1/vuln-backfill")
+      .set("Accept", "text/html; charset=utf-8")
+      .type("form")
+      .send("package=vscode&return_version=1.135.0");
+
+    const location = new URL(res.headers.location, "http://x");
+    expect(location.searchParams.get("product")).toBe("vscode");
+    expect(location.searchParams.get("sync_error")).toMatch(/already running/);
+  });
+
+  it("offers a package-scoped backfill on a resolved product page", async () => {
+    const page = await request(buildApp()).get("/admin/v1/vulns?product=openjdk&version=11.0.2");
+    expect(page.text).toContain('name="package" value="openjdk"');
+    expect(page.text).toContain('name="return_version" value="11.0.2"');
+    expect(page.text).toContain("Backfill this package");
   });
 
   it("surfaces an invalid-since error as a banner for HTML, 400 JSON for API", async () => {

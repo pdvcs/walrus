@@ -214,6 +214,10 @@ export function createApp(): express.Express {
   const app = express();
   app.set("json spaces", 2);
   app.use(express.json());
+  // The admin UI posts plain HTML forms. Without this, every form field is silently dropped and
+  // the handler sees an empty body — which turned "Backfill this package" into an unscoped
+  // backfill of all 11 packages, since a missing `package` means "everything" (WAL-71).
+  app.use(express.urlencoded({ extended: false }));
   app.use("/static", express.static(path.join(process.cwd(), "dist/public")));
 
   app.get("/", (_req, res) => {

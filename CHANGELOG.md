@@ -114,6 +114,13 @@ New deps: `fuzzball`, `semver` (runtime); `fast-check` (dev). `pg_trgm` extensio
   unblocked VS Code. The affected-range column now reads "not applicable (names no version)"
   rather than "all versions" for such rows, on the explorer, `/api/v1/vulns`, and the CVE
   detail endpoint.
+- **WAL-71 (Added):** The vulnerability explorer offers a backfill scoped to the package being
+  viewed, with an optional start date. The API has taken a `package` scope since WAL-37; only
+  the affordance was missing (ADR-007).
+- **WAL-71 (Fixed):** `createApp` now mounts `express.urlencoded`. The admin UI posts plain HTML
+  forms, and with only `express.json()` every field was dropped silently — which made the new
+  package-scoped backfill button run an unscoped 11-package backfill and return 303 as though it
+  had worked.
 
 ## Version 0.1.0: Initial Release
 
