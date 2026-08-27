@@ -90,9 +90,9 @@ The `[checksum]` type is `github-asset-digest`, which reads the `digest` field d
 
 **Implementation:** `src/discovery/json-api.ts`
 
-**Packages:** `golang`, `nodejs`, `gradle`, `openjdk`, `azuljdk`
+**Packages:** `golang`, `nodejs`, `gradle`, `openjdk`, `azuljdk`, `vscode`
 
-This is the most flexible strategy, covering four distinct API shapes through sub-modes selected by the presence or absence of certain config fields.
+This is the most flexible strategy, covering five distinct API shapes through sub-modes selected by the presence or absence of certain config fields.
 
 ### Sub-mode 1: Two-step with `explicit_versions`
 
@@ -180,6 +180,23 @@ GET https://services.gradle.org/versions/all
 Omitting `files_field` and setting `release_download_url_field = "downloadUrl"` activates flat mode. The strategy reads the URL directly from the release object and assigns the same URL to all platforms (Gradle is a pure-Java tool with a platform-neutral ZIP). Checksum is also inline via `file_checksum_field = "checksum"`.
 
 The `releases_path` filter is the most complex of any current package, excluding snapshots, nightlies, release-nightlies, release candidates, milestones, and broken builds in a single JSONPath expression.
+
+### Sub-mode 5: Version list only (templated URLs)
+
+**Package:** `vscode`
+
+The weakest API shape the strategy handles: the endpoint returns bare version strings and nothing else — no release objects, no file lists, no dates, no checksums.
+
+```
+GET https://update.code.visualstudio.com/api/releases/stable
+→ ["1.135.0", "1.134.0", "1.133.0", ...]
+```
+
+Activated when `releases_path` yields strings rather than objects. Each string _is_ the version, so `release_version_field` is neither needed nor read. With no artifact data on the upstream side, each `[[platforms]]` block supplies its own `url_template` (`{version}`, `{os}`, `{arch}`, `{ext}` substituted) — the same construction `xml-api` uses, and the reason those two strategies look alike.
+
+`filename_template` is honoured here when present, because the URL tail is not always a usable filename. VS Code's download endpoint is `/{version}/{platform}/stable`, which redirects to the real CDN file; deriving the filename from the URL would name every artifact `stable`.
+
+Objects and strings cannot be mixed in one response: an object release without `release_version_field` configured is a config error and throws, rather than being silently skipped.
 
 ---
 

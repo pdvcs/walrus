@@ -271,6 +271,33 @@ release_date_field = "buildTime"              # optional: for cooling-off calcul
 
 ---
 
+**Version-list mode** — some endpoints return only a flat array of version strings, with no release objects at all (e.g. the VS Code update API). Omit `release_version_field`, `files_field` and `release_download_url_field`; each element of the array is taken as the version, and each `[[platforms]]` block builds its own URL from `url_template`:
+
+```
+GET https://update.code.visualstudio.com/api/releases/stable
+→ ["1.135.0", "1.134.0", "1.133.0", ...]
+```
+
+```toml
+[discovery]
+type = "json-api"
+url = "https://update.code.visualstudio.com/api/releases/stable"
+releases_path = "$[*]"        # yields strings, not objects
+
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "linux-x64"
+arch_upstream = "x64"
+extension = "tar.gz"
+url_template = "https://update.code.visualstudio.com/{version}/{os}/stable"
+filename_template = "VSCode-{version}-{os}.{ext}"   # URL tail is "stable", so name it explicitly
+```
+
+`filename_template` is optional and only matters when the last path segment of the URL is not a usable filename. There is no upstream date or checksum in this mode — pair it with `[checksum] type = "none"` unless a sidecar exists.
+
+---
+
 ### `xml-api`
 
 **When to use:** The version list is served as XML (e.g. Maven Central's `maven-metadata.xml`).

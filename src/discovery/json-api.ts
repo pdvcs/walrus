@@ -26,6 +26,15 @@ function normalizeDateString(v: string): string {
   return v;
 }
 
+/** Substitute {version}/{os}/{arch}/{ext} placeholders in a URL or filename template. */
+function applyTemplate(template: string, vars: Record<string, string>): string {
+  let result = template;
+  for (const [key, value] of Object.entries(vars)) {
+    result = result.replaceAll(`{${key}}`, value);
+  }
+  return result;
+}
+
 /** Parse an ISO 8601 string (or compact YYYYMMDDHHmmss+ZZZZ) into a Date. */
 function parseDate(v: unknown): Date | undefined {
   if (typeof v !== "string" || !v) return undefined;
@@ -71,8 +80,8 @@ export class JsonApiStrategy implements DiscoveryStrategy {
       release_lts_field,
     } = discovery;
 
-    if (!url || !releases_path || !release_version_field) {
-      throw new Error("Inline json-api requires url, releases_path, release_version_field");
+    if (!url || !releases_path) {
+      throw new Error("Inline json-api requires url and releases_path");
     }
 
     const data = await fetchJsonWithRetry<Record<string, unknown>>(url, {
@@ -86,10 +95,26 @@ export class JsonApiStrategy implements DiscoveryStrategy {
     const discovered: DiscoveredVersion[] = [];
 
     for (const release of releases) {
-      const releaseObj = release as Record<string, unknown>;
-      const rawVer = releaseObj[release_version_field];
-      if (typeof rawVer !== "string" || !rawVer) continue;
-      let version = rawVer;
+      let version: string;
+      let releaseObj: Record<string, unknown>;
+
+      if (typeof release === "string") {
+        // Version-list mode: the array holds bare version strings rather than release objects
+        // (e.g. the VS Code update API). The string is the version; there is no other metadata,
+        // so artifact URLs have to come from the platform templates below.
+        version = release;
+        releaseObj = {};
+      } else {
+        releaseObj = release as Record<string, unknown>;
+        if (!release_version_field) {
+          throw new Error(
+            "Inline json-api requires release_version_field when releases_path yields objects",
+          );
+        }
+        const rawVer = releaseObj[release_version_field];
+        if (typeof rawVer !== "string" || !rawVer) continue;
+        version = rawVer;
+      }
 
       if (tag_pattern) {
         const extracted = applyTagPattern(version, tag_pattern);
@@ -157,11 +182,9 @@ export class JsonApiStrategy implements DiscoveryStrategy {
             });
           }
         }
-      } else {
+      } else if (release_download_url_field) {
         // Flat mode: single platform-independent download URL on the release object itself
-        const releaseUrl = release_download_url_field
-          ? str(releaseObj[release_download_url_field])
-          : "";
+        const releaseUrl = str(releaseObj[release_download_url_field]);
         if (!releaseUrl) continue;
 
         const filename = releaseUrl.split("/").at(-1) ?? "";
@@ -173,6 +196,37 @@ export class JsonApiStrategy implements DiscoveryStrategy {
             filename,
             checksum: checksum || undefined,
             checksumType: checksum ? "sha256" : undefined,
+          });
+        }
+      } else {
+        // Template mode: the API carries no artifact data at all, only versions. Each platform
+        // builds its own URL from url_template. filename_template names the stored artifact when
+        // the URL tail is not a usable filename (VS Code's download URLs end in "/stable").
+        for (const platform of config.platforms) {
+          if (!platform.url_template) {
+            log.warn(
+              { version, platform: platformKey(platform) },
+              "json-api template mode: platform missing url_template, skipping",
+            );
+            continue;
+          }
+
+          const vars = {
+            version,
+            os: platform.os_upstream,
+            arch: platform.arch_upstream,
+            ext: platform.extension,
+          };
+          const fileUrl = applyTemplate(platform.url_template, vars);
+          const filename = platform.filename_template
+            ? applyTemplate(platform.filename_template, vars)
+            : (fileUrl.split("/").at(-1) ?? "");
+
+          artifacts.set(platformKey(platform), {
+            url: fileUrl,
+            filename,
+            checksum: undefined,
+            checksumType: undefined,
           });
         }
       }

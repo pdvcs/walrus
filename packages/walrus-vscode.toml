@@ -1,0 +1,104 @@
+name = "vscode"
+display_name = "Visual Studio Code"
+vendor = "Microsoft"
+website = "https://code.visualstudio.com"
+description = "Code editor redefined and optimized for building and debugging modern applications"
+
+# VS Code update API capabilities:
+#   Version list:  GET /api/releases/stable → flat array of version strings, newest first
+#                  ["1.135.0", "1.134.0", "1.133.0", ...] — no objects, no per-release metadata
+#   Download:      GET /{version}/{platform}/stable → 302 to the signed CDN URL for that build.
+#                  Works for historical versions, so the last N releases stay fetchable.
+#   Release date:  not exposed by this API — see [retention] below
+#   Checksum:      not exposed per version — see [checksum] below
+# These are the official Microsoft-branded builds (Microsoft product licence), not VSCodium.
+
+[discovery]
+type = "json-api"
+url = "https://update.code.visualstudio.com/api/releases/stable"
+
+# Version-list mode: releases_path yields bare version strings rather than release objects, so
+# there is no release_version_field and no files_field — each platform's URL comes from its own
+# url_template below.
+releases_path = "$[*]"
+
+[versioning]
+type = "semver"
+# VS Code has no release series: every version is 1.x, there are no maintenance branches, and
+# only the newest build is ever supported. One group holds everything, so retention below is
+# simply "the last 3 releases".
+version_group_extract = "^(\\d+)"
+lts_support = false
+
+[retention]
+versions_per_group = 3
+groups_to_keep = 1
+# The version list carries no release dates, so the embargo anchors on the discovery watermark:
+# the first sync serves all three immediately, and each later release waits 3 days.
+cooling_off_days = 3
+
+[checksum]
+# The update API publishes sha256hash only for the current release
+# (/api/update/{platform}/stable/latest); there is no per-version or sidecar checksum for the
+# older builds retention keeps. Downloads are over HTTPS from Microsoft's CDN, and walrus records
+# the sha256 it computes in flight — it just has no upstream value to compare against.
+type = "none"
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "win32-x64-archive" # the .zip, not the .exe installer
+arch_upstream = "x64"
+extension = "zip"
+url_template = "https://update.code.visualstudio.com/{version}/{os}/stable"
+filename_template = "VSCode-{version}-{os}.{ext}"
+
+[[platforms]]
+os = "windows"
+arch = "arm64"
+os_upstream = "win32-arm64-archive"
+arch_upstream = "arm64"
+extension = "zip"
+url_template = "https://update.code.visualstudio.com/{version}/{os}/stable"
+filename_template = "VSCode-{version}-{os}.{ext}"
+
+[[platforms]]
+os = "macos"
+arch = "x86-64"
+os_upstream = "darwin" # Intel build; the arm64 one is explicitly suffixed
+arch_upstream = "x64"
+extension = "zip"
+url_template = "https://update.code.visualstudio.com/{version}/{os}/stable"
+filename_template = "VSCode-{version}-{os}-{arch}.{ext}"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "darwin-arm64"
+arch_upstream = "arm64"
+extension = "zip"
+url_template = "https://update.code.visualstudio.com/{version}/{os}/stable"
+filename_template = "VSCode-{version}-{os}.{ext}"
+
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "linux-x64"
+arch_upstream = "x64"
+extension = "tar.gz"
+url_template = "https://update.code.visualstudio.com/{version}/{os}/stable"
+filename_template = "VSCode-{version}-{os}.{ext}"
+
+[[platforms]]
+os = "linux"
+arch = "arm64"
+os_upstream = "linux-arm64"
+arch_upstream = "arm64"
+extension = "tar.gz"
+url_template = "https://update.code.visualstudio.com/{version}/{os}/stable"
+filename_template = "VSCode-{version}-{os}.{ext}"
+
+[vulnerabilities]
+# microsoft:visual_studio_code 863 entries (verified 2026-08-27).
+cpes = ["microsoft:visual_studio_code"]
+aliases = ["vscode", "vs code", "visual studio code", "code"]

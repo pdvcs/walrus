@@ -320,3 +320,116 @@ describe("JsonApiStrategy — two-step submode (Adoptium)", () => {
     expect(v21!.isLts).toBe(true);
   });
 });
+
+// ── Version-list submode (VS Code) ──────────────────────────────────────────
+//
+// The upstream returns bare version strings with no per-release metadata, so artifact URLs are
+// built from each platform's url_template and named by filename_template.
+
+const VSCODE_CONFIG: PackageConfig = {
+  name: "vscode",
+  display_name: "Visual Studio Code",
+  vendor: "Microsoft",
+  discovery: {
+    type: "json-api",
+    url: "https://update.code.visualstudio.com/api/releases/stable",
+    releases_path: "$[*]",
+    include_prereleases: false,
+  } as PackageConfig["discovery"],
+  versioning: {
+    type: "semver",
+    version_group_extract: "^(\\d+)",
+    lts_support: false,
+    lts_source: "none",
+  },
+  retention: { versions_per_group: 3, groups_to_keep: 1 },
+  platforms: [
+    {
+      os: "linux",
+      arch: "x86-64",
+      os_upstream: "linux-x64",
+      arch_upstream: "x64",
+      extension: "tar.gz",
+      url_template: "https://update.code.visualstudio.com/{version}/{os}/stable",
+      filename_template: "VSCode-{version}-{os}.{ext}",
+    },
+    {
+      os: "macos",
+      arch: "arm64",
+      os_upstream: "darwin-arm64",
+      arch_upstream: "arm64",
+      extension: "zip",
+      url_template: "https://update.code.visualstudio.com/{version}/{os}/stable",
+      filename_template: "VSCode-{version}-{os}.{ext}",
+    },
+  ],
+};
+
+const MOCK_VSCODE_RESPONSE = ["1.135.0", "1.134.0", "1.133.0"];
+
+function stubFetchJson(payload: unknown) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(payload),
+      text: () => Promise.resolve(""),
+    }),
+  );
+}
+
+describe("JsonApiStrategy — version-list submode (VS Code)", () => {
+  it("treats bare strings in the releases array as versions", async () => {
+    stubFetchJson(MOCK_VSCODE_RESPONSE);
+
+    const strategy = new JsonApiStrategy();
+    const versions = await strategy.discoverVersions(VSCODE_CONFIG);
+
+    expect(versions.map((v) => v.version)).toEqual(["1.135.0", "1.134.0", "1.133.0"]);
+    // VS Code has no release series — every version lands in one group.
+    expect(new Set(versions.map((v) => v.versionGroup))).toEqual(new Set(["1"]));
+  });
+
+  it("builds one artifact per platform from url_template", async () => {
+    stubFetchJson(MOCK_VSCODE_RESPONSE);
+
+    const strategy = new JsonApiStrategy();
+    const versions = await strategy.discoverVersions(VSCODE_CONFIG);
+    const latest = versions.find((v) => v.version === "1.135.0")!;
+
+    expect(latest.artifacts.size).toBe(2);
+    expect(latest.artifacts.get("linux/x86-64")).toMatchObject({
+      url: "https://update.code.visualstudio.com/1.135.0/linux-x64/stable",
+      filename: "VSCode-1.135.0-linux-x64.tar.gz",
+    });
+    expect(latest.artifacts.get("macos/arm64")).toMatchObject({
+      url: "https://update.code.visualstudio.com/1.135.0/darwin-arm64/stable",
+      filename: "VSCode-1.135.0-darwin-arm64.zip",
+    });
+  });
+
+  it("skips platforms with no url_template", async () => {
+    stubFetchJson(MOCK_VSCODE_RESPONSE);
+
+    const config: PackageConfig = {
+      ...VSCODE_CONFIG,
+      platforms: [
+        { ...VSCODE_CONFIG.platforms[0], url_template: undefined },
+        VSCODE_CONFIG.platforms[1],
+      ],
+    };
+
+    const strategy = new JsonApiStrategy();
+    const versions = await strategy.discoverVersions(config);
+
+    expect(versions[0].artifacts.size).toBe(1);
+    expect(versions[0].artifacts.has("macos/arm64")).toBe(true);
+  });
+
+  it("still requires release_version_field when releases are objects", async () => {
+    stubFetchJson([{ version: "1.135.0" }]);
+
+    const strategy = new JsonApiStrategy();
+    await expect(strategy.discoverVersions(VSCODE_CONFIG)).rejects.toThrow(/release_version_field/);
+  });
+});
