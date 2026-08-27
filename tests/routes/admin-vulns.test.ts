@@ -87,9 +87,21 @@ describe("admin vuln explorer + sync (isolated)", () => {
     app.use(
       "/admin/v1",
       createAdminVulnsRouter({
-        startVulnBackfill: async () => {
-          throw new Error("unused");
-        },
+        startVulnBackfill: async () => ({
+          job: {
+            id: 42,
+            status: "queued" as const,
+            since_date: null,
+            cpe_pairs_total: 0,
+            cpe_pairs_done: 0,
+            error_message: null,
+            execution_name: "test:42",
+            started_at: null,
+            finished_at: null,
+            created_at: new Date(),
+            package_name: null,
+          },
+        }),
         getVulnBackfill: async () => null,
         queryVulns: async (product) =>
           product === "asdfgh" ? unresolvedResult() : resolvedResult(),
@@ -113,14 +125,45 @@ describe("admin vuln explorer + sync (isolated)", () => {
     return app;
   }
 
-  it("renders the explorer page (200 text/html) with freshness panel + sync buttons", async () => {
+  it("renders the explorer page (200 text/html) with status strip + sync buttons", async () => {
     const res = await request(buildApp()).get("/admin/v1/vulns");
     expect(res.status).toBe(200);
     expect(res.headers["content-type"]).toMatch(/text\/html/);
     expect(res.text).toMatch(/Vulnerability explorer/);
-    expect(res.text).toMatch(/Data freshness/);
-    expect(res.text).toMatch(/Sync KEV now/);
-    expect(res.text).toMatch(/never attempted/);
+    expect(res.text).toMatch(/Data sources/);
+    expect(res.text).toMatch(/Sync KEV/);
+    // Chips carry data-ts for the client-side relative-time rendering, and the
+    // never-attempted state is a chip class, not prose.
+    expect(res.text).toMatch(/class="src-chip src-never"/);
+    expect(res.text).toMatch(/data-ts=""/);
+    // Lookup form precedes the status strip: the primary task sits first.
+    const formAt = res.text.indexOf('id="product"');
+    const stripAt = res.text.indexOf("status-strip");
+    expect(formAt).toBeGreaterThan(-1);
+    expect(stripAt).toBeGreaterThan(formAt);
+  });
+
+  it("renders failed and succeeded source states as differently-colored chips", async () => {
+    const failure = "2026-07-10T10:00:00.000Z";
+    const res = await request(
+      buildApp({
+        getSyncStatus: async () => ({
+          nvd: {
+            last_attempt: failure,
+            last_success: "2026-07-09T10:00:00.000Z",
+            last_failure: failure,
+            last_ok: false,
+          },
+          kev: { last_attempt: null, last_success: null, last_failure: null, last_ok: null },
+          osv: { last_attempt: null, last_success: null, last_failure: null, last_ok: null },
+          cvss: { last_attempt: null, last_success: null, last_failure: null, last_ok: null },
+        }),
+      }),
+    ).get("/admin/v1/vulns");
+    expect(res.text).toMatch(/class="src-chip src-fail"/);
+    expect(res.text).toMatch(/src-chip src-never/);
+    // Failure detail (absolute timestamp) lives in the tooltip, not the strip text.
+    expect(res.text).toMatch(/last attempt FAILED 2026-07-10 10:00 UTC/);
   });
 
   it("renders the CVSS enrichment panel with Apply locked until a preview runs", async () => {
@@ -182,35 +225,6 @@ describe("admin vuln explorer + sync (isolated)", () => {
     expect(res.body.error).toContain("only supported for the 'cvss' source");
   });
 
-  it("renders a failed latest attempt without advancing displayed freshness", async () => {
-    const success = "2026-07-09T10:00:00.000Z";
-    const failure = "2026-07-10T10:00:00.000Z";
-    const res = await request(
-      buildApp({
-        getDataFreshness: async () => ({
-          nvd_last_sync: success,
-          kev_last_sync: null,
-          osv_last_sync: null,
-          cvss_last_sync: null,
-        }),
-        getSyncStatus: async () => ({
-          nvd: {
-            last_attempt: failure,
-            last_success: success,
-            last_failure: failure,
-            last_ok: false,
-          },
-          kev: { last_attempt: null, last_success: null, last_failure: null, last_ok: null },
-          osv: { last_attempt: null, last_success: null, last_failure: null, last_ok: null },
-          cvss: { last_attempt: null, last_success: null, last_failure: null, last_ok: null },
-        }),
-      }),
-    ).get("/admin/v1/vulns");
-
-    expect(res.text).toContain("2026-07-09 10:00 UTC");
-    expect(res.text).toContain("last attempt failed 2026-07-10 10:00 UTC");
-  });
-
   it("renders a CVE table for a resolved query", async () => {
     const res = await request(buildApp()).get("/admin/v1/vulns?product=openjdk&version=11.0.2");
     expect(res.text).toContain("CVE-2023-0001");
@@ -264,6 +278,59 @@ describe("admin vuln explorer + sync (isolated)", () => {
     expect(html.status).toBe(302);
     const page = await request(app).get(html.headers.location);
     expect(page.text).toContain("kev sync is already running");
+  });
+
+  // WAL-UX: a browser form post to /vuln-backfill used to navigate to a raw JSON body —
+  // a dead end for operators. Browser requests now redirect back with a banner; API
+  // clients keep the 202/409 JSON contract.
+  it("redirects an HTML backfill post back to the explorer with a job banner", async () => {
+    const app = buildApp();
+    const res = await request(app)
+      .post("/admin/v1/vuln-backfill")
+      .set("Accept", "text/html; charset=utf-8");
+    expect(res.status).toBe(303);
+    const location = new URL(res.headers.location, "http://x");
+    expect(location.pathname).toBe("/admin/v1/vulns");
+    expect(location.searchParams.get("backfill_started")).toBeTruthy();
+
+    const page = await request(app).get(res.headers.location);
+    expect(page.text).toMatch(
+      /backfill job <a href="\/admin\/v1\/vuln-backfill\/\d+">#\d+<\/a> queued/,
+    );
+  });
+
+  it("keeps the JSON contract for API backfill posts (202 + status_url)", async () => {
+    const res = await request(buildApp()).post("/admin/v1/vuln-backfill");
+    expect(res.status).toBe(202);
+    expect(res.body.status_url).toMatch(/\/admin\/v1\/vuln-backfill\/\d+/);
+    expect(res.body.job.status).toBe("queued");
+  });
+
+  it("shows a friendly banner when an HTML backfill post hits already-running", async () => {
+    const app = buildApp({
+      startVulnBackfill: async () => ({ alreadyRunning: true }),
+    });
+    const res = await request(app)
+      .post("/admin/v1/vuln-backfill")
+      .set("Accept", "text/html; charset=utf-8");
+    expect(res.status).toBe(303);
+    const page = await request(app).get(res.headers.location);
+    expect(page.text).toContain("backfill is already running");
+  });
+
+  it("surfaces an invalid-since error as a banner for HTML, 400 JSON for API", async () => {
+    const app = buildApp();
+    const html = await request(app)
+      .post("/admin/v1/vuln-backfill")
+      .set("Accept", "text/html; charset=utf-8")
+      .send({ since: "not-a-date" });
+    expect(html.status).toBe(303);
+    const page = await request(app).get(html.headers.location);
+    expect(page.text).toMatch(/since/i);
+
+    const json = await request(app).post("/admin/v1/vuln-backfill").send({ since: "not-a-date" });
+    expect(json.status).toBe(400);
+    expect(json.body.error).toMatch(/since/i);
   });
 });
 

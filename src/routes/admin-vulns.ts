@@ -48,6 +48,7 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
       const version = optionalString(req.query.version);
       const synced = optionalString(req.query.synced);
       const syncError = optionalString(req.query.sync_error);
+      const backfillStarted = optionalString(req.query.backfill_started);
 
       const [freshness, syncStatus] = await Promise.all([
         deps.getDataFreshness(),
@@ -63,6 +64,7 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
           version,
           synced,
           syncError,
+          backfillStarted,
           freshness,
           syncStatus,
           hints,
@@ -154,6 +156,22 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
       const packageName = optionalString(body.package);
       if (since) buildPublicationWindows(since);
       const result = await deps.startVulnBackfill(since, packageName);
+      // Browser form posts get a redirect back to the explorer with a status message —
+      // navigating to a JSON body was a dead end for operators. API clients keep JSON.
+      const wantsHtml = req.headers.accept?.includes("text/html");
+      if (wantsHtml) {
+        if (result.alreadyRunning) {
+          res.redirect(
+            303,
+            `/admin/v1/vulns?sync_error=${encodeURIComponent("A vulnerability backfill is already running")}`,
+          );
+          return;
+        }
+        const params = new URLSearchParams({ backfill_started: String(result.job?.id ?? "") });
+        if (since) params.set("backfill_since", since);
+        res.redirect(303, `/admin/v1/vulns?${params.toString()}`);
+        return;
+      }
       if (result.alreadyRunning)
         return void res
           .status(409)
@@ -172,8 +190,15 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
       if (
         error instanceof Error &&
         (error.message.includes("since") || error.message.includes("No CPE pairs"))
-      )
+      ) {
+        if (req.headers.accept?.includes("text/html")) {
+          return void res.redirect(
+            303,
+            `/admin/v1/vulns?sync_error=${encodeURIComponent(error.message)}`,
+          );
+        }
         return void res.status(400).json({ error: error.message });
+      }
       next(error);
     }
   });
@@ -196,6 +221,7 @@ function renderExplorer(ctx: {
   version?: string;
   synced?: string;
   syncError?: string;
+  backfillStarted?: string;
   freshness: DataFreshness;
   syncStatus: VulnSyncStatus;
   hints: string[];
@@ -209,51 +235,83 @@ function renderExplorer(ctx: {
     .map((h) => `<div class="note note-warn">${renderHint(h)}</div>`)
     .join("");
 
-  const freshnessPanel = `
-    <div class="freshness">
-      <strong>Data freshness</strong>
-      <span>NVD: ${fmtTs(ctx.freshness.nvd_last_sync)} ${fmtSourceStatus(ctx.syncStatus.nvd)}</span>
-      <span>KEV: ${fmtTs(ctx.freshness.kev_last_sync)} ${fmtSourceStatus(ctx.syncStatus.kev)}</span>
-      <span>OSV: ${fmtTs(ctx.freshness.osv_last_sync)} ${fmtSourceStatus(ctx.syncStatus.osv)}</span>
-      <span>CVSS: ${fmtTs(ctx.freshness.cvss_last_sync)} ${fmtSourceStatus(ctx.syncStatus.cvss)}</span>
-      <form method="post" action="/admin/v1/vuln-sync/nvd" style="display:inline"><button class="btn btn-sm btn-secondary">Sync NVD now</button></form>
-      <form method="post" action="/admin/v1/vuln-sync/kev" style="display:inline"><button class="btn btn-sm btn-secondary">Sync KEV now</button></form>
-      <form method="post" action="/admin/v1/vuln-sync/osv" style="display:inline"><button class="btn btn-sm btn-secondary">Sync OSV now</button></form>
-      <form method="post" action="/admin/v1/vuln-backfill" style="display:inline"><button class="btn btn-sm btn-secondary">Start NVD backfill</button></form>
+  // ── Status strip: state chips left, actions right. Two fixed rows — the old single
+  // flex-wrap mixed readouts and buttons at one level and re-wrapped arbitrarily as
+  // timestamps changed length.
+  const sources: Array<{
+    key: string;
+    label: string;
+    ts: string | null;
+    status: VulnSourceStatus;
+  }> = [
+    { key: "nvd", label: "NVD", ts: ctx.freshness.nvd_last_sync, status: ctx.syncStatus.nvd },
+    { key: "kev", label: "KEV", ts: ctx.freshness.kev_last_sync, status: ctx.syncStatus.kev },
+    { key: "osv", label: "OSV", ts: ctx.freshness.osv_last_sync, status: ctx.syncStatus.osv },
+    { key: "cvss", label: "CVSS", ts: ctx.freshness.cvss_last_sync, status: ctx.syncStatus.cvss },
+  ];
+  const sourceChips = sources
+    .map((s) => {
+      const state = chipState(s.status);
+      const tooltip = chipTooltip(s);
+      return `<span class="src-chip src-${state}" title="${esc(tooltip)}">
+        <span class="dot"></span>${esc(s.label)}
+        <span class="src-ts" data-ts="${esc(s.ts ?? "")}">${esc(s.ts ? "…" : "never")}</span>
+      </span>`;
+    })
+    .join("");
+  const statusStrip = `
+    <div class="status-strip">
+      <div class="status-row">
+        <strong>Data sources</strong>
+        <span class="src-chips">${sourceChips}</span>
+        <span class="strip-actions">
+          <form method="post" action="/admin/v1/vuln-sync/nvd"><button class="btn btn-sm btn-secondary">Sync NVD</button></form>
+          <form method="post" action="/admin/v1/vuln-sync/kev"><button class="btn btn-sm btn-secondary">Sync KEV</button></form>
+          <form method="post" action="/admin/v1/vuln-sync/osv"><button class="btn btn-sm btn-secondary">Sync OSV</button></form>
+          <form method="post" action="/admin/v1/vuln-backfill"><button class="btn btn-sm btn-secondary">NVD backfill</button></form>
+        </span>
+      </div>
     </div>`;
 
   // CVSS enrichment is triggerable below rather than by a sync button, because it is the
   // one write that can change what /download serves -- the preview is not a convenience
-  // here, it is the step that makes applying safe.
+  // here, it is the step that makes applying safe. Collapsed by default: rarely used,
+  // and its explanation is long.
   const enrichPanel = `
-    <div class="enrich">
-      <div class="enrich-head">
-        <strong>CVSS enrichment</strong>
-        <span>Fills in severity for CVEs that have none (mostly OSV stubs). Applying can newly
-        satisfy the &ge; 9.0 gate, which makes versions that serve today return 403.
-        Preview first.</span>
+    <details class="enrich-wrap">
+      <summary>CVSS enrichment <span class="summary-hint">fills missing severities; can block versions — preview first</span></summary>
+      <div class="enrich">
+        <div class="enrich-head">
+          <span>Fills in severity for CVEs that have none (mostly OSV stubs). Applying can newly
+          satisfy the &ge; 9.0 gate, which makes versions that serve today return 403.
+          Preview first.</span>
+        </div>
+        <div class="enrich-actions">
+          <label for="cvss-limit">Limit</label>
+          <input id="cvss-limit" type="number" min="1" placeholder="all">
+          <button id="cvss-preview" class="btn btn-sm btn-secondary" type="button">Preview</button>
+          <button id="cvss-apply" class="btn btn-sm btn-danger" type="button" disabled
+            title="Run a preview first">Apply</button>
+        </div>
+        <div id="cvss-out"></div>
       </div>
-      <div class="enrich-actions">
-        <label for="cvss-limit">Limit</label>
-        <input id="cvss-limit" type="number" min="1" placeholder="all">
-        <button id="cvss-preview" class="btn btn-sm btn-secondary" type="button">Preview</button>
-        <button id="cvss-apply" class="btn btn-sm btn-danger" type="button" disabled
-          title="Run a preview first">Apply</button>
-      </div>
-      <div id="cvss-out"></div>
-    </div>`;
+    </details>`;
 
   const syncedBanner = ctx.synced
     ? `<div class="note note-ok">Triggered ${esc(ctx.synced)} sync. Freshness updates once ingestion completes.</div>`
+    : "";
+  const backfillBanner = ctx.backfillStarted
+    ? `<div class="note note-ok">NVD backfill job <a href="/admin/v1/vuln-backfill/${esc(ctx.backfillStarted)}">#${esc(ctx.backfillStarted)}</a> queued — it runs in the background; this page's NVD chip updates when it finishes.</div>`
     : "";
   const syncErrorBanner = ctx.syncError
     ? `<div class="note note-warn">${esc(ctx.syncError)}</div>`
     : "";
 
+  // ── Lookup first: it is the page's primary task; ops panels sit below the fold.
   const form = `
     <form method="get" action="/admin/v1/vulns" class="vform" autocomplete="off">
       <div style="position:relative">
-        <input id="product" name="product" value="${esc(product)}" placeholder="Product or alias (e.g. openjdk, npp)" required>
+        <input id="product" name="product" value="${esc(product)}" placeholder="Product or alias (e.g. openjdk, npp)" required autofocus>
         <div id="ac" class="ac"></div>
       </div>
       <input name="version" value="${esc(version)}" placeholder="Version (optional)">
@@ -266,22 +324,53 @@ function renderExplorer(ctx: {
 
   const body = `
     <h1>Vulnerability explorer</h1>
-    ${hintsBanner}
-    ${freshnessPanel}
-    ${enrichPanel}
-    ${syncedBanner}
     ${syncErrorBanner}
+    ${syncedBanner}
+    ${backfillBanner}
     ${form}
-    ${results}`;
+    <div id="results-anchor">${results}</div>
+    ${hintsBanner}
+    ${statusStrip}
+    ${enrichPanel}`;
 
   const scripts = `
+    // ── Relative timestamps for the source chips ──
+    function relTime(iso) {
+      const then = new Date(iso).getTime();
+      if (isNaN(then)) return null;
+      const mins = Math.round((Date.now() - then) / 60000);
+      if (mins < 1) return 'just now';
+      if (mins < 60) return mins + 'm ago';
+      const hours = Math.round(mins / 60);
+      if (hours < 48) return hours + 'h ago';
+      return Math.round(hours / 24) + 'd ago';
+    }
+    document.querySelectorAll('.src-ts').forEach(el => {
+      const iso = el.getAttribute('data-ts');
+      if (!iso) return;
+      const rel = relTime(iso);
+      if (rel) el.textContent = rel;
+      el.parentElement.title = el.parentElement.title + ' — last success ' + new Date(iso).toISOString();
+    });
+
+    // ── Autocomplete with keyboard navigation ──
     const input = document.getElementById('product');
     const ac = document.getElementById('ac');
-    let timer;
+    let acItems = [];
+    let acIndex = -1;
+    function clearAc() { ac.innerHTML = ''; acItems = []; acIndex = -1; }
+    function highlightAc() {
+      acItems.forEach((el, i) => el.classList.toggle('ac-active', i === acIndex));
+    }
+    function chooseAc(el) {
+      input.value = el.getAttribute('data-slug');
+      clearAc();
+      input.form.submit();
+    }
     input.addEventListener('input', () => {
       clearTimeout(timer);
       const q = input.value.trim();
-      if (q.length < 2) { ac.innerHTML=''; return; }
+      if (q.length < 2) { clearAc(); return; }
       timer = setTimeout(async () => {
         try {
           const r = await fetch('/api/v1/vulns/products/search?q=' + encodeURIComponent(q));
@@ -290,14 +379,81 @@ function renderExplorer(ctx: {
           ac.innerHTML = d.results.map(x =>
             '<div class="ac-item" data-slug="' + x.slug + '">' + x.display_name + ' <span class="ac-slug">' + x.slug + '</span></div>'
           ).join('');
-          ac.querySelectorAll('.ac-item').forEach(el => el.addEventListener('mousedown', () => {
-            input.value = el.getAttribute('data-slug'); ac.innerHTML='';
-          }));
+          acItems = [...ac.querySelectorAll('.ac-item')];
+          acIndex = -1;
+          acItems.forEach(el => el.addEventListener('mousedown', (ev) => { ev.preventDefault(); chooseAc(el); }));
         } catch(e) {}
       }, 150);
     });
-    input.addEventListener('blur', () => setTimeout(() => ac.innerHTML='', 150));
+    input.addEventListener('keydown', (e) => {
+      if (!acItems.length) return;
+      if (e.key === 'ArrowDown') { e.preventDefault(); acIndex = Math.min(acIndex + 1, acItems.length - 1); highlightAc(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); acIndex = Math.max(acIndex - 1, 0); highlightAc(); }
+      else if (e.key === 'Enter' && acIndex >= 0) { e.preventDefault(); chooseAc(acItems[acIndex]); }
+      else if (e.key === 'Escape') { clearAc(); }
+    });
+    input.addEventListener('blur', () => setTimeout(() => clearAc(), 150));
+    let timer;
 
+    // ── Results filter chips (client-side; no pagination machinery) ──
+    const resultsEl = document.getElementById('results-anchor');
+    const resultsTable = resultsEl ? resultsEl.querySelector('table') : null;
+    if (resultsTable) {
+      const rows = [...resultsTable.querySelectorAll('tbody tr')];
+      const total = rows.length;
+      const counts = { all: total, CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, kev: 0 };
+      rows.forEach(tr => {
+        const sevEl = tr.querySelector('[class*="sev-"]');
+        const cls = sevEl ? sevEl.className : '';
+        const m = cls.match(/sev-([A-Z]+)/);
+        if (m && counts[m[1]] !== undefined) counts[m[1]]++;
+        if (tr.querySelector('.badge-kev')) counts.kev++;
+      });
+      if (total > 12) {
+        const bar = document.createElement('div');
+        bar.className = 'filter-bar';
+        const chips = [
+          ['all', 'All (' + total + ')'],
+          ['CRITICAL', 'Critical (' + counts.CRITICAL + ')'],
+          ['HIGH', 'High (' + counts.HIGH + ')'],
+          ['MEDIUM', 'Medium (' + counts.MEDIUM + ')'],
+          ['LOW', 'Low (' + counts.LOW + ')'],
+          ['kev', 'KEV (' + counts.kev + ')'],
+        ];
+        bar.innerHTML = '<span class="filter-label">Show:</span>' + chips.map(([k, label], i) =>
+          '<button type="button" class="filter-chip' + (i === 0 ? ' filter-on' : '') + '" data-filter="' + k + '">' + label + '</button>'
+        ).join('');
+        resultsTable.parentNode.insertBefore(bar, resultsTable);
+        const counter = document.createElement('p');
+        counter.className = 'meta filter-count';
+        bar.parentNode.insertBefore(counter, bar.nextSibling);
+        const shown = document.createElement('span');
+        shown.textContent = 'Showing ' + total + ' of ' + total + ' CVE(s).';
+        counter.appendChild(shown);
+        let active = 'all';
+        bar.addEventListener('click', (e) => {
+          const btn = e.target.closest('.filter-chip');
+          if (!btn) return;
+          active = btn.getAttribute('data-filter');
+          bar.querySelectorAll('.filter-chip').forEach(c => c.classList.toggle('filter-on', c === btn));
+          let visible = 0;
+          rows.forEach(tr => {
+            const sevEl = tr.querySelector('[class*="sev-"]');
+            const m = sevEl ? sevEl.className.match(/sev-([A-Z]+)/) : null;
+            const sev = m ? m[1] : '';
+            const isKev = Boolean(tr.querySelector('.badge-kev'));
+            const show = active === 'all'
+              || (active === 'kev' ? isKev : sev === active);
+            tr.style.display = show ? '' : 'none';
+            if (show) visible++;
+          });
+          shown.textContent = 'Showing ' + visible + ' of ' + total + ' CVE(s)'
+            + (active !== 'all' ? ' — ' + active + ' only' : '') + '.';
+        });
+      }
+    }
+
+    // ── CVSS enrichment preview/apply ──
     const limitEl = document.getElementById('cvss-limit');
     const previewBtn = document.getElementById('cvss-preview');
     const applyBtn = document.getElementById('cvss-apply');
@@ -430,28 +586,48 @@ function renderExplorer(ctx: {
     .vform input { padding:8px 10px; border:1px solid #d1d5db; border-radius:6px; font-size:0.9rem; min-width:280px; }
     .ac { position:absolute; top:100%; left:0; right:0; background:#fff; border:1px solid #e5e7eb; border-radius:6px; z-index:10; box-shadow:0 4px 12px rgba(0,0,0,0.08); }
     .ac-item { padding:6px 10px; cursor:pointer; font-size:0.85rem; }
-    .ac-item:hover { background:#f3f4f6; }
+    .ac-item:hover, .ac-item.ac-active { background:#f3f4f6; }
     .ac-slug { color:#9ca3af; font-size:0.75rem; }
-    .freshness { display:flex; gap:16px; align-items:center; flex-wrap:wrap; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:10px 14px; font-size:0.82rem; color:#6b7280; }
-    .freshness strong { color:#111; }
-    .note { padding:10px 14px; border-radius:8px; margin:12px 0; font-size:0.85rem; }
-    .note-ok { background:#dcfce7; color:#15803d; }
-    .note-warn { background:#fef3c7; color:#92400e; }
-    .note-info { background:#f3f4f6; color:#374151; }
-    .enrich { background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:12px 14px; margin-top:12px; }
-    .enrich-head { display:flex; flex-direction:column; gap:4px; }
-    .enrich-head strong { font-size:0.9rem; color:#111; }
+    .status-strip { background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:10px 14px; margin-top:16px; }
+    .status-row { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+    .status-row strong { font-size:0.82rem; color:#111; }
+    .src-chips { display:flex; gap:8px; flex-wrap:wrap; flex:1; }
+    .src-chip { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:12px; font-size:0.8rem; background:#f3f4f6; color:#374151; }
+    .src-chip .dot { width:8px; height:8px; border-radius:50%; background:#9ca3af; }
+    .src-ok { background:#f0fdf4; color:#166534; }
+    .src-ok .dot { background:#22c55e; }
+    .src-fail { background:#fef2f2; color:#b91c1c; }
+    .src-fail .dot { background:#ef4444; }
+    .src-never { background:#f3f4f6; color:#6b7280; }
+    .src-never .dot { background:#9ca3af; }
+    .src-ts { color:inherit; opacity:0.75; font-size:0.75rem; }
+    .strip-actions { display:flex; gap:8px; flex-wrap:wrap; margin-left:auto; }
+    .enrich-wrap { margin-top:12px; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:10px 14px; }
+    .enrich-wrap summary { cursor:pointer; font-size:0.85rem; font-weight:700; color:#111; }
+    .enrich-wrap .summary-hint { font-weight:400; color:#6b7280; font-size:0.8rem; margin-left:6px; }
+    .enrich { margin-top:10px; }
     .enrich-head span { font-size:0.8rem; color:#6b7280; max-width:70ch; }
     .enrich-actions { display:flex; align-items:center; gap:8px; margin-top:10px; flex-wrap:wrap; }
     .enrich-actions label { font-size:0.8rem; color:#6b7280; }
     .enrich-actions input { padding:4px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:0.8rem; width:90px; }
     .enrich .btn:disabled { opacity:0.5; cursor:not-allowed; }
+    .note { padding:10px 14px; border-radius:8px; margin:12px 0; font-size:0.85rem; }
+    .note-ok { background:#dcfce7; color:#15803d; }
+    .note-warn { background:#fef3c7; color:#92400e; }
+    .note-info { background:#f3f4f6; color:#374151; }
     .blocked { margin:6px 0 0 18px; }
     .blocked li { font-size:0.82rem; }
     .sev-CRITICAL { color:#b91c1c; font-weight:700; }
     .sev-HIGH { color:#c2410c; font-weight:700; }
     .sev-MEDIUM { color:#a16207; }
     .sev-LOW { color:#6b7280; }
+    .filter-bar { display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-top:12px; }
+    .filter-label { font-size:0.8rem; color:#6b7280; }
+    .filter-chip { padding:3px 10px; border-radius:12px; border:1px solid #d1d5db; background:#fff; font-size:0.78rem; cursor:pointer; color:#374151; }
+    .filter-chip:hover { background:#f3f4f6; }
+    .filter-chip.filter-on { background:#1d4ed8; border-color:#1d4ed8; color:#fff; }
+    .filter-count { margin:6px 0 0; }
+    .hist-link { font-size:0.8rem; }
   </style>`;
 
   return renderSharedHtml("Vulnerabilities", "vulns", body, scripts, styleTail);
@@ -475,7 +651,10 @@ function renderResult(r: VulnQueryResult): string {
 
   const header = `<p class="meta">Resolved to <strong>${esc(m.display_name ?? m.product_slug ?? "")}</strong>
     (<code>${esc(m.product_slug ?? "")}</code>, ${esc(m.method ?? "")}, confidence ${m.confidence ?? "—"})
-    · ${r.counts.total} CVE(s)${r.counts.kev > 0 ? ` · <span class="badge badge-kev">${r.counts.kev} KEV</span>` : ""}</p>`;
+    · ${r.counts.total} CVE(s)${r.counts.kev > 0 ? ` · <span class="badge badge-kev">${r.counts.kev} KEV</span>` : ""}
+    · <a class="hist-link" href="/api/v1/packages/${esc(m.product_slug ?? "")}/availability${
+      r.query.version ? `?version=${encodeURIComponent(r.query.version)}` : ""
+    }">availability history</a></p>`;
 
   const warn = r.version_parse_warning
     ? `<div class="note note-warn">${esc(r.version_parse_warning)}</div>`
@@ -524,13 +703,24 @@ function fmtTs(ts: string | null): string {
   return isNaN(d.getTime()) ? "never" : d.toISOString().replace("T", " ").slice(0, 16) + " UTC";
 }
 
-function fmtSourceStatus(status: VulnSourceStatus): string {
-  if (status.last_ok === null) return "(never attempted)";
-  if (status.last_ok) return "(last attempt succeeded)";
-  return `(last attempt failed ${fmtTs(status.last_failure)})`;
-}
-
 function optionalString(value: unknown): string | undefined {
   if (typeof value === "string" && value.length > 0) return value;
   return undefined;
+}
+
+/** Chip state class for one source: ok / fail / never drives the strip's color coding. */
+function chipState(status: VulnSourceStatus): "ok" | "fail" | "never" {
+  if (status.last_ok === null) return "never";
+  return status.last_ok ? "ok" : "fail";
+}
+
+/** Tooltip text: absolute times, because the chip itself stays compact. */
+function chipTooltip(s: { label: string; ts: string | null; status: VulnSourceStatus }): string {
+  if (s.status.last_ok === null) {
+    return `${s.label}: never attempted`;
+  }
+  if (!s.status.last_ok) {
+    return `${s.label}: last attempt FAILED ${fmtTs(s.status.last_failure)} (last success ${fmtTs(s.ts)})`;
+  }
+  return `${s.label}: last sync succeeded ${fmtTs(s.ts)}`;
 }
