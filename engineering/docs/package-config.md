@@ -298,6 +298,40 @@ filename_template = "VSCode-{version}-{os}.{ext}"   # URL tail is "stable", so n
 
 ---
 
+**Platform-map mode** — some APIs key their downloads by platform rather than listing them, so the discriminator is the object key and there is no field to match against (e.g. JetBrains). Declare the shape explicitly with `files_shape`:
+
+```
+GET https://data.services.jetbrains.com/products/releases?code=IIU
+→ { "IIU": [ { "version": "2026.2.1", "date": "2026-08-12",
+               "downloads": {
+                 "windowsZip": { "link": "https://.../idea-2026.2.1.win.zip",
+                                 "size": 1614981679,
+                                 "checksumLink": "https://.../idea-2026.2.1.win.zip.sha256" },
+                 "macM1": { ... }, "linux": { ... }, "windowsJBR8": { ... } } } ] }
+```
+
+```toml
+[discovery]
+files_field = "downloads"
+files_shape = "platform-map"                 # without this, files_field is read as an array
+file_url_field = "link"                      # required; the filename is this URL's tail
+file_checksum_url_field = "checksumLink"     # optional .sha256 sidecar
+file_size_field = "size"                     # optional; verified against the bytes received
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "windowsZip"                   # the key in `downloads`, not a field inside it
+arch_upstream = "x86-64"                     # not consulted; the key encodes the whole platform
+extension = "zip"
+```
+
+Keys with no configured platform are ignored silently; a configured `os_upstream` with no key is logged and skipped. Filenames always come from the URL, never from a template — JetBrains renamed its artifact prefix mid-window (`idea-` vs `ideaIU-`), which no template spans.
+
+The array-shape fields (`file_os_field`, `file_arch_field`, `file_kind_field`, `file_kind_value`, `file_filename_field`, `file_url_base`) are rejected by the schema in this mode rather than ignored, and the three fields above are rejected without it.
+
+---
+
 ### `xml-api`
 
 **When to use:** The version list is served as XML (e.g. Maven Central's `maven-metadata.xml`).

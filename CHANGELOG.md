@@ -145,6 +145,17 @@ New deps: `fuzzball`, `semver` (runtime); `fast-check` (dev). `pg_trgm` extensio
 - **WAL-67 (Changed):** `sync_job_timeout` 3600s → 21600s. A first backfill of an
   IntelliJ-sized package moves 25.8 GB, which does not fit in an hour; the job maximum is 24h.
 
+- **WAL-65 (Added):** A json-api sub-mode for APIs that key their downloads by platform rather
+  than listing them — `files_shape = "platform-map"`. The existing nested-files mode assumes an
+  array with the platform in a field, so a keyed object (JetBrains'
+  `downloads: { windowsZip: …, macM1: … }`) silently yielded zero artifacts. Each
+  `[[platforms]]` entry now selects its download by `os_upstream` matching the key; the URL,
+  its checksum sidecar, and the published byte size come from the value. Filenames are taken
+  from the URL rather than constructed, so an upstream that renames its artifact prefix
+  mid-window is spanned without special-casing. The sub-mode is named rather than inferred from
+  the response shape, and mixing its fields with the array shape's is a schema error rather
+  than a silent no-op.
+
 **Wave 13 — CPE version semantics**
 
 - **WAL-69 (Fixed):** A CPE whose version component is NA (`-`) no longer blocks every version.

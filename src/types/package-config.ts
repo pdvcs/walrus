@@ -24,30 +24,92 @@ const DiscoverySchema = z.discriminatedUnion("type", [
     // where the default of 100 releases causes GitHub API timeouts.
     max_releases: z.number().int().positive().optional(),
   }),
-  z.object({
-    type: z.literal("json-api"),
-    url: z.string().optional(),
-    // Two-step submode
-    explicit_versions: z.array(z.number()).optional(), // alternative to url+versions_path
-    versions_path: z.string().optional(),
-    release_url_template: z.string().optional(),
-    release_download_url_field: z.string().optional(), // field name for download URL in release records
-    release_filename_field: z.string().optional(), // field name for filename in release records
-    release_date_field: z.string().optional(), // field name for release publish date (ISO 8601) in release records
-    // Inline submode
-    releases_path: z.string().optional(),
-    release_version_field: z.string().optional(),
-    tag_pattern: z.string().optional(),
-    files_field: z.string().optional(),
-    file_os_field: z.string().optional(),
-    file_arch_field: z.string().optional(),
-    file_kind_field: z.string().optional(),
-    file_kind_value: z.string().optional(),
-    file_filename_field: z.string().optional(),
-    file_url_base: z.string().optional(),
-    file_checksum_field: z.string().optional(),
-    release_lts_field: z.string().optional(), // field whose truthy string value indicates LTS
-  }),
+  z
+    .object({
+      type: z.literal("json-api"),
+      url: z.string().optional(),
+      // Two-step submode
+      explicit_versions: z.array(z.number()).optional(), // alternative to url+versions_path
+      versions_path: z.string().optional(),
+      release_url_template: z.string().optional(),
+      release_download_url_field: z.string().optional(), // field name for download URL in release records
+      release_filename_field: z.string().optional(), // field name for filename in release records
+      release_date_field: z.string().optional(), // field name for release publish date (ISO 8601) in release records
+      // Inline submode
+      releases_path: z.string().optional(),
+      release_version_field: z.string().optional(),
+      tag_pattern: z.string().optional(),
+      files_field: z.string().optional(),
+      // Shape of whatever `files_field` points at. "array" is every mode that predates this
+      // field and stays the default; "platform-map" says the value is an object whose *keys*
+      // are the platform discriminator, each `[[platforms]]` entry selecting its download by
+      // `os_upstream`. Named rather than inferred: overloading `file_os_field` to mean "or the
+      // key, if the value happens to be an object" is what makes sub-modes hard to tell apart.
+      files_shape: z.enum(["array", "platform-map"]).optional(),
+      file_os_field: z.string().optional(),
+      file_arch_field: z.string().optional(),
+      file_kind_field: z.string().optional(),
+      file_kind_value: z.string().optional(),
+      file_filename_field: z.string().optional(),
+      file_url_base: z.string().optional(),
+      file_checksum_field: z.string().optional(),
+      // platform-map only: fields read from each download object.
+      file_url_field: z.string().optional(), // download URL; the filename comes from its tail
+      file_checksum_url_field: z.string().optional(), // URL of a checksum sidecar
+      file_size_field: z.string().optional(), // byte count, checked against the transfer
+      release_lts_field: z.string().optional(), // field whose truthy string value indicates LTS
+    })
+    .superRefine((discovery, ctx) => {
+      const platformMap = discovery.files_shape === "platform-map";
+
+      if (platformMap && !discovery.files_field) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["files_field"],
+          message: 'files_shape = "platform-map" requires files_field',
+        });
+      }
+      if (platformMap && !discovery.file_url_field) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["file_url_field"],
+          message:
+            'files_shape = "platform-map" requires file_url_field — the download object carries the URL, and the filename is its tail',
+        });
+      }
+
+      // Fields that belong to the array shape and have no meaning against a keyed map. Left
+      // in a config they would be silently ignored, which is the failure this schema exists to
+      // turn into an error.
+      const arrayOnly = [
+        "file_os_field",
+        "file_arch_field",
+        "file_kind_field",
+        "file_kind_value",
+        "file_filename_field",
+        "file_url_base",
+      ] as const;
+      for (const field of arrayOnly) {
+        if (platformMap && discovery[field] !== undefined) {
+          ctx.addIssue({
+            code: "custom",
+            path: [field],
+            message: `${field} has no meaning when files_shape = "platform-map"; the key selects the download`,
+          });
+        }
+      }
+
+      const mapOnly = ["file_url_field", "file_checksum_url_field", "file_size_field"] as const;
+      for (const field of mapOnly) {
+        if (!platformMap && discovery[field] !== undefined) {
+          ctx.addIssue({
+            code: "custom",
+            path: [field],
+            message: `${field} requires files_shape = "platform-map"`,
+          });
+        }
+      }
+    }),
   z.object({
     type: z.literal("directory-listing"),
     url: z.string(),

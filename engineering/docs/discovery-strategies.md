@@ -92,7 +92,7 @@ The `[checksum]` type is `github-asset-digest`, which reads the `digest` field d
 
 **Packages:** `golang`, `nodejs`, `gradle`, `openjdk`, `azuljdk`, `vscode`
 
-This is the most flexible strategy, covering five distinct API shapes through sub-modes selected by the presence or absence of certain config fields.
+This is the most flexible strategy, covering six distinct API shapes through sub-modes selected by the presence or absence of certain config fields — with one exception: the platform-map sub-mode (6) is selected by naming it, because it and sub-mode 2 both read `files_field` and inferring which is meant from the runtime shape of the response would make a typo look like an upstream change.
 
 ### Sub-mode 1: Two-step with `explicit_versions`
 
@@ -197,6 +197,51 @@ Activated when `releases_path` yields strings rather than objects. Each string _
 `filename_template` is honoured here when present, because the URL tail is not always a usable filename. VS Code's download endpoint is `/{version}/{platform}/stable`, which redirects to the real CDN file; deriving the filename from the URL would name every artifact `stable`.
 
 Objects and strings cannot be mixed in one response: an object release without `release_version_field` configured is a config error and throws, rather than being silently skipped.
+
+### Sub-mode 6: Inline with a platform-keyed download map
+
+**Package:** `intellij` (WAL-68)
+
+Sub-mode 2 assumes `files_field` holds an _array_ of file objects, each carrying its platform in a field. JetBrains instead keys downloads by platform, so the discriminator is the object **key** and there is no field to match on:
+
+```
+GET https://data.services.jetbrains.com/products/releases?code=IIU&latest=false&type=release
+→ { "IIU": [
+      { "version": "2026.2.1", "majorVersion": "2026.2", "date": "2026-08-12",
+        "downloads": {
+          "windowsZip": { "link": "https://download.jetbrains.com/idea/idea-2026.2.1.win.zip",
+                          "size": 1614981679,
+                          "checksumLink": "https://.../idea-2026.2.1.win.zip.sha256" },
+          "macM1":      { "link": "...", "size": 1512591157, "checksumLink": "..." },
+          "linux":      { ... }, "windowsJBR8": { ... }, "thirdPartyLibrariesJson": { ... }
+        } } ] }
+```
+
+Selected explicitly with `files_shape = "platform-map"`:
+
+```toml
+[discovery]
+files_field = "downloads"
+files_shape = "platform-map"
+file_url_field = "link"              # required — the filename is this URL's tail
+file_checksum_url_field = "checksumLink"   # optional sidecar
+file_size_field = "size"                   # optional; checked against the transfer
+
+[[platforms]]
+os_upstream = "windowsZip"           # matches the key in `downloads`, not a field in it
+```
+
+Each `[[platforms]]` entry selects its download by `os_upstream` matching a key. `arch_upstream` is not consulted — JetBrains' keys already encode the whole platform (`macM1`, `windowsZipARM64`).
+
+Three properties follow from iterating platforms rather than keys:
+
+- **Keys walrus does not serve are ignored silently.** `linux`, `windowsJBR8` and `thirdPartyLibrariesJson` are never looked at, so they generate no warning noise on every release.
+- **A configured `os_upstream` with no matching key is logged and skipped**, exactly as a missing asset is elsewhere. JetBrains publishes no `windowsZipARM64` in any release, and a config asking for one says so once per release rather than failing the sync.
+- **Filenames are never constructed.** JetBrains renamed its artifact prefix mid-window — `idea-2026.2.1.win.zip` but `ideaIU-2025.2.6.3.win.zip`, both inside one retention window — so no `filename_template` could span the versions retention keeps. The filename is the tail of `link`.
+
+`file_checksum_url_field` yields `checksumUrl` on the artifact, which `DownloadService` already knows how to fetch and parse: plain `.sha256` sidecars, the same path `github-asset` uses. The algorithm comes from `[checksum] algorithm`.
+
+The array-shape fields (`file_os_field`, `file_arch_field`, `file_kind_field`, `file_kind_value`, `file_filename_field`, `file_url_base`) are **schema errors** in this sub-mode rather than being ignored, and `file_url_field` / `file_checksum_url_field` / `file_size_field` are schema errors without it. A config that mixes the two shapes looks correct and silently discovers nothing, which is the failure this rejects up front.
 
 ---
 

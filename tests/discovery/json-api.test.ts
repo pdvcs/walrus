@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { JsonApiStrategy } from "../../src/discovery/json-api.js";
+import { log } from "../../src/common/log.js";
 import { PackageConfig } from "../../src/types/package-config.js";
 
 // ── Inline submode config (Golang) ──────────────────────────────────────────
@@ -431,5 +432,247 @@ describe("JsonApiStrategy — version-list submode (VS Code)", () => {
 
     const strategy = new JsonApiStrategy();
     await expect(strategy.discoverVersions(VSCODE_CONFIG)).rejects.toThrow(/release_version_field/);
+  });
+});
+
+// ── Platform-map submode (JetBrains) ────────────────────────────────────────
+
+/**
+ * The shape the array modes cannot read: downloads keyed by platform, with the discriminator
+ * as the object key rather than a field inside the value. Two releases, deliberately spanning
+ * JetBrains' mid-window rename of the artifact prefix (`ideaIU-` → `idea-`), and carrying keys
+ * walrus does not serve.
+ */
+const MOCK_JETBRAINS_RESPONSE = {
+  IIU: [
+    {
+      version: "2026.2.1",
+      date: "2026-08-12",
+      majorVersion: "2026.2",
+      downloads: {
+        windowsZip: {
+          link: "https://download.jetbrains.com/idea/idea-2026.2.1.win.zip",
+          size: 1614981679,
+          checksumLink: "https://download.jetbrains.com/idea/idea-2026.2.1.win.zip.sha256",
+        },
+        macM1: {
+          link: "https://download.jetbrains.com/idea/idea-2026.2.1-aarch64.dmg",
+          size: 1512591157,
+          checksumLink: "https://download.jetbrains.com/idea/idea-2026.2.1-aarch64.dmg.sha256",
+        },
+        linux: { link: "https://download.jetbrains.com/idea/idea-2026.2.1.tar.gz", size: 1 },
+        windowsJBR8: { link: "https://download.jetbrains.com/idea/idea-2026.2.1-jbr8.win.zip" },
+        thirdPartyLibrariesJson: { link: "https://download.jetbrains.com/idea/libs.json" },
+      },
+    },
+    {
+      version: "2025.2.6.3",
+      date: "2026-07-29",
+      majorVersion: "2025.2",
+      downloads: {
+        windowsZip: {
+          link: "https://download.jetbrains.com/idea/ideaIU-2025.2.6.3.win.zip",
+          size: 1900000000,
+          checksumLink: "https://download.jetbrains.com/idea/ideaIU-2025.2.6.3.win.zip.sha256",
+        },
+        macM1: {
+          link: "https://download.jetbrains.com/idea/ideaIU-2025.2.6.3-aarch64.dmg",
+          size: 1800000000,
+        },
+      },
+    },
+  ],
+};
+
+const JETBRAINS_CONFIG: PackageConfig = {
+  name: "intellij",
+  display_name: "IntelliJ IDEA Ultimate",
+  vendor: "JetBrains",
+  discovery: {
+    type: "json-api",
+    url: "https://data.services.jetbrains.com/products/releases?code=IIU",
+    releases_path: "$.IIU[*]",
+    release_version_field: "version",
+    release_date_field: "date",
+    files_field: "downloads",
+    files_shape: "platform-map",
+    file_url_field: "link",
+    file_checksum_url_field: "checksumLink",
+    file_size_field: "size",
+  },
+  versioning: {
+    type: "calver",
+    version_group_extract: "^(\\d+\\.\\d+)",
+    lts_support: false,
+    lts_source: "none",
+  },
+  retention: { versions_per_group: 2 },
+  checksum: { type: "separate-file", algorithm: "sha256" },
+  platforms: [
+    {
+      os: "windows",
+      arch: "x86-64",
+      os_upstream: "windowsZip",
+      arch_upstream: "x86-64",
+      extension: "zip",
+    },
+    {
+      os: "macos",
+      arch: "arm64",
+      os_upstream: "macM1",
+      arch_upstream: "aarch64",
+      extension: "dmg",
+    },
+  ],
+} as unknown as PackageConfig;
+
+function stubJetBrains(): void {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(MOCK_JETBRAINS_RESPONSE),
+      text: () => Promise.resolve(""),
+    }),
+  );
+}
+
+describe("JsonApiStrategy — platform-map submode (JetBrains)", () => {
+  it("resolves each platform by the download map's key", async () => {
+    stubJetBrains();
+
+    const versions = await new JsonApiStrategy().discoverVersions(JETBRAINS_CONFIG);
+
+    expect(versions.map((v) => v.version)).toEqual(["2026.2.1", "2025.2.6.3"]);
+    const latest = versions[0];
+    expect([...latest.artifacts.keys()].sort()).toEqual(["macos/arm64", "windows/x86-64"]);
+    expect(latest.artifacts.get("windows/x86-64")!.url).toBe(
+      "https://download.jetbrains.com/idea/idea-2026.2.1.win.zip",
+    );
+  });
+
+  it("takes the filename from the link, spanning the mid-window prefix rename", async () => {
+    // idea-2026.2.1.win.zip but ideaIU-2025.2.6.3.win.zip, inside one retention window. No
+    // filename_template spans that, which is why this mode does not construct filenames.
+    stubJetBrains();
+
+    const versions = await new JsonApiStrategy().discoverVersions(JETBRAINS_CONFIG);
+
+    expect(versions[0].artifacts.get("windows/x86-64")!.filename).toBe("idea-2026.2.1.win.zip");
+    expect(versions[1].artifacts.get("windows/x86-64")!.filename).toBe("ideaIU-2025.2.6.3.win.zip");
+  });
+
+  it("carries checksumLink through as a sidecar URL", async () => {
+    stubJetBrains();
+
+    const versions = await new JsonApiStrategy().discoverVersions(JETBRAINS_CONFIG);
+    const artifact = versions[0].artifacts.get("macos/arm64")!;
+
+    expect(artifact.checksumUrl).toBe(
+      "https://download.jetbrains.com/idea/idea-2026.2.1-aarch64.dmg.sha256",
+    );
+    expect(artifact.checksumType).toBe("sha256");
+    expect(artifact.checksum).toBeUndefined();
+  });
+
+  it("leaves the sidecar fields unset when the API omits one", async () => {
+    stubJetBrains();
+
+    const versions = await new JsonApiStrategy().discoverVersions(JETBRAINS_CONFIG);
+    const artifact = versions[1].artifacts.get("macos/arm64")!;
+
+    expect(artifact.checksumUrl).toBeUndefined();
+    expect(artifact.checksumType).toBeUndefined();
+  });
+
+  it("captures the published size so a truncated transfer can be caught", async () => {
+    stubJetBrains();
+
+    const versions = await new JsonApiStrategy().discoverVersions(JETBRAINS_CONFIG);
+
+    expect(versions[0].artifacts.get("windows/x86-64")!.size).toBe(1614981679);
+    expect(versions[0].artifacts.get("macos/arm64")!.size).toBe(1512591157);
+  });
+
+  it("ignores keys walrus does not serve, without warning noise", async () => {
+    // linux, windowsJBR8 and thirdPartyLibrariesJson are all present upstream. Warning about
+    // each of them on every release would drown the warning that matters.
+    stubJetBrains();
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+
+    const versions = await new JsonApiStrategy().discoverVersions(JETBRAINS_CONFIG);
+
+    expect(versions[0].artifacts.size).toBe(2);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("logs and skips a configured platform the API has no key for", async () => {
+    stubJetBrains();
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    const config = {
+      ...JETBRAINS_CONFIG,
+      platforms: [
+        ...JETBRAINS_CONFIG.platforms,
+        {
+          os: "windows",
+          arch: "arm64",
+          os_upstream: "windowsZipARM64", // JetBrains publishes no such build
+          arch_upstream: "aarch64",
+          extension: "zip",
+        },
+      ],
+    } as unknown as PackageConfig;
+
+    const versions = await new JsonApiStrategy().discoverVersions(config);
+
+    expect(versions[0].artifacts.has("windows/arm64")).toBe(false);
+    expect(versions[0].artifacts.size).toBe(2);
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ key: "windowsZipARM64" }),
+      expect.stringContaining("no download under this key"),
+    );
+  });
+
+  it("skips a download object with no URL rather than storing an empty one", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            IIU: [
+              {
+                version: "2026.2.1",
+                date: "2026-08-12",
+                downloads: { windowsZip: { size: 10 }, macM1: { link: "https://e.test/a.dmg" } },
+              },
+            ],
+          }),
+        text: () => Promise.resolve(""),
+      }),
+    );
+    vi.spyOn(log, "warn").mockImplementation(() => undefined);
+
+    const versions = await new JsonApiStrategy().discoverVersions(JETBRAINS_CONFIG);
+
+    expect(versions[0].artifacts.has("windows/x86-64")).toBe(false);
+    expect(versions[0].artifacts.has("macos/arm64")).toBe(true);
+  });
+
+  it("tolerates a release whose downloads field is an array rather than a map", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({ IIU: [{ version: "2026.2.1", date: "2026-08-12", downloads: [] }] }),
+        text: () => Promise.resolve(""),
+      }),
+    );
+    vi.spyOn(log, "warn").mockImplementation(() => undefined);
+
+    const versions = await new JsonApiStrategy().discoverVersions(JETBRAINS_CONFIG);
+
+    expect(versions[0].artifacts.size).toBe(0);
   });
 });

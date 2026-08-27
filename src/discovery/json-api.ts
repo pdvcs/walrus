@@ -11,6 +11,17 @@ import { applyTagPattern, parseVersion, extractVersionGroup } from "../common/ve
 import { log } from "../common/log.js";
 import { fetchJsonWithRetry, fetchWithRetry, HttpRequestError } from "../common/http.js";
 
+/** Narrow an unknown API value to a plain object. */
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** A positive byte count, or undefined when the API did not publish a usable one. */
+function positiveInt(v: unknown): number | undefined {
+  const n = typeof v === "number" ? v : Number(str(v));
+  return Number.isSafeInteger(n) && n > 0 ? n : undefined;
+}
+
 /** Safely coerce an unknown API value to string; returns '' for objects/null/undefined. */
 function str(v: unknown): string {
   if (v === null || v === undefined) return "";
@@ -70,6 +81,7 @@ export class JsonApiStrategy implements DiscoveryStrategy {
       release_download_url_field,
       tag_pattern,
       files_field,
+      files_shape,
       file_os_field,
       file_arch_field,
       file_kind_field,
@@ -77,6 +89,9 @@ export class JsonApiStrategy implements DiscoveryStrategy {
       file_filename_field,
       file_url_base,
       file_checksum_field,
+      file_url_field,
+      file_checksum_url_field,
+      file_size_field,
       release_lts_field,
     } = discovery;
 
@@ -129,7 +144,53 @@ export class JsonApiStrategy implements DiscoveryStrategy {
 
       const artifacts = new Map<PlatformKey, ArtifactInfo>();
 
-      if (files_field) {
+      if (files_field && files_shape === "platform-map") {
+        // Platform-map mode: the release's downloads are an object keyed by platform rather
+        // than an array carrying the platform in a field (e.g. JetBrains'
+        // `downloads: { windowsZip: {...}, macM1: {...} }`). Iterating platforms rather than
+        // keys is what makes an unconfigured key — linux, thirdPartyLibrariesJson, windowsJBR8
+        // — a non-event instead of a warning per release.
+        const downloads = isRecord(releaseObj[files_field]) ? releaseObj[files_field] : {};
+
+        for (const platform of config.platforms) {
+          const entry = downloads[platform.os_upstream];
+          if (!isRecord(entry)) {
+            log.warn(
+              { version, platform: platformKey(platform), key: platform.os_upstream },
+              "json-api platform-map: no download under this key, skipping",
+            );
+            continue;
+          }
+
+          // Guaranteed present by the schema: platform-map requires file_url_field.
+          const fileUrl = file_url_field ? str(entry[file_url_field]) : "";
+          if (!fileUrl) {
+            log.warn(
+              { version, platform: platformKey(platform), field: file_url_field },
+              "json-api platform-map: download object carries no URL, skipping",
+            );
+            continue;
+          }
+
+          // The filename is the URL's own tail, never constructed. JetBrains renamed its
+          // artifact prefix mid-window — idea-2026.2.1.win.zip but ideaIU-2025.2.6.3.win.zip —
+          // so no filename_template can span the versions retention keeps.
+          const filename = fileUrl.split("/").at(-1) ?? "";
+          if (!filename) continue;
+
+          const checksumUrl = file_checksum_url_field
+            ? str(entry[file_checksum_url_field]) || undefined
+            : undefined;
+
+          artifacts.set(platformKey(platform), {
+            url: fileUrl,
+            filename,
+            checksumUrl,
+            checksumType: checksumUrl ? (config.checksum?.algorithm ?? "sha256") : undefined,
+            size: file_size_field ? positiveInt(entry[file_size_field]) : undefined,
+          });
+        }
+      } else if (files_field) {
         // Nested-files mode: each release contains an array of per-platform artifacts
         const rawFiles = releaseObj[files_field];
         const files = Array.isArray(rawFiles) ? (rawFiles as unknown[]) : [];
