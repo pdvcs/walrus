@@ -576,3 +576,54 @@ describe("packages routes", () => {
     });
   });
 });
+
+describe("ranged-transfer metadata (WAL-66)", () => {
+  function depsWithArtifactSize(fileSize: number): PackagesRouteDeps {
+    const deps = baseDeps();
+    deps.getPackage = vi.fn().mockResolvedValue({ name: "idea", enabled: true });
+    deps.listAvailableVersionsInGroup = vi
+      .fn()
+      .mockResolvedValue([{ id: 2, version: "2026.2.1", version_group: "2026.2", is_lts: false }]);
+    deps.listArtifactsForVersion = vi.fn().mockResolvedValue([
+      {
+        id: 20,
+        version_id: 2,
+        os: "windows",
+        arch: "x86-64",
+        filename: "idea.win.zip",
+        gcs_path: "idea/2026.2.1/windows/x86-64/idea.win.zip",
+        file_size: fileSize,
+        checksum: "fff",
+        checksum_type: "sha256",
+        upstream_url: "https://example.test/idea.win.zip",
+        status: "available",
+        error_message: null,
+        download_started_at: null,
+        download_completed_at: null,
+        removed_at: null,
+        created_at: new Date(),
+      },
+    ]);
+    deps.transferLimits = { rangeRequiredBytes: 1_000, suggestedChunkBytes: 100 };
+    return deps;
+  }
+
+  async function requiresRange(fileSize: number): Promise<boolean> {
+    const app = createTestApp(depsWithArtifactSize(fileSize));
+    const response = await request(app).get(
+      "/api/v1/packages/idea/versions/2026.2/latest?os=windows&arch=x86-64",
+    );
+    expect(response.status).toBe(200);
+    return (response.body as { artifact: { requires_range: boolean } }).artifact.requires_range;
+  }
+
+  it("flags an artifact a plain GET could not finish", async () => {
+    // A client is meant to learn this before it starts. The refused GET is the backstop for
+    // clients that did not look, not the primary signal.
+    expect(await requiresRange(1_001)).toBe(true);
+  });
+
+  it("leaves an artifact at or below the threshold unflagged", async () => {
+    expect(await requiresRange(1_000)).toBe(false);
+  });
+});

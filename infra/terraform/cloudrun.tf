@@ -150,6 +150,29 @@ resource "google_cloud_run_v2_job" "sync" {
       containers {
         image   = "${var.region}-docker.pkg.dev/${var.project_id}/walrus/walrus-api:${var.image_tag}"
         command = ["node", "dist/commands/sync-job.js"]
+
+        # Pinned rather than inherited, because two workloads share this job and both scale
+        # with DOWNLOAD_CONCURRENCY = 8.
+        #
+        # Memory: a download streams, so it is flat in artifact size; the resident cost is the
+        # resumable-upload chunk buffer, GCS_UPLOAD_CHUNK_BYTES x DOWNLOAD_CONCURRENCY, both set
+        # below — 32 MiB x 8 = 256 MiB. 2Gi leaves room for Node's heap and for that ceiling to
+        # be raised without a re-plan. Raising either env var without re-reading this is the way
+        # to OOM this job.
+        #
+        # CPU: downloads are IO-bound and would be content with less, but the archive
+        # repackaging transform (WAL-57) is CPU-bound and holds decompress/deflate state per
+        # artifact at ~10-30s of CPU each. Two vCPU is what keeps a bounded number of those
+        # from contending on a single core — the sizing WAL-61 asks for, made once here rather
+        # than by two tickets editing the same lines. WAL-61 still owns bounding transform
+        # concurrency below DOWNLOAD_CONCURRENCY.
+        resources {
+          limits = {
+            cpu    = "2"
+            memory = "2Gi"
+          }
+        }
+
         env {
           name  = "STORAGE_BACKEND"
           value = "gcs"
@@ -161,6 +184,12 @@ resource "google_cloud_run_v2_job" "sync" {
         env {
           name  = "DOWNLOAD_CONCURRENCY"
           value = "8"
+        }
+        # 32 MiB, above the code default: this job pins the memory that pays for it, and larger
+        # chunks mean fewer round trips across a 25.8 GB backfill.
+        env {
+          name  = "GCS_UPLOAD_CHUNK_BYTES"
+          value = "33554432"
         }
         env {
           name = "DATABASE_URL"

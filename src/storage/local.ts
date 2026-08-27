@@ -3,7 +3,7 @@ import fs from "fs/promises";
 import { existsSync, createWriteStream, createReadStream } from "fs";
 import { pipeline } from "stream/promises";
 import { Readable } from "stream";
-import { StorageBackend } from "./types.js";
+import { ByteRange, StorageBackend } from "./types.js";
 
 export class LocalStorageBackend implements StorageBackend {
   constructor(private readonly rootDir: string) {}
@@ -23,8 +23,8 @@ export class LocalStorageBackend implements StorageBackend {
     return fs.readFile(this.resolve(key));
   }
 
-  stream(key: string): Readable {
-    return createReadStream(this.resolve(key));
+  stream(key: string, range?: ByteRange): Readable {
+    return createReadStream(this.resolve(key), range);
   }
 
   async delete(key: string): Promise<void> {

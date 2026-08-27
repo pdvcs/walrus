@@ -428,6 +428,7 @@ export class SyncService {
           expectedChecksum: artifact.checksum,
           checksumUrl: artifact.checksumUrl,
           checksumType: normalizeChecksumType(artifact.checksumType),
+          expectedSize: artifact.size,
         });
       }
     }

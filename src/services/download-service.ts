@@ -4,6 +4,7 @@ import { Pool } from "pg";
 import { updateArtifactStatus } from "../db/queries/artifacts.js";
 import { ArtifactRow } from "../types/db.js";
 import { StorageBackend } from "../storage/types.js";
+import { config } from "../config/index.js";
 
 export type ChecksumAlgorithm = "sha256" | "sha1";
 
@@ -14,6 +15,11 @@ export interface DownloadRequest {
   expectedChecksum?: string;
   checksumUrl?: string; // URL to fetch the expected checksum from (e.g. .sha256 sidecar)
   checksumType?: ChecksumAlgorithm;
+  /**
+   * Byte count the upstream API advertises for this artifact, where it publishes one. Takes
+   * precedence over the response's own `Content-Length`, being the independent number.
+   */
+  expectedSize?: number;
 }
 
 export interface ArtifactStatusRepo {
@@ -22,6 +28,7 @@ export interface ArtifactStatusRepo {
 
 export interface DownloadServiceOptions {
   fetchImpl?: typeof fetch;
+  /** Retries *after* the first attempt. Defaults to `DOWNLOAD_MAX_ATTEMPTS - 1`. */
   maxRetries?: number;
   statusRepo?: ArtifactStatusRepo;
 }
@@ -46,7 +53,7 @@ export class DownloadService {
     opts: DownloadServiceOptions = {},
   ) {
     this.fetchImpl = opts.fetchImpl ?? fetch;
-    this.maxRetries = opts.maxRetries ?? 2;
+    this.maxRetries = opts.maxRetries ?? config.DOWNLOAD_MAX_ATTEMPTS - 1;
     this.statusRepo = opts.statusRepo ?? { updateArtifactStatus };
   }
 
@@ -92,6 +99,18 @@ export class DownloadService {
         nodeStream.pipe(hashTransform);
 
         await this.storage.upload(req.storagePath, hashTransform);
+
+        // A transfer that ends early produces a short object with a perfectly consistent
+        // checksum of the bytes that did arrive, so without this a truncated 1.6 GB artifact
+        // reaches `available` and is served. Compare against whatever size upstream committed
+        // to before the body was read.
+        const advertisedSize = req.expectedSize ?? advertisedContentLength(response);
+        if (advertisedSize !== undefined && advertisedSize !== fileSize) {
+          await this.storage.delete(req.storagePath);
+          throw new Error(
+            `Size mismatch: upstream advertised ${advertisedSize} bytes, received ${fileSize}`,
+          );
+        }
 
         const actualChecksum = hash.digest("hex");
 
@@ -143,6 +162,22 @@ export class DownloadService {
       error: lastError?.message ?? "download failed",
     };
   }
+}
+
+/**
+ * The response's own `Content-Length`, when it describes the bytes the caller will actually
+ * receive. A content-coded response is decoded by `fetch` before we count it, so the header
+ * describes the encoded body and comparing the two would fail every gzipped transfer.
+ */
+function advertisedContentLength(response: Response): number | undefined {
+  const encoding = response.headers.get("content-encoding");
+  if (encoding && encoding.toLowerCase() !== "identity") return undefined;
+
+  const header = response.headers.get("content-length");
+  if (header === null) return undefined;
+
+  const size = Number(header);
+  return Number.isSafeInteger(size) && size >= 0 ? size : undefined;
 }
 
 /** Fetch a checksum sidecar file and extract the first digest-like token from its content. */

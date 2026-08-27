@@ -279,3 +279,349 @@ describe("download routes", () => {
     });
   });
 });
+
+describe("ranged downloads (WAL-66)", () => {
+  const BODY = Buffer.from("0123456789");
+
+  /** Storage that honours the range it is handed, so a test can see what was actually read. */
+  function rangedStorage(body = BODY) {
+    return vi
+      .fn()
+      .mockImplementation((_key: string, range?: { start: number; end: number }) =>
+        Readable.from(range ? body.subarray(range.start, range.end + 1) : body),
+      );
+  }
+
+  function depsForArtifact(
+    overrides: Partial<ReturnType<typeof makeAvailableArtifact>> = {},
+    extra: Partial<DownloadRouteDeps> = {},
+  ): DownloadRouteDeps {
+    const artifact = { ...makeAvailableArtifact(), file_size: BODY.length, ...overrides };
+    return {
+      ...baseDeps(),
+      getVersion: vi.fn().mockResolvedValue({ id: 1, version: "0.10.10" }),
+      getArtifact: vi.fn().mockResolvedValue(artifact),
+      streamFromStorage: rangedStorage(),
+      ...extra,
+    };
+  }
+
+  it("advertises Accept-Ranges and an ETag on a full response", async () => {
+    const app = createTestApp(depsForArtifact());
+
+    const response = await request(app).get("/download/uv/0.10.10/linux/x86-64");
+
+    expect(response.status).toBe(200);
+    expect(response.headers["accept-ranges"]).toBe("bytes");
+    expect(response.headers.etag).toBe('"sha256-abc"');
+  });
+
+  it("returns 206 with Content-Range for an explicit range", async () => {
+    const streamFromStorage = rangedStorage();
+    const app = createTestApp(depsForArtifact({}, { streamFromStorage }));
+
+    const response = await request(app)
+      .get("/download/uv/0.10.10/linux/x86-64")
+      .set("Range", "bytes=2-5")
+      .buffer()
+      .parse((res, cb) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () => cb(null, Buffer.concat(chunks)));
+      });
+
+    expect(response.status).toBe(206);
+    expect(response.headers["content-range"]).toBe("bytes 2-5/10");
+    expect((response.body as Buffer).toString()).toBe("2345");
+    // Only the requested bytes are read from storage — not the whole object with a prefix
+    // thrown away.
+    expect(streamFromStorage).toHaveBeenCalledWith("uv/0.10.10/linux/x86-64/uv.tar.gz", {
+      start: 2,
+      end: 5,
+    });
+  });
+
+  it("handles an open-ended range", async () => {
+    const app = createTestApp(depsForArtifact());
+
+    const response = await request(app)
+      .get("/download/uv/0.10.10/linux/x86-64")
+      .set("Range", "bytes=7-");
+
+    expect(response.status).toBe(206);
+    expect(response.headers["content-range"]).toBe("bytes 7-9/10");
+  });
+
+  it("handles a suffix range", async () => {
+    const app = createTestApp(depsForArtifact());
+
+    const response = await request(app)
+      .get("/download/uv/0.10.10/linux/x86-64")
+      .set("Range", "bytes=-3");
+
+    expect(response.status).toBe(206);
+    expect(response.headers["content-range"]).toBe("bytes 7-9/10");
+  });
+
+  it("clamps a last-byte position past the end rather than failing", async () => {
+    const app = createTestApp(depsForArtifact());
+
+    const response = await request(app)
+      .get("/download/uv/0.10.10/linux/x86-64")
+      .set("Range", "bytes=8-999");
+
+    expect(response.status).toBe(206);
+    expect(response.headers["content-range"]).toBe("bytes 8-9/10");
+  });
+
+  it("omits Content-Length on a 206, as it does on a 200", async () => {
+    // Cloud Run buffers a response that declares Content-Length and caps it at 32 MB, which
+    // would silently limit the chunk size a client may ask for. Content-Range already states
+    // the length.
+    const app = createTestApp(depsForArtifact());
+
+    const ranged = await request(app)
+      .get("/download/uv/0.10.10/linux/x86-64")
+      .set("Range", "bytes=0-1");
+    const full = await request(app).get("/download/uv/0.10.10/linux/x86-64");
+
+    expect(ranged.headers["content-length"]).toBeUndefined();
+    expect(full.headers["content-length"]).toBeUndefined();
+  });
+
+  it("carries the whole-object size and checksum on a 206", async () => {
+    const app = createTestApp(depsForArtifact());
+
+    const response = await request(app)
+      .get("/download/uv/0.10.10/linux/x86-64")
+      .set("Range", "bytes=2-3");
+
+    expect(response.headers["x-content-length"]).toBe("10");
+    expect(response.headers["x-checksum-sha256"]).toBe("abc");
+  });
+
+  it("returns 416 with Content-Range for a range beyond the object", async () => {
+    const app = createTestApp(depsForArtifact());
+
+    const response = await request(app)
+      .get("/download/uv/0.10.10/linux/x86-64")
+      .set("Range", "bytes=100-200");
+
+    expect(response.status).toBe(416);
+    expect(response.headers["content-range"]).toBe("bytes */10");
+  });
+
+  it("returns 416 for a zero-length suffix range", async () => {
+    const app = createTestApp(depsForArtifact());
+
+    const response = await request(app)
+      .get("/download/uv/0.10.10/linux/x86-64")
+      .set("Range", "bytes=-0");
+
+    expect(response.status).toBe(416);
+  });
+
+  it("answers a multi-range request with the full representation", async () => {
+    // RFC 9110 permits this, and it is documented in api-docs.md. Silent mishandling is what
+    // breaks clients; a full 200 does not.
+    const app = createTestApp(depsForArtifact());
+
+    const response = await request(app)
+      .get("/download/uv/0.10.10/linux/x86-64")
+      .set("Range", "bytes=0-1,4-5");
+
+    expect(response.status).toBe(200);
+  });
+
+  it("ignores a range unit it does not recognise", async () => {
+    const app = createTestApp(depsForArtifact());
+
+    const response = await request(app)
+      .get("/download/uv/0.10.10/linux/x86-64")
+      .set("Range", "items=0-1");
+
+    expect(response.status).toBe(200);
+  });
+
+  describe("If-Range", () => {
+    it("honours the range when the validator matches", async () => {
+      const app = createTestApp(depsForArtifact());
+
+      const response = await request(app)
+        .get("/download/uv/0.10.10/linux/x86-64")
+        .set("Range", "bytes=2-5")
+        .set("If-Range", '"sha256-abc"');
+
+      expect(response.status).toBe(206);
+    });
+
+    it("falls back to a full 200 when the artifact has been replaced", async () => {
+      // The reachable case: a re-synced artifact overwrites the same key, and a client
+      // resuming across that would splice two different builds into one corrupt archive.
+      const app = createTestApp(depsForArtifact());
+
+      const response = await request(app)
+        .get("/download/uv/0.10.10/linux/x86-64")
+        .set("Range", "bytes=2-5")
+        .set("If-Range", '"sha256-an-older-build"');
+
+      expect(response.status).toBe(200);
+      expect(response.headers["content-range"]).toBeUndefined();
+    });
+
+    it("derives a validator from the write timestamp when there is no checksum", async () => {
+      const completedAt = new Date("2026-08-27T10:00:00Z");
+      const app = createTestApp(
+        depsForArtifact({
+          checksum: null,
+          checksum_type: null,
+          download_completed_at: completedAt,
+        }),
+      );
+
+      const response = await request(app).get("/download/uv/0.10.10/linux/x86-64");
+
+      expect(response.headers.etag).toBe(`"10-10-${completedAt.getTime()}"`);
+    });
+  });
+
+  describe("the two-tier size policy", () => {
+    const limits = { rangeRequiredBytes: 8, suggestedChunkBytes: 4 };
+
+    it("serves an unranged GET below the threshold exactly as before", async () => {
+      const app = createTestApp(depsForArtifact({ file_size: 8 }, { transferLimits: limits }));
+
+      const response = await request(app)
+        .get("/download/uv/0.10.10/linux/x86-64")
+        .buffer()
+        .parse((res, cb) => {
+          const chunks: Buffer[] = [];
+          res.on("data", (c: Buffer) => chunks.push(c));
+          res.on("end", () => cb(null, Buffer.concat(chunks)));
+        });
+
+      expect(response.status).toBe(200);
+      expect((response.body as Buffer).toString()).toBe("0123456789");
+      expect(response.headers["content-disposition"]).toBe('attachment; filename="uv.tar.gz"');
+      expect(response.headers["content-length"]).toBeUndefined();
+    });
+
+    it("refuses an unranged GET above the threshold instead of serving it", async () => {
+      const streamFromStorage = rangedStorage();
+      const app = createTestApp(
+        depsForArtifact({ file_size: 9 }, { transferLimits: limits, streamFromStorage }),
+      );
+
+      const response = await request(app).get("/download/uv/0.10.10/linux/x86-64");
+      const body = response.body as {
+        code: string;
+        file_size: number;
+        range_required_above_bytes: number;
+        suggested_chunk_bytes: number;
+      };
+
+      expect(response.status).toBe(400);
+      expect(body.code).toBe("range_required");
+      expect(body.file_size).toBe(9);
+      expect(body.range_required_above_bytes).toBe(8);
+      expect(body.suggested_chunk_bytes).toBe(4);
+      // Refused before a byte is read, not after an hour of doomed transfer.
+      expect(streamFromStorage).not.toHaveBeenCalled();
+      expect(response.headers["accept-ranges"]).toBe("bytes");
+    });
+
+    it("serves a ranged GET above the threshold", async () => {
+      const app = createTestApp(depsForArtifact({ file_size: 9 }, { transferLimits: limits }));
+
+      const response = await request(app)
+        .get("/download/uv/0.10.10/linux/x86-64")
+        .set("Range", "bytes=0-3");
+
+      expect(response.status).toBe(206);
+      expect(response.headers["content-range"]).toBe("bytes 0-3/9");
+    });
+
+    it("keys on the request, never on who is asking", async () => {
+      // A User-Agent allowlist would make our own package manager a privileged client and
+      // leave the next consumer — a CI job with plain curl — silently broken.
+      const app = createTestApp(depsForArtifact({ file_size: 9 }, { transferLimits: limits }));
+
+      const response = await request(app)
+        .get("/download/uv/0.10.10/linux/x86-64")
+        .set("User-Agent", "walrus-package-manager/1.0");
+
+      expect(response.status).toBe(400);
+    });
+
+    it("refuses a multi-range request above the threshold too", async () => {
+      // It resolves to a whole-object transfer, and the ceiling applies to those whatever
+      // header asked for it.
+      const app = createTestApp(depsForArtifact({ file_size: 9 }, { transferLimits: limits }));
+
+      const response = await request(app)
+        .get("/download/uv/0.10.10/linux/x86-64")
+        .set("Range", "bytes=0-1,4-5");
+
+      expect(response.status).toBe(400);
+    });
+  });
+
+  describe("gates apply to ranged requests (AC13)", () => {
+    it("refuses a range for a version blocked by a critical CVE", async () => {
+      const streamFromStorage = rangedStorage();
+      const deps: DownloadRouteDeps = {
+        ...depsForArtifact({}, { streamFromStorage }),
+        listAffectsForPackage: vi.fn().mockResolvedValue([
+          {
+            cve_id: "CVE-2026-0001",
+            package_name: "uv",
+            version_start_including: null,
+            version_end_excluding: null,
+            version_start_excluding: null,
+            version_end_including: null,
+            exact_version: "0.10.10",
+            version_is_na: false,
+            source: "nvd",
+            severity: "CRITICAL",
+            cvss_v3_score: "9.8",
+            description: null,
+            is_kev: false,
+            raw: null,
+          },
+        ]),
+      };
+      const app = createTestApp(deps);
+
+      const response = await request(app)
+        .get("/download/uv/0.10.10/linux/x86-64")
+        .set("Range", "bytes=0-1");
+
+      expect(response.status).toBe(403);
+      expect(streamFromStorage).not.toHaveBeenCalled();
+    });
+
+    it("refuses a range for an artifact that is not available", async () => {
+      const app = createTestApp(depsForArtifact({ status: "failed" }));
+
+      const response = await request(app)
+        .get("/download/uv/0.10.10/linux/x86-64")
+        .set("Range", "bytes=0-1");
+
+      expect(response.status).toBe(404);
+    });
+
+    it("refuses a range for an artifact inside its cooling-off window", async () => {
+      const deps = depsForArtifact();
+      deps.getArtifact = vi
+        .fn()
+        .mockResolvedValue(makeCoolingOffArtifact(new Date(Date.now() + 86_400_000)));
+      const app = createTestApp(deps);
+
+      const response = await request(app)
+        .get("/download/uv/0.10.10/linux/x86-64")
+        .set("Range", "bytes=0-1");
+
+      expect(response.status).toBe(423);
+    });
+  });
+});

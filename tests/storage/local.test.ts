@@ -43,6 +43,37 @@ describe("LocalStorageBackend", () => {
     expect(artifactPath).toBe("golang/1.24.1/linux/x86-64/go1.24.1.linux-amd64.tar.gz");
   });
 
+  describe("ranged reads (WAL-66)", () => {
+    const key = "ranged/1.0.0/linux/x86-64/blob.bin";
+    const body = "0123456789";
+
+    beforeAll(async () => {
+      await new LocalStorageBackend(ROOT).upload(key, Readable.from(Buffer.from(body)));
+    });
+
+    async function read(range?: { start: number; end: number }): Promise<string> {
+      const chunks: Buffer[] = [];
+      for await (const chunk of new LocalStorageBackend(ROOT).stream(key, range)) {
+        chunks.push(Buffer.from(chunk as Buffer));
+      }
+      return Buffer.concat(chunks).toString();
+    }
+
+    it("returns only the requested bytes", async () => {
+      expect(await read({ start: 2, end: 5 })).toBe("2345");
+    });
+
+    it("includes both boundaries — end is the last byte, not one past it", async () => {
+      expect(await read({ start: 0, end: 0 })).toBe("0");
+      expect(await read({ start: 9, end: 9 })).toBe("9");
+      expect(await read({ start: 0, end: 9 })).toBe(body);
+    });
+
+    it("returns the whole object when no range is given", async () => {
+      expect(await read()).toBe(body);
+    });
+  });
+
   it("auto-creates missing directories on upload", async () => {
     const storage = new LocalStorageBackend(ROOT);
     const key = "nested/pkg/1.0.0/macos/arm64/bin.zip";

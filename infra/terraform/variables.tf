@@ -79,10 +79,15 @@ variable "vuln_backfill_auto_schedule" {
   default     = "50 6 * * *"
 }
 
+# 3600s was a default nobody had revisited, and it does not survive a first backfill: onboarding
+# IntelliJ alone transfers 25.8 GB across 16 artifacts, which at 8 concurrent streams and a
+# conservative 50 Mbps aggregate is over an hour before any other package is touched. 6h leaves
+# room for a slow upstream without approaching the 24h job maximum. Steady-state incremental
+# syncs are minutes, so this bounds only the pathological run.
 variable "sync_job_timeout" {
   description = "Max duration for one walrus-sync Cloud Run Job execution"
   type        = string
-  default     = "3600s"
+  default     = "21600s"
 }
 
 variable "sql_deletion_protection" {

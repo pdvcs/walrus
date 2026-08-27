@@ -20,6 +20,14 @@ function makeResponse(body: string, ok = true, status = 200): Response {
   return new Response(Buffer.from(body), { status, statusText: ok ? "OK" : "ERR" });
 }
 
+/** A response that advertises a size, the way a real upstream does. */
+function makeSizedResponse(body: string, advertised: number, headers: HeadersInit = {}): Response {
+  return new Response(Buffer.from(body), {
+    status: 200,
+    headers: { "content-length": String(advertised), ...headers },
+  });
+}
+
 describe("DownloadService", () => {
   it("downloads, verifies checksum, uploads, and marks available", async () => {
     const storage: StorageBackend = {
@@ -279,5 +287,130 @@ describe("DownloadService", () => {
 
     expect(result.status).toBe("failed");
     expect(result.error).toMatch(/network reset/);
+  });
+
+  describe("size verification (WAL-67)", () => {
+    function harness() {
+      const storage: StorageBackend = {
+        upload: makeUploadMock(),
+        download: vi.fn(),
+        delete: vi.fn().mockResolvedValue(undefined),
+        exists: vi.fn(),
+      };
+      const statusRepo = { updateArtifactStatus: vi.fn().mockResolvedValue(null) };
+      return { storage, statusRepo };
+    }
+
+    it("fails a truncated transfer rather than marking it available", async () => {
+      // The bytes that did arrive hash perfectly well, so the checksum alone cannot catch this
+      // unless upstream published a digest — which is exactly when truncation goes unnoticed.
+      const { storage, statusRepo } = harness();
+      const fetchImpl = vi.fn().mockResolvedValue(makeSizedResponse("short", 5_000_000));
+
+      const service = new DownloadService({} as Pool, storage, {
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        statusRepo,
+        maxRetries: 0,
+      });
+
+      const result = await service.downloadArtifact({
+        artifactId: 1,
+        upstreamUrl: "https://example.test/big.zip",
+        storagePath: "p/1/os/arch/big.zip",
+      });
+
+      expect(result.status).toBe("failed");
+      expect(result.error).toMatch(/advertised 5000000 bytes, received 5/);
+      expect(storage.delete).toHaveBeenCalledWith("p/1/os/arch/big.zip");
+      const statuses = statusRepo.updateArtifactStatus.mock.calls.map((c) => c[2].status);
+      expect(statuses).not.toContain("available");
+    });
+
+    it("prefers the size the upstream API published over the response header", async () => {
+      const { storage, statusRepo } = harness();
+      // Header agrees with the body; the API's own number does not, and wins.
+      const fetchImpl = vi.fn().mockResolvedValue(makeSizedResponse("twelve bytes", 12));
+
+      const service = new DownloadService({} as Pool, storage, {
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        statusRepo,
+        maxRetries: 0,
+      });
+
+      const result = await service.downloadArtifact({
+        artifactId: 2,
+        upstreamUrl: "https://example.test/f",
+        storagePath: "p/2/os/arch/f",
+        expectedSize: 999,
+      });
+
+      expect(result.status).toBe("failed");
+      expect(result.error).toMatch(/advertised 999 bytes, received 12/);
+    });
+
+    it("accepts a transfer whose length matches", async () => {
+      const { storage, statusRepo } = harness();
+      const body = "exactly-this";
+      const fetchImpl = vi.fn().mockResolvedValue(makeSizedResponse(body, body.length));
+
+      const service = new DownloadService({} as Pool, storage, {
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        statusRepo,
+      });
+
+      const result = await service.downloadArtifact({
+        artifactId: 3,
+        upstreamUrl: "https://example.test/f",
+        storagePath: "p/3/os/arch/f",
+        expectedSize: body.length,
+      });
+
+      expect(result.status).toBe("available");
+      expect(result.fileSize).toBe(body.length);
+      expect(storage.delete).not.toHaveBeenCalled();
+    });
+
+    it("does not compare against Content-Length on a content-coded response", async () => {
+      // fetch decodes the body before we count it, so the header describes the compressed
+      // bytes; comparing the two would fail every gzipped transfer.
+      const { storage, statusRepo } = harness();
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValue(makeSizedResponse("decoded-body", 4, { "content-encoding": "gzip" }));
+
+      const service = new DownloadService({} as Pool, storage, {
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        statusRepo,
+      });
+
+      const result = await service.downloadArtifact({
+        artifactId: 4,
+        upstreamUrl: "https://example.test/f",
+        storagePath: "p/4/os/arch/f",
+      });
+
+      expect(result.status).toBe("available");
+    });
+
+    it("makes two whole-transfer attempts by default, not three", async () => {
+      // An attempt can be 1.6 GB now, and the GCS half retries its own chunks, so the outer
+      // loop only re-covers the upstream fetch. The next scheduled sync is the third attempt.
+      const { storage, statusRepo } = harness();
+      const fetchImpl = vi.fn().mockRejectedValue(new Error("network"));
+
+      const service = new DownloadService({} as Pool, storage, {
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        statusRepo,
+      });
+
+      const result = await service.downloadArtifact({
+        artifactId: 5,
+        upstreamUrl: "https://example.test/f",
+        storagePath: "p/5/os/arch/f",
+      });
+
+      expect(result.status).toBe("failed");
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    });
   });
 });

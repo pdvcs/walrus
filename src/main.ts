@@ -356,7 +356,7 @@ export function createApp(): express.Express {
       getPackageRow: (packageName) => getPackage(pool, packageName),
       listAffectsForPackage: (packageName) => listAffectsWithCveForPackage(pool, packageName),
       getArtifact: (versionId, os, arch) => getArtifact(pool, versionId, os, arch),
-      streamFromStorage: (key) => storage.stream(key),
+      streamFromStorage: (key, range) => storage.stream(key, range),
     }),
   );
 

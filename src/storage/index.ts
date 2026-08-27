@@ -8,7 +8,7 @@ export function createStorageBackend(): StorageBackend {
     if (!config.GCS_BUCKET) {
       throw new Error("GCS_BUCKET is required when STORAGE_BACKEND=gcs");
     }
-    return new GcsStorageBackend(config.GCS_BUCKET);
+    return new GcsStorageBackend(config.GCS_BUCKET, { chunkSize: config.GCS_UPLOAD_CHUNK_BYTES });
   }
 
   return new LocalStorageBackend(config.LOCAL_STORAGE_PATH);

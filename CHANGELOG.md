@@ -116,6 +116,35 @@ New deps: `fuzzball`, `semver` (runtime); `fast-check` (dev). `pg_trgm` extensio
   production to run a fixup from, so a change to the algorithm would otherwise leave old rows
   keyed by the retired scheme indefinitely.
 
+- **WAL-66 (Added):** Artifact downloads support `Range`. A single range — explicit,
+  open-ended, or suffix — returns `206` with `Content-Range`, reading only those bytes from
+  storage rather than the whole object; an unsatisfiable range returns `416`. `Accept-Ranges`
+  and an `ETag` are advertised, and `If-Range` is honoured, so a client resuming against an
+  artifact that has been re-synced gets a full `200` and starts over instead of splicing two
+  builds into one corrupt archive. Multi-range requests are answered with the full
+  representation, as RFC 9110 permits. `X-Checksum-*` still describes the whole artifact:
+  verify after reassembly, not per chunk.
+- **WAL-66 (Changed):** An unranged `GET` of an artifact above `RANGE_REQUIRED_BYTES` (1 GB by
+  default) is now refused with `400` and `code: "range_required"` rather than served. Cloud
+  Run's 3600s request deadline is not raisable, and at that size a single request cannot finish
+  for any client under a few Mbps — "degrading gracefully" would mean an hour of doomed
+  transfer and no partial result. Below the threshold nothing changes, which is every package
+  walrus serves today. Artifact metadata carries `requires_range` so a client can tell before
+  it starts.
+- **WAL-67 (Changed):** GCS uploads set an explicit chunk size, which is what puts the client
+  in resumable multi-chunk mode — previously a blip at 1.5 GB of a 1.6 GB upload discarded the
+  whole transfer. The default is the value that is safe in an unpinned container (8 MiB); the
+  sync job raises it to 32 MiB alongside the CPU and memory it now pins. Whole-transfer
+  attempts drop from three to two: the storage half retries its own chunks now, so an outer
+  restart only re-covers the upstream fetch.
+- **WAL-67 (Fixed):** A truncated download is no longer marked `available`. The digest of the
+  bytes that did arrive is perfectly self-consistent, so the checksum could not catch it; the
+  received byte count is now compared against the size upstream advertises — the API's own
+  number where it publishes one, otherwise `Content-Length` — and the object is deleted on a
+  mismatch.
+- **WAL-67 (Changed):** `sync_job_timeout` 3600s → 21600s. A first backfill of an
+  IntelliJ-sized package moves 25.8 GB, which does not fit in an hour; the job maximum is 24h.
+
 **Wave 13 — CPE version semantics**
 
 - **WAL-69 (Fixed):** A CPE whose version component is NA (`-`) no longer blocks every version.

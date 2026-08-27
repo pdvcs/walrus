@@ -176,10 +176,15 @@ Example: [openjdk group 21, linux/x86-64](/api/v1/packages/openjdk/versions/21/l
     "file_size": 207109699,
     "checksum": "abc123...",
     "checksum_type": "sha256",
-    "download_url": "/download/openjdk/21.0.3/linux/x86-64"
+    "download_url": "/download/openjdk/21.0.3/linux/x86-64",
+    "requires_range": false
   }
 }
 ```
+
+`requires_range` is `true` when the artifact is too large to fetch in one request and an
+unranged `GET` of it will be refused — see [range requests](#range-requests). Check it before
+starting a download rather than discovering it from a `400`.
 
 **Status codes**
 
@@ -198,21 +203,100 @@ Downloads are refused when the requested version concretely matches a known crit
 (any CVSS base score — v3, v4, or v2 — >= 9.0, or a score-less CVE labeled CRITICAL).
 CVEs known to be exploited in the wild (CISA KEV) are flagged but do not block on their own.
 
-**Response headers** `200`
+**Response headers** `200` and `206`
 
-| Header              | Description                         |
-| ------------------- | ----------------------------------- |
-| Content-Disposition | `attachment; filename="<filename>"` |
-| X-Content-Length    | File size in bytes                  |
-| X-Checksum-Sha256   | SHA-256 checksum (when available)   |
-| X-Checksum-Sha1     | SHA-1 checksum (when available)     |
+| Header              | Description                                                      |
+| ------------------- | ---------------------------------------------------------------- |
+| Content-Disposition | `attachment; filename="<filename>"`                              |
+| Accept-Ranges       | `bytes`                                                          |
+| ETag                | Validator for `If-Range`; changes when the artifact is re-synced |
+| X-Content-Length    | Size of the **whole** artifact in bytes, on `206` as well        |
+| X-Checksum-Sha256   | SHA-256 of the **whole** artifact (when available)               |
+| X-Checksum-Sha1     | SHA-1 of the **whole** artifact (when available)                 |
+| Content-Range       | `206` only: `bytes <start>-<end>/<total>`                        |
+
+Neither a `200` nor a `206` carries `Content-Length`. Cloud Run buffers a response that declares
+one and caps it at 32 MB, so declaring it would silently limit the chunk size a client may ask
+for. On a `206`, `Content-Range` already states exactly how many bytes the response carries.
+
+`X-Checksum-*` always describes the whole artifact, never the bytes of one chunk. **Verify after
+reassembly, not per chunk.**
 
 **Status codes**
 
 - `200` — binary stream
+- `206` — partial content, in response to a `Range` request
+- `400` — artifact is over the ranged-transfer threshold and the request was not ranged (see below)
 - `403` — version is blocked due to a known critical vulnerability
 - `404` — artifact not found or not available; also when the package is disabled or removed (its TOML no longer exists)
+- `416` + `Content-Range: bytes */<size>` — the requested range lies outside the artifact
 - `423` + `Retry-After` — artifact is within the cooling-off period; body includes `available_at`
+
+Every one of these gates applies identically to a ranged request. There is no path that serves
+part of an artifact that a full `GET` would have refused.
+
+#### Range requests
+
+Standard `Range: bytes=…`, in the three single-range forms:
+
+| Request               | Meaning                     |
+| --------------------- | --------------------------- |
+| `bytes=<start>-<end>` | Those bytes, both inclusive |
+| `bytes=<start>-`      | From `start` to the end     |
+| `bytes=-<n>`          | The last `n` bytes          |
+
+A `<end>` past the end of the artifact is clamped rather than rejected. Only the requested bytes
+are read from storage.
+
+**Multi-range requests** (`bytes=0-1,8-9`) are **not** served as `multipart/byteranges`. Walrus
+answers them with the full representation, which RFC 9110 permits. A range unit other than
+`bytes` is ignored, likewise yielding the full representation.
+
+`If-Range` is honoured against the `ETag`. If it does not match — because the artifact was
+re-synced and the object at that key changed — walrus returns a full `200` instead of a `206`,
+so a resumed download can never splice two different builds into one corrupt archive. An
+`If-Range` in HTTP-date form is treated as a mismatch.
+
+The server is indifferent to chunk size. Nothing in this contract fixes one.
+
+#### Artifacts that require ranged transfer
+
+A request has a hard 3600s deadline that cannot be raised. Past a certain size a single-request
+download is not a slower path but one that cannot finish: a client sustaining 2 Mbps transfers
+about 900 MB before the request is killed, leaving nothing to resume from. Above a configured
+threshold (`RANGE_REQUIRED_BYTES`, 1 GB by default) walrus therefore **refuses** an unranged
+`GET` rather than serving an hour of doomed transfer:
+
+```http
+GET /download/intellij/2026.2.1/windows/x86-64
+```
+
+```json
+HTTP/1.1 400 Bad Request
+Accept-Ranges: bytes
+
+{
+  "error": "Artifact is too large to transfer in one request; retry with a Range header. A single request cannot complete inside the 3600s server deadline at this size.",
+  "code": "range_required",
+  "file_size": 1729000000,
+  "range_required_above_bytes": 1000000000,
+  "suggested_chunk_bytes": 33554432
+}
+```
+
+`400` is a deliberate choice: no status code means "you must use `Range`" — `416` is for a range
+that cannot be satisfied and `428` is about lost updates — so the requirement is carried by the
+`code` field, which will not change. `suggested_chunk_bytes` is a hint, not a constraint.
+
+Below the threshold nothing changes: a plain `GET` behaves exactly as it always has, and ranged
+transfer is a pure optimisation. Today every package walrus serves is below it.
+
+Whether an artifact is above the threshold is published in its metadata as `requires_range` (see
+`GET /api/v1/packages/:name/versions/:group/latest`), so a client can decide before it starts
+downloading. The refusal is the backstop for clients that did not look.
+
+The requirement keys on the request, never on the client: there is no `User-Agent` allowlist and
+no privileged consumer.
 
 ---
 

@@ -97,6 +97,11 @@ export const ArtifactSchema = z
     checksum: z.string().nullable().optional(),
     checksum_type: z.string().nullable().optional().openapi({ example: "sha256" }),
     download_url: z.string(),
+    requires_range: z.boolean().openapi({
+      description:
+        "Whether this artifact can only be fetched with a `Range` request. An unranged GET of one is refused with 400 `range_required` rather than served, because a single request cannot complete inside the 3600s server deadline at this size. Published here so a client decides before it starts downloading.",
+      example: false,
+    }),
   })
   .openapi("Artifact");
 

@@ -8,6 +8,12 @@ export interface ArtifactInfo {
   checksum?: string; // actual hex digest (known at discovery time, e.g. inline-api)
   checksumUrl?: string; // URL to fetch the digest from (e.g. github-asset .sha256 file)
   checksumType?: string;
+  /**
+   * Byte count the upstream API publishes for this artifact, where it publishes one. Carried
+   * so the download can reject a truncated transfer against an independent number rather than
+   * only the response's own `Content-Length`.
+   */
+  size?: number;
 }
 
 export interface DiscoveredVersion {

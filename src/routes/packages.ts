@@ -6,6 +6,7 @@ import {
   GroupVersionInput,
   summarizeGroupsWithVulnGate,
 } from "../services/vuln-service.js";
+import { requiresRangedTransfer, TransferLimits } from "../services/transfer-policy.js";
 import {
   CoolingOffErrorSchema,
   LatestArtifactResponseSchema,
@@ -41,6 +42,8 @@ export interface PackagesRouteDeps {
   listArtifactsForVersion: (versionId: number) => Promise<ArtifactRow[]>;
   getRecentSyncJob: (packageName: string, withinMinutes: number) => Promise<SyncJobRow | null>;
   triggerOnDemandSync: (packageName: string) => Promise<void>;
+  /** Defaults to the configured limits; injected so tests can drive the threshold. */
+  transferLimits?: TransferLimits;
 }
 
 export function createPackagesRouter(deps: PackagesRouteDeps): Router {
@@ -256,6 +259,7 @@ export function createPackagesRouter(deps: PackagesRouteDeps): Router {
             checksum: artifact.checksum,
             checksum_type: artifact.checksum_type,
             download_url: `/download/${packageName}/${version.version}/${artifact.os}/${artifact.arch}`,
+            requires_range: requiresRangedTransfer(artifact.file_size, deps.transferLimits),
           },
         }),
       );
