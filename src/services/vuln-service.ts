@@ -35,6 +35,13 @@ export interface VersionVulnResult {
   vulns: VersionVuln[];
 }
 
+/**
+ * `matched_because` for a row whose CPE carried NA in its version component. Not a range
+ * evaluation result — `evaluateRange` never sees these rows — so it is defined here beside the
+ * only code that produces it.
+ */
+export const VERSION_NA = "version-not-applicable";
+
 function toRange(row: AffectsWithCveRow): VersionRange {
   return {
     versionStart: row.version_start,
@@ -59,8 +66,17 @@ export function crossReferenceVersions(
     const byCve = new Map<string, { matched: AffectsWithCveRow; reason: string }>();
     for (const row of affects) {
       const existing = byCve.get(row.cve_id);
-      // Prefer a concrete match over a fail-open one already recorded.
-      if (existing && existing.reason !== "range-uncomparable") continue;
+      // Prefer a concrete match over a weak one already recorded — a fail-open match, or a CPE
+      // that names no version to match against.
+      if (existing && existing.reason !== "range-uncomparable" && existing.reason !== VERSION_NA)
+        continue;
+      // NA rows are listed, never gated (see findBlockingCve). Reporting them under their own
+      // reason is what keeps "walrus knows about this advisory" separable from "this advisory
+      // applies to your version" — the Arduino extension CVE stays visible against vscode.
+      if (row.version_na) {
+        if (!existing) byCve.set(row.cve_id, { matched: row, reason: VERSION_NA });
+        continue;
+      }
       const result = evaluateRange(v.version, toRange(row));
       if (result.matched) byCve.set(row.cve_id, { matched: row, reason: result.reason });
     }
@@ -118,6 +134,15 @@ export function getVersionAvailabilityStatus(
  * Where several critical CVEs match, the first concrete match wins — the answer to "why is
  * this blocked?" only needs to be *a* true reason, and the rest stay visible via
  * /packages/{name}/vulns.
+ *
+ * NA-versioned rows (`version_na`) never gate. A CPE carrying `-` in its version component
+ * states that the version attribute does not apply to that entry, so it names nothing to
+ * compare a served version against — CNAs file this way against products they cannot version,
+ * and reading it as "all versions" blocked every VS Code build on an Arduino *extension*
+ * advisory (WAL-69). This is the same "matched for display, excluded from gating" treatment
+ * `range-uncomparable` already gets below, on stronger grounds: that one is uncertainty, this
+ * one is a positive statement that no shipped version is enumerable. `*` with no bounds is
+ * untouched and still gates — it genuinely does mean every version.
  */
 export function findBlockingCve(
   version: string,
@@ -125,6 +150,7 @@ export function findBlockingCve(
 ): AffectsWithCveRow | null {
   for (const row of affects) {
     if (!isKnownCritical(row)) continue;
+    if (row.version_na) continue;
     const result = evaluateRange(version, toRange(row));
     if (result.matched && result.reason !== "range-uncomparable") return row;
   }

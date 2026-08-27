@@ -96,6 +96,18 @@ New deps: `fuzzball`, `semver` (runtime); `fast-check` (dev). `pg_trgm` extensio
 - **WAL-32 (Security):** `GET /download/:package/:version/:os/:arch` returns `403` before
   artifact lookup or storage access when the requested version carries a known critical CVE.
 
+**Wave 13 — CPE version semantics**
+
+- **WAL-69 (Fixed):** A CPE whose version component is NA (`-`) no longer blocks every version.
+  CPE 2.3 distinguishes NA from ANY (`*`), and ingestion collapsed the two — so an advisory that
+  named no version was read as naming all of them. CNAs file that way against products they
+  cannot version, which made an Arduino _extension_ flaw (CVE-2024-43488, NVD-rescored to 9.8
+  CRITICAL) block every VS Code build walrus serves, along with four older NA advisories gating
+  on CVSS v2 scores. Migration `0012_cve_affects_version_na.sql` records the distinction; the
+  critical gate skips NA rows the way it already skips fail-open matches, while `*` with no
+  bounds still means all versions. NA advisories stay visible on `/packages/:name/vulns` under
+  `matched_because: "version-not-applicable"`.
+
 ## Version 0.1.0: Initial Release
 
 Initial Walrus release: a configuration-driven package ingress engine that discovers, caches, and

@@ -116,8 +116,12 @@ export function extractAffects(
           continue;
         }
 
-        const exactVersion =
-          parsed.version !== "*" && parsed.version !== "-" ? parsed.version : null;
+        // CPE 2.3 gives the version component two logical values, and they are not synonyms:
+        // `*` is ANY (the entry applies to every version) and `-` is NA (the version attribute
+        // does not apply to this entry at all). Both yield no exact version to match on, but
+        // only ANY may be read as "all versions" — see WAL-69 and `findBlockingCve`.
+        const versionNa = parsed.version === "-";
+        const exactVersion = parsed.version !== "*" && !versionNa ? parsed.version : null;
         const versionStart = m.versionStartIncluding ?? m.versionStartExcluding ?? null;
         const versionEnd = m.versionEndIncluding ?? m.versionEndExcluding ?? null;
         // Same criteria can appear in multiple nodes with different ranges, so
@@ -153,6 +157,7 @@ export function extractAffects(
             fixed_in: m.versionEndExcluding ?? null,
             source: "nvd",
             raw_cpe: rawCpe,
+            version_na: versionNa,
           });
         }
       }

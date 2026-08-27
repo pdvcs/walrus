@@ -1,8 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
   crossReferenceVersions,
+  findBlockingCve,
   getVersionAvailabilityStatus,
   summarizeGroupsWithVulnGate,
+  VERSION_NA,
 } from "../../src/services/vuln-service.js";
 import type { AffectsWithCveRow } from "../../src/db/queries/cves.js";
 
@@ -24,6 +26,7 @@ function affects(overrides: Partial<AffectsWithCveRow>): AffectsWithCveRow {
     description: null,
     is_kev: false,
     raw: null,
+    version_na: false,
     ...overrides,
   };
 }
@@ -279,5 +282,94 @@ describe("getVersionAvailabilityStatus", () => {
       }),
     ];
     expect(getVersionAvailabilityStatus("1.24.13", rows)).toBe("available");
+  });
+});
+
+describe("CPE version NA is not ANY (WAL-69)", () => {
+  /** CVE-2024-43488's real shape: NA version, no bounds, NVD-rescored to 9.8 CRITICAL. */
+  const naCritical = affects({
+    cve_id: "CVE-2024-43488",
+    version_na: true,
+    version_start: null,
+    version_end: null,
+    exact_version: null,
+    fixed_in: null,
+    severity: "CRITICAL",
+    cvss_v3_score: "9.8",
+  });
+
+  /** Same absence of bounds, but ANY rather than NA — this one genuinely means all versions. */
+  const anyCritical = affects({
+    cve_id: "CVE-2099-9999",
+    version_na: false,
+    version_start: null,
+    version_end: null,
+    exact_version: null,
+    fixed_in: null,
+    severity: "CRITICAL",
+    cvss_v3_score: "9.8",
+  });
+
+  it("does not block a version on a CPE that names no version", () => {
+    expect(getVersionAvailabilityStatus("1.135.0", [naCritical])).toBe("available");
+    expect(findBlockingCve("1.135.0", [naCritical])).toBeNull();
+  });
+
+  it("still blocks on an unbounded ANY CPE — the reading the fix must preserve", () => {
+    expect(getVersionAvailabilityStatus("1.135.0", [anyCritical])).toBe("blocked");
+    expect(findBlockingCve("1.135.0", [anyCritical])?.cve_id).toBe("CVE-2099-9999");
+  });
+
+  it("blocks on the ANY row even when an NA row is evaluated first", () => {
+    // Ordering must not decide the answer: the NA row is skipped, not treated as a match
+    // that short-circuits the loop.
+    expect(findBlockingCve("1.135.0", [naCritical, anyCritical])?.cve_id).toBe("CVE-2099-9999");
+  });
+
+  it("keeps the NA advisory visible, under its own reason", () => {
+    const [v] = crossReferenceVersions([{ version: "1.135.0", version_group: "1" }], [naCritical]);
+    expect(v.counts.total).toBe(1);
+    expect(v.counts.critical).toBe(1);
+    expect(v.vulns[0]).toMatchObject({
+      cve_id: "CVE-2024-43488",
+      matched_because: VERSION_NA,
+    });
+  });
+
+  it("prefers a concrete range match over the NA reason for the same CVE", () => {
+    const rows = [
+      affects({ cve_id: "CVE-DUAL", version_na: true, version_start: null, version_end: null }),
+      affects({ cve_id: "CVE-DUAL", version_end: "9.0", version_end_excl: true }),
+    ];
+    const [v] = crossReferenceVersions([{ version: "8.0", version_group: "8" }], rows);
+    expect(v.vulns).toHaveLength(1);
+    expect(v.vulns[0].matched_because).not.toBe(VERSION_NA);
+  });
+
+  it("leaves latest_available populated when only NA rows are critical", () => {
+    const groups = summarizeGroupsWithVulnGate(
+      [
+        { version: "1.135.0", version_group: "1", is_lts: false },
+        { version: "1.134.0", version_group: "1", is_lts: false },
+      ],
+      [naCritical],
+    );
+    expect(groups[0].latest_available).toBe("1.135.0");
+  });
+
+  it("still gates a version-bounded critical alongside NA rows", () => {
+    // vscode's real mix: NA rows that must not gate, plus CVE-2026-47281 which must.
+    const bounded = affects({
+      cve_id: "CVE-2026-47281",
+      version_na: false,
+      version_start: "1.0.0",
+      version_end: "1.123.1",
+      version_end_excl: true,
+      exact_version: null,
+      severity: "CRITICAL",
+      cvss_v3_score: "9.6",
+    });
+    expect(findBlockingCve("1.135.0", [naCritical, bounded])).toBeNull();
+    expect(findBlockingCve("1.100.0", [naCritical, bounded])?.cve_id).toBe("CVE-2026-47281");
   });
 });

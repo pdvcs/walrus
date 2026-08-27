@@ -58,6 +58,11 @@ export interface AffectsInsert {
   fixed_in: string | null;
   source: "nvd" | "osv";
   raw_cpe: string | null;
+  /**
+   * The CPE carried NA (`-`) in its version component: the version attribute does not apply to
+   * this entry. Distinct from ANY (`*`), which does mean every version. See WAL-69.
+   */
+  version_na?: boolean;
 }
 
 /** Join of a cve_affects row with its parent CVE's denormalized fields. */
@@ -70,6 +75,8 @@ export interface AffectsWithCveRow {
   exact_version: string | null;
   fixed_in: string | null;
   source: string;
+  /** CPE version component was NA (`-`), so this row names no version to match against. */
+  version_na: boolean;
   severity: string | null;
   severity_source: string | null;
   cvss_v3_score: string | null;
@@ -175,8 +182,8 @@ export async function deleteAffectsForPackageAndSource(
 export async function insertAffects(q: Queryable, row: AffectsInsert): Promise<number> {
   const res = await q.query(
     `INSERT INTO cve_affects
-       (cve_id, package_name, version_start, version_start_excl, version_end, version_end_excl, exact_version, fixed_in, source, raw_cpe)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       (cve_id, package_name, version_start, version_start_excl, version_end, version_end_excl, exact_version, fixed_in, source, raw_cpe, version_na)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      ON CONFLICT ON CONSTRAINT cve_affects_dedupe DO NOTHING`,
     [
       row.cve_id,
@@ -189,6 +196,7 @@ export async function insertAffects(q: Queryable, row: AffectsInsert): Promise<n
       row.fixed_in,
       row.source,
       row.raw_cpe,
+      row.version_na ?? false,
     ],
   );
   return res.rowCount ?? 0;
@@ -243,7 +251,7 @@ export async function listAffectsWithCveForPackage(
 ): Promise<AffectsWithCveRow[]> {
   const { rows } = await pool.query<AffectsWithCveRow>(
     `SELECT ca.cve_id, ca.version_start, ca.version_start_excl, ca.version_end,
-            ca.version_end_excl, ca.exact_version, ca.fixed_in, ca.source,
+            ca.version_end_excl, ca.exact_version, ca.fixed_in, ca.source, ca.version_na,
             c.severity, c.severity_source, c.cvss_v3_score, c.cvss_v4_score, c.cvss_v2_score,
             c.description, c.is_kev, c.raw
      FROM cve_affects ca JOIN cves c ON c.id = ca.cve_id

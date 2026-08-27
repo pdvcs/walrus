@@ -36,6 +36,7 @@ function affects(overrides: Partial<AffectsInsert>): AffectsInsert {
     fixed_in: "2.0.0",
     source: "nvd",
     raw_cpe: "cpe:2.3:a:acme:widget:*:*:*:*:*:*:*:*",
+    version_na: false,
     ...overrides,
   };
 }
@@ -183,6 +184,35 @@ describe("cves queries", () => {
 
     const forCve = await listAffectedPackagesForCve(pool, CVE);
     expect(forCve.map((r) => r.package_name).sort()).toEqual([PKG, PKG2]);
+  });
+
+  it("carries the CPE version-NA flag through insert and select (WAL-69)", async () => {
+    await upsertCveFull(pool, blankCve(CVE));
+    await insertAffects(
+      pool,
+      affects({
+        version_na: true,
+        version_start: null,
+        version_end: null,
+        fixed_in: null,
+        raw_cpe: "cpe:2.3:a:microsoft:visual_studio_code:-:*:*:*:*:*:*:*",
+      }),
+    );
+
+    const rows = await listAffectsWithCveForPackage(pool, PKG);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].version_na).toBe(true);
+  });
+
+  it("defaults version_na to false when the caller omits it", async () => {
+    await upsertCveFull(pool, blankCve(CVE));
+    const row = affects({ raw_cpe: "cpe:2.3:a:acme:widget:*:*:*:*:*:*:*:*" });
+    delete (row as Partial<AffectsInsert>).version_na;
+
+    await insertAffects(pool, row);
+
+    const rows = await listAffectsWithCveForPackage(pool, PKG);
+    expect(rows[0].version_na).toBe(false);
   });
 
   it("cascades affects deletion when a package is deleted", async () => {

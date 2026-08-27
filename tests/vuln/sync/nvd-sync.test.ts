@@ -567,3 +567,74 @@ async function affectsCount(pool: Pool, pkg: string): Promise<number> {
   );
   return rows[0].n;
 }
+
+describe("CPE version NA vs ANY (WAL-69)", () => {
+  const LOOKUP = new Map([["microsoft:visual_studio_code", ["vscode"]]]);
+
+  /** Shaped after the real CVE-2024-43488 configuration: NA version, no range bounds. */
+  function itemWithVersion(criteriaVersion: string, extra: Record<string, unknown> = {}) {
+    return {
+      cve: {
+        id: "CVE-2024-43488",
+        configurations: [
+          {
+            nodes: [
+              {
+                operator: "OR",
+                negate: false,
+                cpeMatch: [
+                  {
+                    vulnerable: true,
+                    criteria: `cpe:2.3:a:microsoft:visual_studio_code:${criteriaVersion}:*:*:*:*:*:*:*`,
+                    ...extra,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    } as unknown as Parameters<typeof extractAffects>[0];
+  }
+
+  it("flags an NA version without dropping the row", () => {
+    // Nothing is skipped at ingest: the advisory stays on the record, it just stops
+    // claiming to describe every version.
+    const { rows, skippedCpes } = extractAffects(itemWithVersion("-"), LOOKUP);
+
+    expect(skippedCpes).toBe(0);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      package_name: "vscode",
+      version_na: true,
+      exact_version: null,
+      version_start: null,
+      version_end: null,
+      raw_cpe: "cpe:2.3:a:microsoft:visual_studio_code:-:*:*:*:*:*:*:*",
+    });
+  });
+
+  it("does not flag ANY, with or without bounds", () => {
+    expect(extractAffects(itemWithVersion("*"), LOOKUP).rows[0]).toMatchObject({
+      version_na: false,
+      exact_version: null,
+    });
+
+    const bounded = extractAffects(
+      itemWithVersion("*", { versionEndExcluding: "1.104.0" }),
+      LOOKUP,
+    );
+    expect(bounded.rows[0]).toMatchObject({
+      version_na: false,
+      version_end: "1.104.0",
+      fixed_in: "1.104.0",
+    });
+  });
+
+  it("does not flag a concrete version", () => {
+    expect(extractAffects(itemWithVersion("1.104.2"), LOOKUP).rows[0]).toMatchObject({
+      version_na: false,
+      exact_version: "1.104.2",
+    });
+  });
+});
