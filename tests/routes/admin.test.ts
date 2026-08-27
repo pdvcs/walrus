@@ -585,4 +585,53 @@ describe("admin routes", () => {
     expect(patchResponse.status).toBe(200);
     expect(patchBody.enabled).toBe(false);
   });
+
+  it("pages the HTML jobs list at 100/page with filter-preserving prev/next links", async () => {
+    const deps = baseDeps();
+    const seen: Array<{ limit?: number; offset?: number }> = [];
+    deps.listJobs = vi.fn().mockImplementation(async (opts) => {
+      seen.push(opts);
+      // Full page on page 1, 3 rows on page 2 — drives the Next/Previous rendering.
+      return (opts.offset ?? 0) === 0 ? fullPage() : shortPage();
+    });
+    const app = createTestApp(deps);
+
+    const p1 = await request(app)
+      .get("/admin/v1/jobs?package=uv&status=failed&page=1")
+      .set("Accept", "text/html");
+    expect(p1.status).toBe(200);
+    // Page 1 → offset 0, fixed limit 100, filters passed through.
+    expect(seen[0]).toMatchObject({ limit: 100, offset: 0, packageName: "uv", status: "failed" });
+    // A full page offers Next, and its href preserves the filters with page 2.
+    expect(p1.text).toMatch(
+      /href="\/admin\/v1\/jobs\?page=2&amp;package=uv&amp;status=failed"|href="\/admin\/v1\/jobs\?page=2&package=uv&status=failed"/,
+    );
+
+    const p2 = await request(app).get("/admin/v1/jobs?page=2").set("Accept", "text/html");
+    expect(seen[1]).toMatchObject({ offset: 100 });
+    // A short page hides Next and shows Previous pointing back one page.
+    expect(p2.text).not.toMatch(/href="\/admin\/v1\/jobs\?page=3/);
+    expect(p2.text).toMatch(/href="\/admin\/v1\/jobs\?page=1"/);
+    expect(p2.text).toMatch(/Page 2/);
+
+    function fullPage() {
+      return Array.from({ length: 100 }, (_, i) => job(i + 1));
+    }
+    function shortPage() {
+      return [job(201), job(202), job(203)];
+    }
+    function job(id: number) {
+      return {
+        id,
+        package_name: "uv",
+        trigger_type: "admin",
+        status: "failed",
+        versions_found: 1,
+        artifacts_queued: 1,
+        error_message: null,
+        started_at: new Date(),
+        completed_at: new Date(),
+      };
+    }
+  });
 });

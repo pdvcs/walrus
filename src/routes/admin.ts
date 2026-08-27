@@ -400,13 +400,20 @@ export function createAdminRouter(deps: AdminRouteDeps): Router {
       const packageName = optionalString(req.query.package);
       const status = optionalStatus(req.query.status);
       const wantsHtml = req.headers.accept?.includes("text/html");
-      const limit = optionalInteger(req.query.limit) ?? (wantsHtml ? 50 : undefined);
+      // The HTML page is paginated at a fixed 100/page; `page` is 1-based. JSON keeps
+      // its unbounded-by-default contract with an optional limit.
+      const page = wantsHtml ? Math.max(1, optionalInteger(req.query.page) ?? 1) : undefined;
+      const limit = optionalInteger(req.query.limit) ?? (wantsHtml ? undefined : undefined);
 
-      const jobs = await deps.listJobs({ packageName, status, limit });
+      const jobs = await deps.listJobs({
+        packageName,
+        status,
+        ...(wantsHtml ? { limit: 100, offset: ((page ?? 1) - 1) * 100 } : { limit }),
+      });
 
       if (wantsHtml) {
         res.setHeader("Content-Type", "text/html; charset=utf-8");
-        res.send(renderJobsListPage(jobs));
+        res.send(renderJobsListPage(jobs, { page: page ?? 1, pageSize: 100, packageName, status }));
         return;
       }
 
@@ -1604,7 +1611,10 @@ function renderGroupSection(
   </div>`;
 }
 
-function renderJobsListPage(jobs: SyncJobRow[]): string {
+function renderJobsListPage(
+  jobs: SyncJobRow[],
+  paging: { page: number; pageSize: number; packageName?: string; status?: string },
+): string {
   const esc = escHtml;
   const rows = jobs
     .map((j) => {
@@ -1638,16 +1648,42 @@ function renderJobsListPage(jobs: SyncJobRow[]): string {
 
   const hasRunning = jobs.some((j) => j.status === "running");
 
+  // Page links preserve package/status filters. "Next" always renders (the last page
+  // links to an empty page one past the end, which is harmless and simpler than a
+  // count query per render); "Previous" only appears past page 1.
+  const pageUrl = (p: number) => {
+    const params = new URLSearchParams({ page: String(p) });
+    if (paging.packageName) params.set("package", paging.packageName);
+    if (paging.status) params.set("status", paging.status);
+    return `/admin/v1/jobs?${params.toString()}`;
+  };
+  const pager =
+    jobs.length === 0 && paging.page === 1
+      ? ""
+      : `<div class="pager">
+          ${paging.page > 1 ? `<a href="${pageUrl(paging.page - 1)}">&larr; Previous</a>` : `<span class="pager-off">&larr; Previous</span>`}
+          <span class="pager-state">Page ${paging.page} · ${jobs.length} job(s)</span>
+          ${jobs.length >= paging.pageSize ? `<a href="${pageUrl(paging.page + 1)}">Next &rarr;</a>` : `<span class="pager-off">Next &rarr;</span>`}
+        </div>`;
+
   const body = `
     <h1>Sync Jobs</h1>
     ${tableHtml}
+    ${pager}
     <div id="ts" style="font-size:0.75rem;color:#9ca3af;margin-top:12px"></div>`;
 
   const scripts = `
     document.getElementById('ts').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
     ${hasRunning ? "setInterval(() => location.reload(), 3000);" : ""}`;
 
-  return renderSharedHtml("Sync Jobs", "jobs", body, scripts);
+  const styleTail = `<style>
+    .pager { display:flex; gap:16px; align-items:center; margin-top:12px; font-size:0.85rem; }
+    .pager a { text-decoration:none; }
+    .pager-off { color:#d1d5db; }
+    .pager-state { color:#6b7280; font-size:0.8rem; }
+  </style>`;
+
+  return renderSharedHtml("Sync Jobs", "jobs", body, scripts, styleTail);
 }
 
 export function escHtml(str: string): string {

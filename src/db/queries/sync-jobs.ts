@@ -107,6 +107,8 @@ export interface ListSyncJobsOpts {
   packageName?: string;
   status?: SyncJobStatus;
   limit?: number;
+  /** Offset for page-based browsing of the jobs list (admin jobs page). */
+  offset?: number;
 }
 
 export async function incrementJobCounters(
@@ -168,10 +170,15 @@ export async function listSyncJobs(pool: Pool, opts: ListSyncJobsOpts = {}): Pro
 
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   const limit = opts.limit ?? 50;
-  params.push(limit);
+  // Push values FIRST, then read indexes: push() returns the new length, so building
+  // the placeholders inline interleaved with pushes made LIMIT and OFFSET share an
+  // index ($2 $2), leaving $1 unbound — "could not determine data type of parameter $1".
+  const limitIdx = params.push(limit);
+  const offsetIdx = opts.offset && opts.offset > 0 ? params.push(opts.offset) : null;
+  const offsetClause = offsetIdx !== null ? ` OFFSET $${offsetIdx}::int` : "";
 
   const { rows } = await pool.query<SyncJobRow>(
-    `SELECT * FROM sync_jobs ${where} ORDER BY started_at DESC LIMIT $${params.length}`,
+    `SELECT * FROM sync_jobs ${where} ORDER BY started_at DESC LIMIT $${limitIdx}${offsetClause}`,
     params,
   );
   return rows;
