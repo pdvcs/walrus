@@ -665,7 +665,7 @@ npm run validate -- --transform packages/walrus-gitwindows.toml
 ```
   ○ Transform exercise (2.55.0.5 windows/x86-64): fetching Git-2.55.0.5-64-bit.tar.bz2...
     ✓ Entries: 9590
-    ✓ Output: 162.4 MB, sha256 6b43d87f0dfc2638211424f2a74145a962389add825a4ecc357e3fec50757be5
+    ✓ Output: 162.4 MB, sha256 fe8f4db92813924c9928df505358e6239ffdc569a168aa12afb353df41cba60a
     ✓ require_paths: cmd/git.exe
     ✓ require_paths: usr/bin/bash.exe
     ! dropped symlink (per drop_symlinks): dev/fd

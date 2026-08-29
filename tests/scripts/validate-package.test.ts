@@ -266,6 +266,23 @@ filename_template = "tool-{version}-64-bit.tar.bz2"
     expect(logs.join("\n")).toMatch(/missing required path\(s\): usr\/bin\/no-such\.exe/);
   });
 
+  it("labels the spot-check with the platform it actually checked", async () => {
+    // This config is Windows-only, so the spot-check falls back off the preferred
+    // linux/x86-64. The label used to keep saying `linux/x86-64` over a Windows URL
+    // (WAL-73 finding 7).
+    const tomlPath = writeToml(["cmd/git.exe"]);
+    const logs: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    });
+
+    await validatePackage(tomlPath, { online: false, transform: false });
+
+    const joined = logs.join("\n");
+    expect(joined).toMatch(/spot-check: 1\.0\.0 windows\/x86-64/);
+    expect(joined).not.toMatch(/spot-check: 1\.0\.0 linux\/x86-64/);
+  });
+
   it("without --transform the config still validates, with a hint that the exercise was skipped", async () => {
     const tomlPath = writeToml(["cmd/git.exe"]);
     const logs: string[] = [];

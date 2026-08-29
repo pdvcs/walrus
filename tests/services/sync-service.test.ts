@@ -549,6 +549,137 @@ describe("SyncService", () => {
     expect(secondInsertCall.cooling_off_until).toBeNull();
   });
 
+  it("serves a transformed artifact under the transform's name, path, and config", async () => {
+    // The seam where a package config meets production sync: the row's filename and the
+    // storage path must describe the transform's OUTPUT while upstream_url keeps pointing at
+    // the source bytes, and the transform block has to reach the download request at all
+    // (WAL-73 finding 8).
+    const transformed: PackageConfig = {
+      ...pkg,
+      name: "gitwindows",
+      platforms: [
+        {
+          os: "windows",
+          arch: "x86-64",
+          os_upstream: "windows",
+          arch_upstream: "x64",
+          extension: "tar.bz2",
+          transform: {
+            type: "tar-bz2-to-zip",
+            extension: "zip",
+            filename_template: "Git-{version}-{os}-{arch}.{ext}",
+          },
+        },
+      ],
+    } as PackageConfig;
+
+    const discoveredWindows: DiscoveredVersion = {
+      version: "2.55.0.5",
+      versionGroup: "2.55",
+      isLts: false,
+      artifacts: new Map([
+        [
+          "windows/x86-64",
+          {
+            url: "https://example.test/Git-2.55.0.5-64-bit.tar.bz2",
+            filename: "Git-2.55.0.5-64-bit.tar.bz2",
+            checksum: "cc".repeat(32),
+            checksumType: "sha256",
+          },
+        ],
+      ]),
+    };
+
+    const deps = {
+      discoverVersions: vi.fn().mockResolvedValue([discoveredWindows]),
+      upsertPackage: vi.fn().mockResolvedValue({}),
+      createSyncJob: vi.fn().mockResolvedValue({ id: 400 }),
+      updateSyncJob: vi.fn().mockResolvedValue({}),
+      insertVersion: vi.fn().mockResolvedValue({ id: 1 }),
+      insertArtifact: vi
+        .fn()
+        .mockResolvedValue({ id: 40, status: "pending", cooling_off_until: null }),
+      updateArtifactStatus: vi.fn().mockResolvedValue({}),
+      incrementJobCounters: vi.fn().mockResolvedValue(undefined),
+      downloadArtifact: vi.fn().mockResolvedValue({ status: "available", attempts: 1 }),
+      enforceRetention: vi
+        .fn()
+        .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
+      getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+    };
+
+    const service = new SyncService(
+      lockablePool(),
+      transformed,
+      {} as unknown as DownloadService,
+      {} as unknown as RetentionService,
+      { deps, syncConcurrency: 1, downloadConcurrency: 1 },
+    );
+
+    await service.run({ triggerType: "admin" });
+
+    const insertedRow = vi.mocked(deps.insertArtifact).mock.calls[0][1] as {
+      filename: string;
+      upstream_url: string;
+    };
+    expect(insertedRow.filename).toBe("Git-2.55.0.5-windows-x86-64.zip");
+    expect(insertedRow.upstream_url).toBe("https://example.test/Git-2.55.0.5-64-bit.tar.bz2");
+
+    expect(deps.downloadArtifact).toHaveBeenCalledWith(
+      {
+        artifactId: 40,
+        upstreamUrl: "https://example.test/Git-2.55.0.5-64-bit.tar.bz2",
+        storagePath: "gitwindows/2.55.0.5/windows/x86-64/Git-2.55.0.5-windows-x86-64.zip",
+        expectedChecksum: "cc".repeat(32),
+        checksumUrl: undefined,
+        checksumType: "sha256",
+        expectedSize: undefined,
+        transform: transformed.platforms[0].transform,
+      },
+      false,
+    );
+  });
+
+  it("keeps the upstream filename when the platform declares no transform", async () => {
+    const deps = {
+      discoverVersions: vi.fn().mockResolvedValue([discovered("0.6.2")]),
+      upsertPackage: vi.fn().mockResolvedValue({}),
+      createSyncJob: vi.fn().mockResolvedValue({ id: 401 }),
+      updateSyncJob: vi.fn().mockResolvedValue({}),
+      insertVersion: vi.fn().mockResolvedValue({ id: 1 }),
+      insertArtifact: vi
+        .fn()
+        .mockResolvedValue({ id: 41, status: "pending", cooling_off_until: null }),
+      updateArtifactStatus: vi.fn().mockResolvedValue({}),
+      incrementJobCounters: vi.fn().mockResolvedValue(undefined),
+      downloadArtifact: vi.fn().mockResolvedValue({ status: "available", attempts: 1 }),
+      enforceRetention: vi
+        .fn()
+        .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
+      getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+    };
+
+    const service = new SyncService(
+      lockablePool(),
+      pkg,
+      {} as unknown as DownloadService,
+      {} as unknown as RetentionService,
+      { deps, syncConcurrency: 1, downloadConcurrency: 1 },
+    );
+
+    await service.run({ triggerType: "admin" });
+
+    const insertedRow = vi.mocked(deps.insertArtifact).mock.calls[0][1] as { filename: string };
+    expect(insertedRow.filename).toBe("uv.tar.gz");
+    expect(deps.downloadArtifact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        storagePath: "uv/0.6.2/linux/x86-64/uv.tar.gz",
+        transform: undefined,
+      }),
+      false,
+    );
+  });
+
   it("supports dry-run mode without DB writes or downloads", async () => {
     const deps = {
       discoverVersions: vi.fn().mockResolvedValue([discovered("0.6.2"), discovered("0.6.1")]),

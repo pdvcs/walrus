@@ -14,14 +14,27 @@ export class Semaphore {
     this.permits = permits;
   }
 
-  /** Resolves once a permit is held; the returned function releases it. */
+  /**
+   * Resolves once a permit is held; the returned function releases it. Releasing twice is a
+   * no-op — a second call would hand back a permit that was never taken, letting the bound be
+   * exceeded quietly (WAL-73 finding 7).
+   */
   async acquire(): Promise<() => void> {
     if (this.permits > 0) {
       this.permits -= 1;
-      return () => this.release();
+      return this.oneShotRelease();
     }
     await new Promise<void>((resolve) => this.waiters.push(resolve));
-    return () => this.release();
+    return this.oneShotRelease();
+  }
+
+  private oneShotRelease(): () => void {
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.release();
+    };
   }
 
   /** Run `fn` while holding one permit, releasing when it settles. */

@@ -185,8 +185,7 @@ async function exerciseTransform(
         expectedChecksum: artifact.checksum,
         checksumType: artifact.checksumType === "sha1" ? "sha1" : "sha256",
         expectedSize: artifact.size,
-        transform: config.platforms.find((p) => p.os === platform.os && p.arch === platform.arch)
-          ?.transform,
+        transform: platform.transform,
       },
       true,
     );
@@ -307,11 +306,16 @@ export async function validatePackage(filePath: string, opts: ValidateOptions): 
     }
   }
 
-  // Spot-check artifact URL for the newest version on linux/x86-64 (or first available platform)
+  // Spot-check artifact URL for the newest version on linux/x86-64 (or first available
+  // platform). The label has to name the platform actually checked, not the preferred one:
+  // gitwindows is Windows-only, and reporting `linux/x86-64` above a `Git-*-64-bit.tar.bz2`
+  // URL misdescribes the one thing this line exists to report (WAL-73 finding 7).
   const newestVersion = versions[0]; // strategies return newest first (or we sort below)
   if (newestVersion) {
-    const artKey = `${SPOT_CHECK_PLATFORM.os}/${SPOT_CHECK_PLATFORM.arch}`;
-    const art = newestVersion.artifacts.get(artKey) ?? [...newestVersion.artifacts.values()][0];
+    const preferredKey = `${SPOT_CHECK_PLATFORM.os}/${SPOT_CHECK_PLATFORM.arch}`;
+    const [artKey, art] = newestVersion.artifacts.has(preferredKey)
+      ? [preferredKey, newestVersion.artifacts.get(preferredKey)]
+      : ([...newestVersion.artifacts.entries()][0] ?? [preferredKey, undefined]);
 
     if (art) {
       console.log(

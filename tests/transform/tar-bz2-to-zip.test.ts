@@ -6,6 +6,7 @@ import { PassThrough, Transform } from "stream";
 import * as tar from "tar-stream";
 import { describe, expect, it } from "vitest";
 import {
+  LinkCache,
   TarBz2ToZipTransform,
   UnsupportedEntryTypeError,
   UnresolvableHardlinkError,
@@ -260,6 +261,93 @@ describe("tar-bz2-to-zip transform", () => {
         "Git-2.55.0.5-64-bit.tar.bz2",
       ),
     ).toBe("Git-2.55.0.5-64-bit.zip");
+  });
+
+  /**
+   * The link cache used to charge the budget only when an entry was *stored*, so the copy
+   * being collected sat outside the accounting entirely and `Buffer.concat` at flush
+   * transiently doubled it: the real ceiling was `budget + 2 x largest cached file`, while
+   * `link_cache_bytes`, the Cloud Run memory pins and the changelog all asserted `budget`
+   * (WAL-73 finding 6). Space is now reserved before collection begins. That is an
+   * arithmetic change, invisible in the transform's output, so it is tested here directly.
+   */
+  describe("link cache accounting (WAL-73 finding 6)", () => {
+    const bytes = (n: number) => Buffer.alloc(n, 1);
+
+    it("charges the entry being collected, not only the ones stored", () => {
+      const cache = new LinkCache(100);
+      cache.reserve(60);
+      cache.commit("a", bytes(60), 60);
+
+      // Collecting a second 60-byte entry cannot coexist with the first inside 100 bytes.
+      // Charging only on store left both live at once — 120 bytes against a 100-byte budget.
+      expect(cache.reserve(60)).toBe(true);
+      expect(cache.get("a")).toBeUndefined();
+    });
+
+    it("keeps an entry that genuinely fits alongside the one being collected", () => {
+      const cache = new LinkCache(100);
+      cache.reserve(60);
+      cache.commit("a", bytes(60), 60);
+
+      expect(cache.reserve(40)).toBe(true);
+      expect(cache.get("a")).toHaveLength(60);
+    });
+
+    it("refuses an entry larger than the whole budget without evicting anything", () => {
+      const cache = new LinkCache(100);
+      cache.reserve(60);
+      cache.commit("a", bytes(60), 60);
+
+      expect(cache.reserve(101)).toBe(false);
+      expect(cache.get("a")).toHaveLength(60);
+    });
+
+    it("gives the room back when a reservation goes unused", () => {
+      const cache = new LinkCache(100);
+      cache.reserve(60);
+      cache.commit("a", bytes(60), 60);
+      cache.reserve(30);
+      cache.release(30);
+
+      // Without the release, 60 + 30 + 40 would have evicted "a" to make room.
+      expect(cache.reserve(40)).toBe(true);
+      expect(cache.get("a")).toHaveLength(60);
+    });
+
+    it("charges a short entry its reservation, since the view shares the allocation", () => {
+      const cache = new LinkCache(100);
+      cache.reserve(60);
+      // A truncated entry is stored as a subarray of the 60 bytes it reserved.
+      cache.commit("a", bytes(60).subarray(0, 10), 60);
+
+      expect(cache.reserve(50)).toBe(true);
+      expect(cache.get("a")).toBeUndefined();
+    });
+
+    it("retires the old charge when a duplicate path replaces an entry", () => {
+      const cache = new LinkCache(100);
+      cache.reserve(50);
+      cache.commit("a", bytes(50), 50);
+      cache.reserve(50);
+      cache.commit("a", bytes(50), 50);
+
+      // One "a" is charged, not two, so a 50-byte entry still fits beside it.
+      expect(cache.reserve(50)).toBe(true);
+      expect(cache.get("a")).toHaveLength(50);
+    });
+
+    it("evicts oldest-first", () => {
+      const cache = new LinkCache(100);
+      cache.reserve(40);
+      cache.commit("a", bytes(40), 40);
+      cache.reserve(40);
+      cache.commit("b", bytes(40), 40);
+
+      cache.reserve(40); // 40 + 40 + 40 > 100: "a" goes, "b" stays
+      expect(cache.get("a")).toBeUndefined();
+      expect(cache.get("b")).toHaveLength(40);
+    });
   });
 
   describe("streaming (WAL-57 AC2)", () => {

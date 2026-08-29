@@ -3,7 +3,11 @@ import { buildArtifactPath } from "../storage/types.js";
 import { ArtifactRow, PackageRow, SyncJobRow, VersionRow } from "../types/db.js";
 import { FailedArtifactRow, PendingArtifactRow } from "../db/queries/artifacts.js";
 import { JobDetail } from "../db/queries/sync-jobs.js";
-import { DownloadResult } from "../services/download-service.js";
+import {
+  ChecksumAlgorithm,
+  DownloadRequest,
+  DownloadResult,
+} from "../services/download-service.js";
 import { SyncRunOptions, SyncRunResult } from "../services/sync-service.js";
 import TOML from "@iarna/toml";
 import { getStrategy, DiscoveredVersion } from "../discovery/index.js";
@@ -266,6 +270,12 @@ export function createAdminRouter(deps: AdminRouteDeps): Router {
         message: "Re-download finished",
       });
     } catch (err) {
+      // A provenance/config disagreement is an operator-fixable conflict, not a server fault:
+      // answer with the reason rather than a bare 500 (WAL-73 finding 4).
+      if (err instanceof RedownloadTransformUnavailableError) {
+        res.status(409).json({ error: err.message });
+        return;
+      }
       next(err);
     }
   });
@@ -1761,6 +1771,69 @@ export function buildRedownloadPath(
     arch: artifact.arch,
     filename: artifact.filename,
   });
+}
+
+/**
+ * Raised when an artifact's recorded provenance and the live config disagree about whether a
+ * transform exists, so a redownload cannot faithfully rebuild the artifact.
+ */
+export class RedownloadTransformUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RedownloadTransformUnavailableError";
+  }
+}
+
+/**
+ * The download request an admin redownload issues.
+ *
+ * A transformed artifact must be rebuilt through its transform and verified against the SOURCE
+ * digest — the stored `checksum` describes the transformed bytes and would fail against the
+ * tar.bz2 upstream sends (WAL-56/58).
+ *
+ * If the row records a transform but the live config resolves none for that platform — the
+ * `[platforms.transform]` block removed, the platform's os/arch renamed — nothing downstream
+ * would notice: the pipeline stores the raw source bytes under the served `.zip` name and path,
+ * and `expectedChecksum` falls back to `source_checksum`, which is the digest of exactly those
+ * bytes, so the transfer passes. `checksum`/`file_size` are then overwritten with the tar.bz2's
+ * values while `source_checksum`/`transform` keep their stale ones, leaving a row that claims
+ * `tar-bz2-to-zip@1` while serving a tar.bz2 under a `.zip` name. Refuse loudly instead
+ * (WAL-73 finding 4).
+ */
+export function buildRedownloadRequest(
+  packageName: string,
+  version: string,
+  artifact: ArtifactRow,
+  packageConfig: PackageConfig | undefined,
+): DownloadRequest {
+  const platform = packageConfig?.platforms.find(
+    (p) => p.os === artifact.os && p.arch === artifact.arch,
+  );
+
+  if (artifact.transform && !platform?.transform) {
+    throw new RedownloadTransformUnavailableError(
+      `Artifact ${artifact.id} was stored by transform '${artifact.transform}', but ` +
+        `${packageName} ${artifact.os}/${artifact.arch} declares no transform in the current ` +
+        `config — a redownload would store unrepackaged source bytes as ${artifact.filename}. ` +
+        `Restore the transform block or remove the artifact.`,
+    );
+  }
+
+  return {
+    artifactId: artifact.id,
+    upstreamUrl: artifact.upstream_url,
+    storagePath: buildRedownloadPath(packageName, version, artifact),
+    expectedChecksum: (artifact.source_checksum ?? artifact.checksum) || undefined,
+    checksumType: normalizeChecksumType(artifact.checksum_type),
+    transform: platform?.transform,
+  };
+}
+
+function normalizeChecksumType(type: string | null): ChecksumAlgorithm | undefined {
+  if (type === "sha256" || type === "sha1") {
+    return type;
+  }
+  return undefined;
 }
 
 // Re-export for use in main.ts

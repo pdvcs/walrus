@@ -1,7 +1,12 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
-import { createAdminRouter, AdminRouteDeps } from "../../src/routes/admin.js";
+import {
+  buildRedownloadRequest,
+  createAdminRouter,
+  AdminRouteDeps,
+} from "../../src/routes/admin.js";
+import { PackageConfig } from "../../src/types/package-config.js";
 
 function createTestApp(deps: Parameters<typeof createAdminRouter>[0]): express.Express {
   const app = express();
@@ -192,6 +197,143 @@ describe("admin routes", () => {
 
     expect(response.status).toBe(202);
     expect(body.artifact_id).toBe(77);
+  });
+
+  describe("redownload request construction (WAL-73 finding 4)", () => {
+    // `buildRedownloadRequest` is the piece the earlier test mocks away wholesale, so it runs
+    // here for real behind the route.
+    function transformedArtifact(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 91,
+        version_id: 1,
+        os: "windows",
+        arch: "x86-64",
+        filename: "Git-2.55.0.5-64-bit.zip",
+        gcs_path: "gitwindows/2.55.0.5/windows/x86-64/Git-2.55.0.5-64-bit.zip",
+        file_size: 170_000_000,
+        checksum: "aa".repeat(32),
+        checksum_type: "sha256",
+        source_checksum: "bb".repeat(32),
+        source_file_size: 70_000_000,
+        transform: "tar-bz2-to-zip@1",
+        upstream_url: "https://example.test/Git-2.55.0.5-64-bit.tar.bz2",
+        status: "available",
+        error_message: null,
+        download_started_at: null,
+        download_completed_at: null,
+        removed_at: null,
+        created_at: new Date(),
+        cooling_off_until: null,
+        ...overrides,
+      };
+    }
+
+    const windowsPlatform = {
+      os: "windows",
+      arch: "x86-64",
+      os_upstream: "windows",
+      arch_upstream: "x64",
+      extension: "tar.bz2",
+      transform: { type: "tar-bz2-to-zip", extension: "zip" },
+    };
+
+    function configWith(platforms: unknown[]) {
+      return { name: "gitwindows", platforms } as unknown as PackageConfig;
+    }
+
+    /** Wires the route's dep to the real builder, the way main.ts does. */
+    function appFor(
+      art: ReturnType<typeof transformedArtifact>,
+      config: PackageConfig | undefined,
+    ) {
+      const deps = baseDeps();
+      deps.listConfiguredPackages = vi.fn().mockReturnValue(["gitwindows"]);
+      deps.getArtifactByPackageVersionPlatform = vi
+        .fn()
+        .mockResolvedValue({ version: "2.55.0.5", artifact: art });
+      const downloadArtifact = vi.fn().mockResolvedValue({ status: "available", attempts: 1 });
+      deps.redownloadArtifact = async (artifact, packageName, version) =>
+        downloadArtifact(
+          buildRedownloadRequest(packageName, version, artifact as never, config),
+        ) as never;
+      return { app: createTestApp(deps), downloadArtifact };
+    }
+
+    it("rebuilds a transformed artifact through its transform, against the source digest", async () => {
+      const { app, downloadArtifact } = appFor(
+        transformedArtifact(),
+        configWith([windowsPlatform]),
+      );
+
+      const response = await request(app).post(
+        "/admin/v1/redownload/gitwindows/2.55.0.5/windows/x86-64",
+      );
+
+      expect(response.status).toBe(202);
+      expect(downloadArtifact).toHaveBeenCalledWith({
+        artifactId: 91,
+        upstreamUrl: "https://example.test/Git-2.55.0.5-64-bit.tar.bz2",
+        storagePath: "gitwindows/2.55.0.5/windows/x86-64/Git-2.55.0.5-64-bit.zip",
+        // the SOURCE digest — the stored checksum describes the zip, not what upstream sends
+        expectedChecksum: "bb".repeat(32),
+        checksumType: "sha256",
+        transform: windowsPlatform.transform,
+      });
+    });
+
+    it("refuses when the config no longer declares the transform the row was stored by", async () => {
+      // Without this the raw tar.bz2 lands under the .zip name and passes every check:
+      // expectedChecksum falls back to source_checksum, which is its own digest.
+      const { app, downloadArtifact } = appFor(
+        transformedArtifact(),
+        configWith([{ ...windowsPlatform, transform: undefined }]),
+      );
+
+      const response = await request(app).post(
+        "/admin/v1/redownload/gitwindows/2.55.0.5/windows/x86-64",
+      );
+      const body = response.body as { error: string };
+
+      expect(response.status).toBe(409);
+      expect(body.error).toMatch(/stored by transform 'tar-bz2-to-zip@1'/);
+      expect(body.error).toMatch(/declares no transform/);
+      expect(downloadArtifact).not.toHaveBeenCalled();
+    });
+
+    it("refuses when the platform itself no longer resolves", async () => {
+      const { app, downloadArtifact } = appFor(
+        transformedArtifact(),
+        configWith([{ ...windowsPlatform, arch: "arm64" }]),
+      );
+
+      const response = await request(app).post(
+        "/admin/v1/redownload/gitwindows/2.55.0.5/windows/x86-64",
+      );
+
+      expect(response.status).toBe(409);
+      expect(downloadArtifact).not.toHaveBeenCalled();
+    });
+
+    it("still redownloads an untransformed artifact when the config has no transform", async () => {
+      const { app, downloadArtifact } = appFor(
+        transformedArtifact({
+          filename: "uv.tar.gz",
+          source_checksum: null,
+          source_file_size: null,
+          transform: null,
+        }),
+        configWith([{ ...windowsPlatform, transform: undefined }]),
+      );
+
+      const response = await request(app).post(
+        "/admin/v1/redownload/gitwindows/2.55.0.5/windows/x86-64",
+      );
+
+      expect(response.status).toBe(202);
+      expect(downloadArtifact).toHaveBeenCalledWith(
+        expect.objectContaining({ transform: undefined, expectedChecksum: "aa".repeat(32) }),
+      );
+    });
   });
 
   it("removes artifacts for a version", async () => {

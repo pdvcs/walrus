@@ -72,30 +72,61 @@ interface TarEntryStream {
   on(event: "end", listener: () => void): unknown;
 }
 
-/** Bounded, insertion-ordered (oldest-evicted) store of file entry content, keyed by path. */
-class LinkCache {
+/**
+ * Bounded, insertion-ordered (oldest-evicted) store of file entry content, keyed by path.
+ *
+ * Space is taken by `reserve` *before* an entry's content is collected, not by a `put`
+ * afterwards, so the collector's in-flight copy is counted against the same budget as the
+ * stored ones. That is what makes the budget a true ceiling: charging only on store left the
+ * in-flight copy outside the accounting, and the real bound was `budget + 2 × largest cached
+ * file` while the config, the Terraform memory pin and the changelog all asserted `budget`
+ * (WAL-73 finding 6).
+ *
+ * Entries are processed strictly one at a time, so evicting at reservation rather than at
+ * store cannot change which entries a hardlink finds — no `get` happens in between. It does
+ * mean the budget must cover the hardlink's target, everything between them, *and* the entry
+ * currently being collected; that was always the memory cost, it is now also the arithmetic.
+ *
+ * Exported for the accounting tests: the invariant is what changed, and it is not observable
+ * from the transform's output.
+ */
+export class LinkCache {
   private total = 0;
-  private readonly entries = new Map<string, Buffer>();
+  /** `reserved` is what the entry costs the budget; `content` may be a shorter view of it. */
+  private readonly entries = new Map<string, { content: Buffer; reserved: number }>();
 
   constructor(private readonly budget: number) {}
 
-  wouldFit(size: number): boolean {
-    return size <= this.budget;
-  }
-
-  put(name: string, content: Buffer): void {
-    while (this.total + content.length > this.budget && this.entries.size > 0) {
+  /**
+   * Charge `size` bytes to the budget, evicting oldest entries to make room. Returns false —
+   * having reserved nothing — when the entry could never fit whatever were evicted.
+   */
+  reserve(size: number): boolean {
+    if (size > this.budget) return false;
+    while (this.total + size > this.budget && this.entries.size > 0) {
       const oldest = this.entries.keys().next().value as string;
-      this.total -= this.entries.get(oldest)!.length;
+      this.total -= this.entries.get(oldest)!.reserved;
       this.entries.delete(oldest);
     }
-    if (this.total + content.length > this.budget) return;
-    this.entries.set(name, content);
-    this.total += content.length;
+    this.total += size;
+    return true;
+  }
+
+  /** Hand back a reservation whose content will not be stored after all. */
+  release(size: number): void {
+    this.total -= size;
+  }
+
+  /** Store content against a live reservation of `reserved` bytes. */
+  commit(name: string, content: Buffer, reserved: number): void {
+    const previous = this.entries.get(name);
+    // A duplicate path re-uses the new reservation; the old copy's charge retires with it.
+    if (previous !== undefined) this.total -= previous.reserved;
+    this.entries.set(name, { content, reserved });
   }
 
   get(name: string): Buffer | undefined {
-    return this.entries.get(name);
+    return this.entries.get(name)?.content;
   }
 }
 
@@ -212,30 +243,48 @@ export class TarBz2ToZipTransform implements ArchiveTransform {
       // later hardlink, while yazl's own backpressure governs the flow.
       entryCount += 1;
       required.delete(name);
-      const pending: Buffer[] = [];
-      let pendingSize = 0;
-      let cacheable = cache.wouldFit(header.size ?? 0);
+      // One allocation of the size the tar header declares, filled in place. Collecting into
+      // a chunk array and concatenating at flush transiently held two copies of the entry
+      // *on top of* a full cache; reserving the space up front and copying into it keeps the
+      // budget an actual ceiling (WAL-73 finding 6).
+      const declaredSize = header.size ?? 0;
+      let collected: Buffer | null = cache.reserve(declaredSize)
+        ? Buffer.allocUnsafe(declaredSize)
+        : null;
+      let filled = 0;
+      const abandon = (): void => {
+        if (collected === null) return;
+        collected = null;
+        cache.release(declaredSize);
+      };
       const collector = new Transform({
         transform(chunk: Buffer, _enc, cb) {
-          if (cacheable && cache.wouldFit(pendingSize + chunk.length)) {
-            pending.push(chunk);
-            pendingSize += chunk.length;
-          } else {
-            cacheable = false;
+          if (collected !== null) {
+            // An entry longer than its own header is not something the reservation describes.
+            if (filled + chunk.length > collected.length) {
+              abandon();
+            } else {
+              chunk.copy(collected, filled);
+              filled += chunk.length;
+            }
           }
           cb(null, chunk);
         },
         flush(cb) {
-          // Cache even empty files: a hardlink to one must still resolve to empty content.
-          if (cacheable) cache.put(name, Buffer.concat(pending));
-          // Drop the chunk references. yazl retains every Entry until it writes the central
-          // directory, and an Entry retains its read stream — which is this collector, which
-          // closes over `pending`. Without this the collected chunks of every entry stay
+          if (collected !== null) {
+            // Cache even empty files: a hardlink to one must still resolve to empty content.
+            // A short entry is stored as a view — `subarray` shares the allocation, so the
+            // reservation, not the view's length, is what stays charged.
+            const content = filled === collected.length ? collected : collected.subarray(0, filled);
+            cache.commit(name, content, declaredSize);
+          }
+          // Drop the collector's own reference either way. yazl retains every Entry until it
+          // writes the central directory, and an Entry retains its read stream — which is this
+          // collector, which closes over `collected`. Without this every entry's content stays
           // reachable for the whole archive, so peak memory tracks total archive size rather
           // than the link cache budget (measured: 307 MB on a 160 MB tree against a 64 MiB
-          // budget). The cache keeps its own concatenated copy, which `total` accounts for.
-          pending.length = 0;
-          pendingSize = 0;
+          // budget). What the cache kept is accounted for by its own reservation.
+          collected = null;
           cb();
         },
       });

@@ -22,7 +22,8 @@ export interface DownloadRequest {
   checksumType?: ChecksumAlgorithm;
   /**
    * Byte count the upstream API advertises for this artifact, where it publishes one. Takes
-   * precedence over the response's own `Content-Length`, being the independent number.
+   * precedence over the response's own `Content-Length`, being the independent number — but
+   * like it, is not compared against a content-coded response (see `advertisedSourceSize`).
    */
   expectedSize?: number;
   /**
@@ -218,7 +219,7 @@ export class DownloadService {
     // reaches `available` and is served. Compare against whatever size upstream committed
     // to before the body was read — and note the number describes the SOURCE bytes: it is
     // what upstream sent, not what the transform produced.
-    const advertisedSize = req.expectedSize ?? advertisedContentLength(response);
+    const advertisedSize = advertisedSourceSize(req.expectedSize, response);
     if (advertisedSize !== undefined && advertisedSize !== sourceSize) {
       throw new Error(
         `Size mismatch: upstream advertised ${advertisedSize} bytes, received ${sourceSize}`,
@@ -313,13 +314,24 @@ export class DownloadService {
 }
 
 /**
- * The response's own `Content-Length`, when it describes the bytes the caller will actually
- * receive. A content-coded response is decoded by `fetch` before we count it, so the header
- * describes the encoded body and comparing the two would fail every gzipped transfer.
+ * The byte count this transfer is expected to deliver, where one can be trusted: the upstream
+ * API's published size if the caller has one, otherwise the response's own `Content-Length`.
+ *
+ * Neither survives a content-coded response. `fetch` decodes the body before we count it, so
+ * the header describes the encoded bytes; and an API-published size describes the file as the
+ * publisher stores it, which a coding hop is under no obligation to round-trip. Comparing
+ * either against the decoded count risks failing a transfer that arrived intact, so a
+ * content-coded response skips the check whichever number the caller supplied — the guard is a
+ * property of the response, not of where the number came from (WAL-73 finding 5).
  */
-function advertisedContentLength(response: Response): number | undefined {
+function advertisedSourceSize(
+  expectedSize: number | undefined,
+  response: Response,
+): number | undefined {
   const encoding = response.headers.get("content-encoding");
   if (encoding && encoding.toLowerCase() !== "identity") return undefined;
+
+  if (expectedSize !== undefined) return expectedSize;
 
   const header = response.headers.get("content-length");
   if (header === null) return undefined;

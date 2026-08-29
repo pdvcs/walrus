@@ -406,6 +406,33 @@ describe("DownloadService", () => {
       expect(result.status).toBe("available");
     });
 
+    it("does not compare against the API-published size on a content-coded response either", async () => {
+      // github-releases now publishes `size` for every asset (WAL-67), and an `expectedSize`
+      // used to be taken ahead of the guard rather than through it — so a coded response
+      // would have been size-checked after all. The bail belongs to the response, not to
+      // where the number came from.
+      const { storage, statusRepo } = harness();
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValue(makeSizedResponse("decoded-body", 4, { "content-encoding": "gzip" }));
+
+      const service = new DownloadService({} as Pool, storage, {
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        statusRepo,
+        maxRetries: 0,
+      });
+
+      const result = await service.downloadArtifact({
+        artifactId: 5,
+        upstreamUrl: "https://example.test/f",
+        storagePath: "p/5/os/arch/f",
+        expectedSize: 4,
+      });
+
+      expect(result.status).toBe("available");
+      expect(storage.delete).not.toHaveBeenCalled();
+    });
+
     it("makes two whole-transfer attempts by default, not three", async () => {
       // An attempt can be 1.6 GB now, and the GCS half retries its own chunks, so the outer
       // loop only re-covers the upstream fetch. The next scheduled sync is the third attempt.

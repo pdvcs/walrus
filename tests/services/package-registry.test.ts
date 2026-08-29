@@ -345,9 +345,7 @@ cve_version_extract = "^(\\\\d+\\\\.\\\\d+\\\\.\\\\d+)"`),
   it("the shipped gitwindows config still declares its rule", () => {
     // Pins the real file: deleting the line is a silent return to under-gating, and this is
     // the only test that would notice.
-    const shipped = loadPackageConfig(
-      path.join(process.cwd(), "packages/walrus-gitwindows.toml"),
-    );
+    const shipped = loadPackageConfig(path.join(process.cwd(), "packages/walrus-gitwindows.toml"));
     expect(computeVulnInput(shipped)!.cveVersionExtract).toBe("^(\\d+\\.\\d+\\.\\d+)");
   });
 

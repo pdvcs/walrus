@@ -8,7 +8,7 @@ import { createStorageBackend } from "./storage/index.js";
 import { loadAllPackages } from "./services/package-registry.js";
 import { reconcileAllPackageVulns } from "./services/vuln-config.js";
 import { createVulnSyncImpls } from "./vuln/sync/impls.js";
-import { DownloadService, ChecksumAlgorithm } from "./services/download-service.js";
+import { DownloadService } from "./services/download-service.js";
 import { RetentionService } from "./services/retention-service.js";
 import {
   SyncAlreadyRunningError,
@@ -18,7 +18,7 @@ import {
 } from "./services/sync-service.js";
 import { createPackagesRouter } from "./routes/packages.js";
 import { createDownloadRouter } from "./routes/download.js";
-import { buildRedownloadPath, createAdminRouter } from "./routes/admin.js";
+import { buildRedownloadRequest, createAdminRouter } from "./routes/admin.js";
 import { createInternalRouter } from "./routes/internal.js";
 import { createVulnsRouter } from "./routes/vulns.js";
 import { createCvesRouter } from "./routes/cves.js";
@@ -397,21 +397,12 @@ export function createApp(): express.Express {
         return { artifact, version: versionRow.version };
       },
       redownloadArtifact: async (artifact, packageName, version) => {
-        // A transformed artifact must be redownloaded through its transform, and verified
-        // against the SOURCE digest — the stored `checksum` describes the transformed bytes
-        // and would fail against the tar.bz2 upstream sends (WAL-56/58).
-        const packageConfig = configs.find((c) => c.name === packageName);
-        const platform = packageConfig?.platforms.find(
-          (p) => p.os === artifact.os && p.arch === artifact.arch,
+        const request = buildRedownloadRequest(
+          packageName,
+          version,
+          artifact,
+          configs.find((c) => c.name === packageName),
         );
-        const request = {
-          artifactId: artifact.id,
-          upstreamUrl: artifact.upstream_url,
-          storagePath: buildRedownloadPath(packageName, version, artifact),
-          expectedChecksum: (artifact.source_checksum ?? artifact.checksum) || undefined,
-          checksumType: normalizeChecksumType(artifact.checksum_type),
-          transform: platform?.transform,
-        };
         return sharedDownloadService.downloadArtifact(request, false);
       },
       listArtifactsByPackageVersion: async (packageName, version, platform) => {
@@ -595,10 +586,3 @@ if (require.main === module) {
 }
 
 export default app;
-
-function normalizeChecksumType(type: string | null): ChecksumAlgorithm | undefined {
-  if (type === "sha256" || type === "sha1") {
-    return type;
-  }
-  return undefined;
-}

@@ -158,6 +158,20 @@ New deps: `fuzzball`, `semver` (runtime); `fast-check` (dev). `pg_trgm` extensio
 - **WAL-57 (Fixed):** GitHub release discovery now carries the API's own `size` for each
   asset, so the truncation check prefers an independent number over the response's
   `Content-Length` (WAL-67's intent) instead of only when a checksum sidecar happens to exist.
+- **WAL-73 (Fixed):** Review follow-ups on the transform stage. Two memory defects that made
+  peak scale with artifact size rather than with `link_cache_bytes` — hardlink duplicates
+  bypassing backpressure, and collected chunks retained for the life of the archive — plus the
+  test assertion that could not have caught either (it sampled `heapUsed`, which cannot see
+  Buffer memory, once at the end). The link cache now reserves space before an entry is
+  collected instead of charging for it once stored, so `link_cache_bytes` is the ceiling the
+  config, the changelog and the Cloud Run memory pins have been claiming rather than
+  `budget + 2 x largest cached file`. An admin redownload of an artifact whose `transform` is
+  recorded now fails with 409 when the live config resolves no transform for that platform,
+  instead of quietly storing the raw `.tar.bz2` under the served `.zip` name and passing every
+  check on the way. An upstream-published `size` no longer bypasses the content-coding bail
+  that the response's own `Content-Length` obeys. `validate`'s spot-check line names the
+  platform it actually checked rather than always `linux/x86-64`, which misreported every
+  Windows-only package. Releasing a transform semaphore permit twice is now a no-op.
 
 - **WAL-78 (Fixed):** CVE ranges are evaluated against the upstream version a served version
   embeds, where the package declares how ([ADR-008](engineering/decisions/ADR-008-cve-version-normalisation.md)).
