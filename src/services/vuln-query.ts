@@ -13,6 +13,11 @@ import {
   VERSION_NA,
   VersionRange,
 } from "../vuln/version-ranges.js";
+import {
+  deriveCveVersion,
+  describeNormalisation,
+  patternFromAffects,
+} from "../vuln/cve-version.js";
 
 export interface DataFreshness {
   nvd_last_sync: string | null;
@@ -104,6 +109,11 @@ export async function queryVulns(
       ? `version "${version}" could not be parsed; range checks are inconclusive and matching CVEs are included flagged as range-uncomparable`
       : undefined;
 
+  // ADR-008: the package's normalisation rule travels on the rows it governs.
+  const cveVersion = versionGiven
+    ? deriveCveVersion(version!, patternFromAffects(rows))
+    : { value: version ?? "", normalisedFrom: null };
+
   const byCve = new Map<
     string,
     { rows: AffectsWithCveRow[]; matchedRow: AffectsWithCveRow | null; reason: string | null }
@@ -135,10 +145,10 @@ export async function queryVulns(
       continue;
     }
     if (!entry.matchedRow || entry.reason === "range-uncomparable" || entry.reason === VERSION_NA) {
-      const result = evaluateRange(version!, toRange(row));
+      const result = evaluateRange(cveVersion.value, toRange(row));
       if (result.matched) {
         entry.matchedRow = row;
-        entry.reason = result.reason;
+        entry.reason = describeNormalisation(result.reason, cveVersion);
       }
     }
   }

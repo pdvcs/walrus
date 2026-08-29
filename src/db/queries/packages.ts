@@ -5,7 +5,9 @@ export async function upsertPackage(
   pool: Pool,
   // removed_at is deliberately absent: new rows are never tombstones, and a conflict
   // update must not clobber an existing row's removal marker.
-  pkg: Omit<PackageRow, "created_at" | "updated_at" | "removed_at">,
+  // cve_version_extract is excluded deliberately: it is owned by reconcilePackageVuln
+  // (ADR-008), which runs alongside this upsert, so a sync must not reset it to undefined.
+  pkg: Omit<PackageRow, "created_at" | "updated_at" | "removed_at" | "cve_version_extract">,
 ): Promise<PackageRow> {
   const { rows } = await pool.query<PackageRow>(
     `INSERT INTO packages (name, display_name, vendor, description, website, config_hash, enabled)

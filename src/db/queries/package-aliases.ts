@@ -22,6 +22,8 @@ export interface VulnConfigInput {
   cpes: CpePair[];
   osvEcosystem: string | null;
   osvName: string | null;
+  /** ADR-008: regex whose first capture yields the version used for CVE ranges. */
+  cveVersionExtract: string | null;
 }
 
 export interface OsvPackageRow {
@@ -96,12 +98,12 @@ export async function reconcilePackageVuln(pool: Pool, input: VulnConfigInput): 
       ],
     );
 
-    // OSV mapping on the package row.
-    await client.query(`UPDATE packages SET osv_ecosystem = $2, osv_name = $3 WHERE name = $1`, [
-      input.packageName,
-      input.osvEcosystem,
-      input.osvName,
-    ]);
+    // OSV mapping and CVE version normalisation on the package row.
+    await client.query(
+      `UPDATE packages SET osv_ecosystem = $2, osv_name = $3, cve_version_extract = $4
+       WHERE name = $1`,
+      [input.packageName, input.osvEcosystem, input.osvName, input.cveVersionExtract],
+    );
 
     // Affects rows must derive from the current config: without an OSV mapping
     // the package is never visited by osvSyncAll, and incremental NVD sync only
@@ -167,7 +169,8 @@ export async function clearPackageVulnConfig(pool: Pool, packageName: string): P
     );
     await client.query(`DELETE FROM package_cpes WHERE package_name = $1`, [packageName]);
     await client.query(
-      `UPDATE packages SET osv_ecosystem = NULL, osv_name = NULL WHERE name = $1`,
+      `UPDATE packages SET osv_ecosystem = NULL, osv_name = NULL, cve_version_extract = NULL
+       WHERE name = $1`,
       [packageName],
     );
     // No mappings remain, so no sync will ever revisit these rows (WAL-26).

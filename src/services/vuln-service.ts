@@ -5,6 +5,11 @@
  */
 import { AffectsWithCveRow } from "../db/queries/cves.js";
 import { evaluateRange, VERSION_NA, VersionRange } from "../vuln/version-ranges.js";
+import {
+  deriveCveVersion,
+  describeNormalisation,
+  patternFromAffects,
+} from "../vuln/cve-version.js";
 
 export interface CachedVersionInput {
   version: string;
@@ -57,7 +62,10 @@ export function crossReferenceVersions(
   versions: CachedVersionInput[],
   affects: AffectsWithCveRow[],
 ): VersionVulnResult[] {
+  // ADR-008: the package's normalisation rule travels on the rows it governs.
+  const pattern = patternFromAffects(affects);
   return versions.map((v) => {
+    const cveVersion = deriveCveVersion(v.version, pattern);
     const byCve = new Map<string, { matched: AffectsWithCveRow; reason: string }>();
     for (const row of affects) {
       const existing = byCve.get(row.cve_id);
@@ -72,8 +80,12 @@ export function crossReferenceVersions(
         if (!existing) byCve.set(row.cve_id, { matched: row, reason: VERSION_NA });
         continue;
       }
-      const result = evaluateRange(v.version, toRange(row));
-      if (result.matched) byCve.set(row.cve_id, { matched: row, reason: result.reason });
+      const result = evaluateRange(cveVersion.value, toRange(row));
+      if (result.matched)
+        byCve.set(row.cve_id, {
+          matched: row,
+          reason: describeNormalisation(result.reason, cveVersion),
+        });
     }
 
     const vulns: VersionVuln[] = [...byCve.entries()].map(([cveId, { matched, reason }]) => ({
@@ -143,10 +155,13 @@ export function findBlockingCve(
   version: string,
   affects: AffectsWithCveRow[],
 ): AffectsWithCveRow | null {
+  // ADR-008: evaluate against the upstream version the served one embeds, where the package
+  // declares how. Absent a rule this is the served version and nothing changes.
+  const cveVersion = deriveCveVersion(version, patternFromAffects(affects));
   for (const row of affects) {
     if (!isKnownCritical(row)) continue;
     if (row.version_na) continue;
-    const result = evaluateRange(version, toRange(row));
+    const result = evaluateRange(cveVersion.value, toRange(row));
     if (result.matched && result.reason !== "range-uncomparable") return row;
   }
   return null;

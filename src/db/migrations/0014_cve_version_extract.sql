@@ -1,0 +1,23 @@
+-- Per-package CVE version normalisation (WAL-78, ADR-008).
+--
+-- Some packages serve a version that *embeds* an upstream version rather than being one.
+-- Git for Windows serves 2.55.0.5 — Git 2.55.0, Windows rebuild 5 — while the CVE ranges
+-- attached to its CPE pairs (git-scm:git, git:git) name three-component upstream Git. NVD has
+-- no CPE for the downstream distribution at all, so the CVEs really are Git's.
+--
+-- Comparing the served string directly under-gates: `< 2.56.0` matches 2.55.0.5 correctly, but
+-- a CVE naming 2.55.0 exactly, or bounding inclusively at it, does not — even though the served
+-- build contains that Git. Under-gating is the failure direction that matters, so per ADR-008
+-- the served version is normalised to the upstream version it embeds before ranges are
+-- evaluated, and each package declares how in its own TOML.
+--
+--   cve_version_extract  a regex whose first capture group yields the version used for CVE
+--                        range evaluation, e.g. '^(\d+\.\d+\.\d+)' for gitwindows.
+--                        NULL = compare the served version directly, as every package did
+--                        before this column existed.
+--
+-- Reconciled from `[vulnerabilities].cve_version_extract` on boot, exactly as osv_ecosystem /
+-- osv_name are. Only range evaluation sees the normalised form: the served version,
+-- version_sort, retention and the download path all continue to use the full version.
+
+ALTER TABLE packages ADD COLUMN IF NOT EXISTS cve_version_extract TEXT;

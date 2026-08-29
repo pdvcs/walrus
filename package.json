@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit",
     "dev": "npm run build:static && dotenv -e .env.local -e .env.secrets -- tsx watch src/main.ts",
     "test": "dotenv -e .env.local -e .env.secrets -- vitest run",
-    "test:unit": "vitest run tests/common tests/discovery tests/services tests/scripts tests/transform tests/vuln/normalize.test.ts tests/vuln/version-ranges.test.ts tests/vuln/cpe.test.ts tests/vuln/sync/nvd-client.test.ts",
+    "test:unit": "vitest run tests/common tests/discovery tests/services tests/scripts tests/transform tests/vuln/normalize.test.ts tests/vuln/cve-version.test.ts tests/vuln/version-ranges.test.ts tests/vuln/cpe.test.ts tests/vuln/sync/nvd-client.test.ts",
     "test:integration": "dotenv -e .env.local -e .env.secrets -- vitest run tests/db",
     "migrate": "dotenv -e .env.local -e .env.secrets -- tsx src/db/client.ts migrate",
     "db:reset": "read -p 'Wipe walrus DB? [type \"yes\" to wipe] ' yn && [ \"$yn\" = yes ] && psql walrus -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO walrus;' && npm run migrate || echo Aborted.",

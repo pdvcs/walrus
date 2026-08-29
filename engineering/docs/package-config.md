@@ -802,13 +802,44 @@ osv = { ecosystem = "Bitnami", name = "node" }
 # (lowercased, whitespace collapsed). The package's own name and display_name
 # are always added automatically, so you only list extra synonyms here.
 aliases = ["openjdk", "open jdk", "jdk", "java"]
+# Only where the served version EMBEDS an upstream version rather than being one.
+# The first capture group is what CVE ranges are evaluated against (ADR-008).
+# cve_version_extract = "^(\\d+\\.\\d+\\.\\d+)"
 ```
 
-| Field     | Required? | Notes                                                                               |
-| --------- | --------- | ----------------------------------------------------------------------------------- |
-| `cpes`    | No        | Array of `vendor:product`; first = primary. Omit for OSV-only packages (e.g. `uv`). |
-| `osv`     | No        | `{ ecosystem, name }`. Enables the weekly OSV cross-check for this package.         |
-| `aliases` | No        | Extra human synonyms. Name + display_name are auto-included.                        |
+| Field                 | Required? | Notes                                                                               |
+| --------------------- | --------- | ----------------------------------------------------------------------------------- |
+| `cpes`                | No        | Array of `vendor:product`; first = primary. Omit for OSV-only packages (e.g. `uv`). |
+| `osv`                 | No        | `{ ecosystem, name }`. Enables the weekly OSV cross-check for this package.         |
+| `aliases`             | No        | Extra human synonyms. Name + display_name are auto-included.                        |
+| `cve_version_extract` | No        | Regex whose first capture is the version CVE ranges compare against. See below.     |
+
+**`cve_version_extract` — when the served version is not the version CVEs name
+(ADR-008).** Most packages serve the same version NVD names, and must not set
+this. Set it only where the served version _contains_ an upstream version:
+`gitwindows` serves `2.55.0.5` — Git 2.55.0, Windows rebuild 5 — while the CVE
+ranges on its CPE pairs name three-component upstream Git, because NVD has no
+CPE for the downstream distribution.
+
+Without it, matching under-gates. `< 2.56.0` matches `2.55.0.5` correctly, but a
+CVE naming `2.55.0` exactly — or bounding inclusively at it — does not, even
+though the served build contains that Git. With
+`cve_version_extract = "^(\\d+\\.\\d+\\.\\d+)"` the gate compares `2.55.0`
+and all four shapes match.
+
+The accepted cost is **over-blocking**: under `<= 2.55.0` every `2.55.0.x`
+blocks, including a rebuild that fixed the issue. That is deliberate — safety
+over availability — and the operator suppression list (WAL-70) is the way out
+for a specific block that proves wrong.
+
+**Known limitation, the mirror image:** a CVE naming a downstream-specific
+revision exactly (`2.55.0.3`) is compared against the normalised `2.55.0` and
+misses. For `gitwindows` this is low risk, since such a CVE would need a
+`git_for_windows` CPE and NVD has none.
+
+Only range evaluation sees the normalised form. The served version,
+`version_sort`, retention and the download path all keep using the full version,
+so nothing about what walrus catalogues or serves changes.
 
 **Authoring discipline (WAL-3 MANUAL_TEST):** CPE `vendor:product` pairs must be
 verified against the live NVD CPE dictionary

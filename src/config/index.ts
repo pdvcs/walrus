@@ -23,8 +23,9 @@ const configSchema = z.object({
   // the two limits govern different resources.
   TRANSFORM_CONCURRENCY: z.coerce.number().int().min(1).default(2),
   // Resumable-upload chunk size for GCS. Setting it *at all* is what turns a single
-  // unresumable PUT into a resumable multi-chunk upload: @google-cloud/storage 7.21.0 gates
-  // its retry buffer on `multiChunkMode = !!chunkSize` (resumable-upload.js:504). The price is
+  // unresumable PUT into a resumable multi-chunk upload: @google-cloud/storage 7.22.0 gates
+  // its retry buffer on `multiChunkMode = !!chunkSize` (resumable-upload.js:504, re-verified
+  // unchanged from 7.21.0 at the 7.22.0 bump). The price is
   // one buffer of this size per concurrent upload, so resident cost is
   // GCS_UPLOAD_CHUNK_BYTES x DOWNLOAD_CONCURRENCY.
   //

@@ -8,6 +8,12 @@ export interface PackageRow {
   enabled: boolean;
   /** Tombstone (WAL-53): set when the package's TOML disappeared. Null = never removed. */
   removed_at: Date | null;
+  /**
+   * ADR-008: regex whose first capture yields the version used for CVE range evaluation.
+   * NULL = compare the served version directly. Only range evaluation sees the normalised
+   * form; the served version, version_sort, retention and downloads use the full version.
+   */
+  cve_version_extract: string | null;
   created_at: Date;
   updated_at: Date;
 }

@@ -199,6 +199,28 @@ const VulnerabilitiesSchema = z.object({
   osv: z.object({ ecosystem: z.string().min(1), name: z.string().min(1) }).optional(),
   // Human-name aliases for resolution / autocomplete (normalized on load).
   aliases: z.array(z.string().min(1)).default([]),
+  // CVE version normalisation (WAL-78, ADR-008). A regex whose FIRST CAPTURE GROUP yields the
+  // version used for CVE range evaluation. Set it only where the served version embeds an
+  // upstream version rather than being one: gitwindows serves 2.55.0.5 (Git 2.55.0, Windows
+  // rebuild 5) against CVE ranges that name three-component Git, so `^(\d+\.\d+\.\d+)`
+  // makes the gate compare 2.55.0. Absent = compare the served version directly.
+  //
+  // Deliberately explicit rather than inferred: silently truncating any four-component version
+  // would change matching for every package that later grows one.
+  cve_version_extract: z
+    .string()
+    .min(1)
+    .refine(
+      (p) => {
+        try {
+          return new RegExp(p).exec("") !== undefined && /\((?!\?)/.test(p);
+        } catch {
+          return false;
+        }
+      },
+      { message: "cve_version_extract must be a valid regex containing a capture group" },
+    )
+    .optional(),
 });
 
 export type VulnerabilitiesConfig = z.infer<typeof VulnerabilitiesSchema>;

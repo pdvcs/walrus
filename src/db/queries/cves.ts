@@ -85,6 +85,15 @@ export interface AffectsWithCveRow {
   description: string | null;
   is_kev: boolean;
   raw: { cve?: { references?: Array<{ url: string }> } } | null;
+  /**
+   * The owning package's `cve_version_extract` (ADR-008), joined on so the rule travels with
+   * the rows it governs. There is exactly one affects loader and it is always package-scoped,
+   * so carrying the rule here means every evaluator has it without threading a parameter
+   * through nine call sites — one of which would eventually be missed, and a missed one
+   * under-gates silently. Optional so existing row literals in tests keep compiling; absent
+   * behaves exactly as before this column existed.
+   */
+  cve_version_extract?: string | null;
 }
 
 export interface AffectedPackageRow {
@@ -254,8 +263,10 @@ export async function listAffectsWithCveForPackage(
     `SELECT ca.cve_id, ca.version_start, ca.version_start_excl, ca.version_end,
             ca.version_end_excl, ca.exact_version, ca.fixed_in, ca.source, ca.version_na,
             c.severity, c.severity_source, c.cvss_v3_score, c.cvss_v4_score, c.cvss_v2_score,
-            c.description, c.is_kev, c.raw
-     FROM cve_affects ca JOIN cves c ON c.id = ca.cve_id
+            c.description, c.is_kev, c.raw, p.cve_version_extract
+     FROM cve_affects ca
+     JOIN cves c ON c.id = ca.cve_id
+     JOIN packages p ON p.name = ca.package_name
      WHERE ca.package_name = $1
      ORDER BY ca.cve_id DESC`,
     [packageName],

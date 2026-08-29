@@ -138,9 +138,26 @@ New deps: `fuzzball`, `semver` (runtime); `fast-check` (dev). `pg_trgm` extensio
   which can run on-demand syncs and had inherited a 512 MiB memory default — is now pinned
   1Gi/1cpu with one transform at a time. Sized against the measured transform footprint
   (up to ~475 MiB of hardlink link cache per artifact on the arm64 tree).
+- **WAL-62 (Added):** [ADR-006](engineering/decisions/ADR-006-transformed-artifacts.md) —
+  _walrus may serve repackaged artifacts under stated conditions_. Accepted 2026-08-29. Records
+  the eight conditions repackaging is permitted under, what a consumer verifies against
+  (`checksum` = served bytes, `source_checksum` = what the vendor published), and what is
+  given up: no vendor signature on the served zip, no byte-identity with upstream, and a
+  162.4 MB zip against a 59 MB `.7z`.
 - **WAL-57 (Fixed):** GitHub release discovery now carries the API's own `size` for each
   asset, so the truncation check prefers an independent number over the response's
   `Content-Length` (WAL-67's intent) instead of only when a checksum sidecar happens to exist.
+
+- **WAL-78 (Fixed):** CVE ranges are evaluated against the upstream version a served version
+  embeds, where the package declares how ([ADR-008](engineering/decisions/ADR-008-cve-version-normalisation.md)).
+  `gitwindows` serves `2.55.0.5` — Git 2.55.0, Windows rebuild 5 — against CVE ranges naming
+  three-component Git, so `< 2.56.0` matched but a CVE naming `2.55.0` exactly, or bounding
+  inclusively at it, silently did not: a build containing the affected Git looked clean. The rule
+  is a regex in `[vulnerabilities].cve_version_extract`, reconciled to `packages` on boot like
+  `osv_*`, and joined onto the affects rows so every evaluator has it without threading a
+  parameter through nine call sites. The accepted cost is over-blocking — every `2.55.0.x` blocks
+  under `<= 2.55.0` — which is deliberate, and `matched_because` now names both versions so a
+  block is explicable. Packages declaring no rule are unaffected.
 
 **Wave 12 — IntelliJ IDEA and multi-GB artifacts**
 

@@ -129,9 +129,32 @@ drop_symlinks = ["dev/fd", "dev/stdin", "dev/stdout", "dev/stderr", "etc/mtab"]
 # the onboarding plan; revisit on demand.
 
 [vulnerabilities]
-# CPE pairs deliberately not set yet: none of the candidate pairs for Git for Windows is
-# assumed correct (git-scm:git, git:git, git_for_windows:git_for_windows are the
-# candidates), and a wrong pair silently attaches another product's CVEs. Verification
-# against the live NVD CPE dictionary is MANUAL_TEST step 8 of WAL-60 — record date and
-# entry counts here once signed off, per the walrus-vscode.toml precedent.
+# git-scm:git 1016 entries, git:git 205 entries (verified 2026-08-29, WAL-60 step 8).
+#
+# Both pairs are the same product under two vendor spellings NVD has used over time: git:git
+# carries the earliest releases (Git 0.01-0.03), git-scm:git carries 0.6.0 onward and is the
+# modern canonical form. Both are declared because taking either alone loses the other's
+# coverage — the same shape walrus-openjdk.toml uses. git_for_windows:git_for_windows was a
+# candidate and does NOT exist in the dictionary (0 entries), nor do git-scm:git_for_windows
+# or microsoft:git: NVD has never named the downstream distribution separately, consistent
+# with Git for Windows CVEs being Git CVEs.
+#
+cpes = ["git-scm:git", "git:git"]
+# CVE range evaluation compares the Git version this build embeds, not the served string
+# (WAL-78, ADR-008). We serve 2.55.0.5 — Git 2.55.0, Windows rebuild 5 — while the ranges on the
+# pairs above name three-component upstream Git. Without this, "< 2.56.0" matched correctly but a
+# CVE naming 2.55.0 exactly, or bounding inclusively at it, did not match 2.55.0.5 and silently
+# under-gated a build that contains the affected Git.
+#
+# The accepted cost is over-blocking: under "<= 2.55.0" every 2.55.0.x blocks, including a
+# rebuild that fixed the issue. That is deliberate — safety over availability — and WAL-70's
+# suppression list is the way out if a specific block proves wrong.
+#
+# Known limitation, the mirror image: a CVE naming a Windows-specific revision exactly
+# (2.55.0.3) compares against the normalised 2.55.0 and misses. Low risk — that would need a
+# git_for_windows CPE, which does not exist in NVD (0 entries, verified 2026-08-29).
+#
+# Only range evaluation sees the normalised form. The served version, version_sort, retention
+# and the download path all keep using 2.55.0.5.
+cve_version_extract = "^(\\d+\\.\\d+\\.\\d+)"
 aliases = ["git", "git for windows", "git-for-windows", "gitwin"]
