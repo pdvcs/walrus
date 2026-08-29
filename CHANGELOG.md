@@ -243,6 +243,24 @@ New deps: `fuzzball`, `semver` (runtime); `fast-check` (dev). `pg_trgm` extensio
   mid-window is spanned without special-casing. The sub-mode is named rather than inferred from
   the response shape, and mixing its fields with the array shape's is a schema error rather
   than a silent no-op.
+- **WAL-68 (Added):** `packages/walrus-intellij.toml` — IntelliJ IDEA Ultimate, served as the
+  Windows `.win.zip` and the Apple Silicon `.dmg`, with everything (URL, sha256 sidecar,
+  published size, release date) read from JetBrains' release API rather than constructed.
+  Ultimate only: JetBrains has stopped publishing Community, and the API agrees. Groups come
+  straight from the version — the first two components equal the API's own `majorVersion` for
+  all 281 releases — and CVE tracking runs on `jetbrains:intellij_idea` (230 dictionary entries,
+  verified live 2026-08-30), with no `cve_version_extract`, because IDEA's fourth component is
+  JetBrains' own rather than a downstream rebuild counter. Ships at one group and one version so
+  local and GCP Dev pull ~3.2 GB rather than the 25.8 GB production will hold; the production
+  rule sits commented beside it. Both platforms stay configured even at that depth, since the
+  `macM1` key and the sidecar are the only per-platform paths in the config and would otherwise
+  reach production unexercised.
+- **WAL-68 (Changed):** The platform-map sub-mode reports its skips once per sync instead of
+  once per release and platform. JetBrains' feed carries every IDEA release back to 2011, and
+  152 of its 281 records predate the `windowsZip` and `macM1` keys entirely — 276 warn lines on
+  a feed where nothing was wrong. The summary is keyed by platform and carries a count and a
+  sample, which is what distinguishes an asset that has gone missing from an archive that
+  predates the keys.
 
 **Wave 13 — CPE version semantics**
 

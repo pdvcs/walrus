@@ -1,0 +1,127 @@
+name = "intellij"
+display_name = "IntelliJ IDEA Ultimate"
+vendor = "JetBrains"
+website = "https://www.jetbrains.com/idea/"
+description = "Capable and ergonomic IDE for JVM, web, and enterprise development"
+
+# JetBrains release API:
+#   GET /products/releases?code=IIU&latest=false&type=release
+#     -> { "IIU": [ { version, majorVersion, date, build, downloads: { <key>: {...} } }, ... ] }
+#   281 releases as of 2026-08-30. Each `downloads` entry holds `link`, `size` and
+#   `checksumLink` (a .sha256 sidecar) — everything this config needs comes from the API,
+#   nothing is constructed.
+#
+# Ultimate (IIU), not Community (IIC). JetBrains has stopped publishing Community and the API
+# agrees: IIC's newest group is 2025.3 with a single release and no 2026.x, so the window this
+# package serves exists only for Ultimate. Ultimate is commercial — walrus mirrors it for
+# licensed internal users; see WAL-68 notes on the JetBrains agreement.
+
+[discovery]
+type = "json-api"
+url = "https://data.services.jetbrains.com/products/releases?code=IIU&latest=false&type=release"
+
+# Inline mode: the response holds full release objects, so version, date and downloads all
+# come from the same record.
+releases_path = "$.IIU[*]"
+release_version_field = "version"
+release_date_field = "date"
+
+# Platform-map sub-mode (WAL-65). `downloads` is an object *keyed* by platform — windowsZip,
+# macM1, linux, thirdPartyLibrariesJson, ... — not an array carrying the platform in a field,
+# so each [[platforms]] entry selects its download by os_upstream matching the key. Keys we do
+# not configure are ignored without noise.
+files_field = "downloads"
+files_shape = "platform-map"
+file_url_field = "link"
+file_checksum_url_field = "checksumLink"
+file_size_field = "size"
+
+[versioning]
+# Calendar versioning, not semver: 2026.2 is year.release, and a build may carry three or four
+# components (2025.3.6, 2025.3.6.1). `type` is descriptive only — nothing in src/ reads it —
+# but labelling this semver would be wrong.
+type = "calver"
+# The API's own `majorVersion` is the group, and the first two components of `version` equal it
+# for all 281 releases (verified 2026-08-30), so the group falls straight out of the version.
+version_group_extract = "^(\\d+\\.\\d+)"
+# The feed carries every IDEA release back to 2011 — 281 records, of which 152 predate the
+# windowsZip and macM1 download keys entirely. Nothing below 2024.1 is ever a retention
+# candidate (production keeps four groups, currently 2026.2 down to 2025.2), and every release
+# from 2024.1 on carries both keys, so this floor sits clear of the window without pretending
+# to be it. Verified 2026-08-30: 71 releases at or above 2024.1, none missing either key.
+min_version = "2024.1"
+lts_support = false
+
+[retention]
+# Ships now, for local and GCP Dev (PO, 2026-08-29). Artifacts are ~1.6 GB each, so the test
+# environments take 1 group x 1 version x 2 platforms = 2 artifacts, ~3.2 GB, instead of the
+# 16 artifacts / 25.8 GB production will hold.
+#
+# Both platforms stay configured deliberately even at this depth: the macM1 asset key and the
+# checksumLink sidecar are the only two things in this config that differ per platform, and
+# dropping macos/arm64 would leave both unexercised before production — the same gap that left
+# arm64 untested when it was descoped from gitwindows. Depth is where the gigabytes are;
+# breadth is where the code paths are.
+versions_per_group = 1
+groups_to_keep = 1
+
+# Production retention. Not active: uncomment these two and delete the 1/1 pair above for the
+# production rollout. groups_to_keep = 4 -> 2026.2, 2026.1, 2025.3, 2025.2.
+# versions_per_group = 2
+# groups_to_keep = 4
+
+# Upstream publishes a real release date per build, so the embargo is date-anchored rather than
+# resting on walrus's discovery watermark.
+#
+# Three days is deliberate here, not inherited. The open question was whether an embargo makes
+# sense at all for a product whose groups are long-lived and patch often — a long one could
+# mean serving a build JetBrains has already superseded. Measured across the six newest groups
+# (48 consecutive-release intervals, 2026-08-30): median 25 days, and only one interval of the
+# 48 is 3 days or shorter. A 3-day embargo therefore sits an order of magnitude inside the
+# cadence: it lets a build settle without ever holding a superseded one for meaningfully long,
+# and retention keeps the previous version servable while the new one cools, so there is no
+# window where the package serves nothing.
+cooling_off_days = 3
+
+[checksum]
+# Every download object carries its own checksumLink (.sha256), read above via
+# file_checksum_url_field — so this is a separate-file checksum whose URL the API supplies
+# rather than one built from url_template.
+type = "separate-file"
+algorithm = "sha256"
+
+# Only the two platforms the estate runs. JetBrains also publishes linux, linuxARM64, mac
+# (Intel), windows and windowsARM64 (both .exe installers); none are configured, and the
+# platform-map sub-mode ignores an unconfigured key rather than warning per release.
+#
+# No filename_template on either: JetBrains renamed the artifact prefix from `ideaIU-` to
+# `idea-` between 2025.2 and 2025.3, directly through the production retention window, so no
+# template can span the versions retention keeps. The filename is the API link's own tail.
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "windowsZip" # the .win.zip, not the .exe installer — consistent with gitwindows
+arch_upstream = "x64"
+extension = "zip"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "macM1"
+arch_upstream = "aarch64"
+extension = "dmg"
+
+[vulnerabilities]
+# jetbrains:intellij_idea 230 entries (verified 2026-08-30 against the live NVD dictionary).
+# jetbrains:intellij and jetbrains:idea both return 0 and are not candidates.
+cpes = ["jetbrains:intellij_idea"]
+aliases = ["intellij", "idea", "intellij idea", "intellij-idea", "intellij idea ultimate"]
+
+# No cve_version_extract. gitwindows needs one because it serves 2.55.0.5 — a Windows rebuild
+# of Git 2.55.0 — against CVE ranges naming upstream Git. IntelliJ's 2025.3.6.1 is JetBrains'
+# own version, and NVD's ranges name JetBrains versions, so the served version is already the
+# one to compare. Truncating it would be wrong: a fix can genuinely land in the fourth
+# component. Checked 2026-08-30 across the 69 CVEs on this CPE — the bounds are almost all
+# `versionEndExcluding` on two- or three-component versions, which a four-component build
+# compares against correctly.

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { JsonApiStrategy } from "../../src/discovery/json-api.js";
 import { log } from "../../src/common/log.js";
 import { PackageConfig } from "../../src/types/package-config.js";
+import { selectRetentionWindow } from "../../src/common/retention-window.js";
 
 // ── Inline submode config (Golang) ──────────────────────────────────────────
 
@@ -627,10 +628,56 @@ describe("JsonApiStrategy — platform-map submode (JetBrains)", () => {
 
     expect(versions[0].artifacts.has("windows/arm64")).toBe(false);
     expect(versions[0].artifacts.size).toBe(2);
+    // Reported once for the whole feed, keyed by platform, with the count that says how much
+    // of it was missed — see summarisePlatformMapSkips.
+    expect(warn).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith(
-      expect.objectContaining({ key: "windowsZipARM64" }),
-      expect.stringContaining("no download under this key"),
+      expect.objectContaining({
+        total: 2,
+        platforms: expect.objectContaining({
+          "windows/arm64": expect.objectContaining({ key: "windowsZipARM64", count: 2 }),
+        }),
+      }),
+      expect.stringContaining("no download under the configured key"),
     );
+  });
+
+  it("summarises a mostly-unservable archive in one line, not one per release", async () => {
+    // The JetBrains feed carries every IDEA release back to 2011 and 152 of its 281 records
+    // predate the windowsZip/macM1 keys. Logging per release put 276 warn lines in every sync
+    // of a feed where nothing was wrong (WAL-68).
+    const many = {
+      IIU: Array.from({ length: 60 }, (_, i) => ({
+        version: `201${i % 10}.1`,
+        date: "2015-01-01",
+        majorVersion: `201${i % 10}.1`,
+        downloads: { windows: { link: "https://example.test/old.exe" } },
+      })),
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve(many),
+        text: () => Promise.resolve(""),
+      }),
+    );
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+
+    const versions = await new JsonApiStrategy().discoverVersions(JETBRAINS_CONFIG);
+
+    // Every release is discovered; none of them resolves an artifact.
+    expect(versions).toHaveLength(60);
+    expect(versions.every((v) => v.artifacts.size === 0)).toBe(true);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [payload] = warn.mock.calls[0] as [
+      { total: number; platforms: Record<string, { count: number; sample: string[] }> },
+    ];
+    expect(payload.total).toBe(120);
+    expect(payload.platforms["windows/x86-64"].count).toBe(60);
+    expect(payload.platforms["macos/arm64"].count).toBe(60);
+    // A sample, not the whole set — the count is what tells the reader how bad it is.
+    expect(payload.platforms["windows/x86-64"].sample).toHaveLength(5);
   });
 
   it("skips a download object with no URL rather than storing an empty one", async () => {
@@ -657,6 +704,135 @@ describe("JsonApiStrategy — platform-map submode (JetBrains)", () => {
 
     expect(versions[0].artifacts.has("windows/x86-64")).toBe(false);
     expect(versions[0].artifacts.has("macos/arm64")).toBe(true);
+  });
+
+  /**
+   * The window WAL-68's production retention asks for, in the order JetBrains actually returns
+   * it — newest first, with the two versions of each group NOT adjacent by date within the
+   * feed. `date` is the truth here; the sorter is what WAL-63 fixed, so a test that assumes it
+   * is right proves nothing.
+   *
+   * Deliberately mixed component counts: 2025.3.6.1 is newer than 2025.3.6 and 2026.2.0.1 is
+   * newer than 2026.2 — the exact shape that used to sort backwards. And the `ideaIU-` to
+   * `idea-` prefix rename falls between 2025.2 and 2025.3, inside the window, so no filename
+   * template could span it.
+   */
+  const PRODUCTION_WINDOW = [
+    { version: "2026.2.1", date: "2026-08-10", prefix: "idea" },
+    { version: "2026.1.5", date: "2026-08-12", prefix: "idea" },
+    { version: "2025.3.6.1", date: "2026-07-29", prefix: "idea" },
+    { version: "2025.2.6.3", date: "2026-07-29", prefix: "ideaIU" },
+    { version: "2026.2.0.1", date: "2026-07-23", prefix: "idea" },
+    { version: "2026.1.4", date: "2026-07-02", prefix: "idea" },
+    { version: "2025.3.6", date: "2026-06-03", prefix: "idea" },
+    { version: "2025.2.6.2", date: "2026-04-30", prefix: "ideaIU" },
+    // Third-newest in each group: present in the feed, must not survive versions_per_group = 2.
+    { version: "2026.2", date: "2026-07-16", prefix: "idea" },
+    { version: "2026.1.3", date: "2026-06-04", prefix: "idea" },
+    { version: "2025.3.5", date: "2026-05-06", prefix: "idea" },
+    { version: "2025.2.6.1", date: "2026-01-12", prefix: "ideaIU" },
+  ];
+
+  function stubProductionWindow(): void {
+    const body = {
+      IIU: PRODUCTION_WINDOW.map((r) => ({
+        version: r.version,
+        date: r.date,
+        majorVersion: r.version.split(".").slice(0, 2).join("."),
+        downloads: {
+          windowsZip: {
+            link: `https://download.jetbrains.com/idea/${r.prefix}-${r.version}.win.zip`,
+            size: 1_614_981_679,
+            checksumLink: `https://download.jetbrains.com/idea/${r.prefix}-${r.version}.win.zip.sha256`,
+          },
+          macM1: {
+            link: `https://download.jetbrains.com/idea/${r.prefix}-${r.version}-aarch64.dmg`,
+            size: 1_512_591_157,
+            checksumLink: `https://download.jetbrains.com/idea/${r.prefix}-${r.version}-aarch64.dmg.sha256`,
+          },
+          linux: { link: `https://download.jetbrains.com/idea/${r.prefix}-${r.version}.tar.gz` },
+        },
+      })),
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve(body),
+        text: () => Promise.resolve(""),
+      }),
+    );
+  }
+
+  it("resolves both platforms for every version across four groups", async () => {
+    stubProductionWindow();
+
+    const versions = await new JsonApiStrategy().discoverVersions(JETBRAINS_CONFIG);
+
+    expect(versions).toHaveLength(PRODUCTION_WINDOW.length);
+    expect(new Set(versions.map((v) => v.versionGroup))).toEqual(
+      new Set(["2026.2", "2026.1", "2025.3", "2025.2"]),
+    );
+    for (const version of versions) {
+      expect([...version.artifacts.keys()].sort()).toEqual(["macos/arm64", "windows/x86-64"]);
+    }
+  });
+
+  it("keeps, per group, the two versions JetBrains dates newest", async () => {
+    // AC2 asserted against the API's own `date`, not against the sorter's opinion of the
+    // version strings: the sorter is the thing under suspicion.
+    stubProductionWindow();
+    const versions = await new JsonApiStrategy().discoverVersions(JETBRAINS_CONFIG);
+
+    const kept = selectRetentionWindow(versions, { versions_per_group: 2, groups_to_keep: 4 });
+
+    const newestTwoByDate = new Map<string, string[]>();
+    for (const group of ["2026.2", "2026.1", "2025.3", "2025.2"]) {
+      newestTwoByDate.set(
+        group,
+        PRODUCTION_WINDOW.filter((r) => r.version.startsWith(`${group}.`) || r.version === group)
+          .sort((a, b) => b.date.localeCompare(a.date))
+          .slice(0, 2)
+          .map((r) => r.version)
+          .sort(),
+      );
+    }
+
+    const keptByGroup = new Map<string, string[]>();
+    for (const v of kept) {
+      keptByGroup.set(v.versionGroup, [...(keptByGroup.get(v.versionGroup) ?? []), v.version]);
+    }
+    for (const [group, expected] of newestTwoByDate) {
+      expect([...(keptByGroup.get(group) ?? [])].sort()).toEqual(expected);
+    }
+    expect(kept).toHaveLength(8);
+  });
+
+  it("keeps the newest group's newest version under the shipped 1/1 retention", async () => {
+    // What local and GCP Dev actually pull: 1 group x 1 version x 2 platforms, ~3.2 GB.
+    stubProductionWindow();
+    const versions = await new JsonApiStrategy().discoverVersions(JETBRAINS_CONFIG);
+
+    const kept = selectRetentionWindow(versions, { versions_per_group: 1, groups_to_keep: 1 });
+
+    expect(kept.map((v) => v.version)).toEqual(["2026.2.1"]);
+    expect(kept[0].artifacts.size).toBe(2);
+  });
+
+  it("takes each filename from its own link across the prefix rename", async () => {
+    stubProductionWindow();
+    const versions = await new JsonApiStrategy().discoverVersions(JETBRAINS_CONFIG);
+    const byVersion = new Map(versions.map((v) => [v.version, v]));
+
+    expect(byVersion.get("2026.2.1")!.artifacts.get("windows/x86-64")!.filename).toBe(
+      "idea-2026.2.1.win.zip",
+    );
+    expect(byVersion.get("2025.2.6.3")!.artifacts.get("windows/x86-64")!.filename).toBe(
+      "ideaIU-2025.2.6.3.win.zip",
+    );
+    expect(byVersion.get("2025.2.6.3")!.artifacts.get("macos/arm64")!.filename).toBe(
+      "ideaIU-2025.2.6.3-aarch64.dmg",
+    );
   });
 
   it("tolerates a release whose downloads field is an array rather than a map", async () => {

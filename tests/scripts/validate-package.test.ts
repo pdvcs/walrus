@@ -143,6 +143,104 @@ aliases = ["mytool", "my tool"]
   });
 });
 
+/**
+ * The shipped IntelliJ config against a mocked JetBrains feed (WAL-68 AC1). Payloads are tiny
+ * on purpose — a real IDEA artifact is ~1.6 GB, and validate's spot-check is a HEAD anyway, so
+ * nothing here transfers a body. Fetching the real thing is a MANUAL_TEST step.
+ */
+describe("validate-package CLI — the shipped intellij config (WAL-68)", () => {
+  const server = setupServer();
+  const CONFIG = path.join(ROOT, "packages/walrus-intellij.toml");
+
+  function release(version: string, date: string, prefix: string) {
+    return {
+      version,
+      date,
+      majorVersion: version.split(".").slice(0, 2).join("."),
+      build: "262.0.0",
+      downloads: {
+        windowsZip: {
+          link: `https://download.jetbrains.com/idea/${prefix}-${version}.win.zip`,
+          size: 1_614_981_679,
+          checksumLink: `https://download.jetbrains.com/idea/${prefix}-${version}.win.zip.sha256`,
+        },
+        macM1: {
+          link: `https://download.jetbrains.com/idea/${prefix}-${version}-aarch64.dmg`,
+          size: 1_512_591_157,
+          checksumLink: `https://download.jetbrains.com/idea/${prefix}-${version}-aarch64.dmg.sha256`,
+        },
+        linux: { link: `https://download.jetbrains.com/idea/${prefix}-${version}.tar.gz` },
+        thirdPartyLibrariesJson: { link: "https://download.jetbrains.com/idea/libs.json" },
+      },
+    };
+  }
+
+  beforeEach(() => {
+    server.listen({ onUnhandledRequest: "error" });
+    server.use(
+      http.get("https://data.services.jetbrains.com/products/releases", () =>
+        HttpResponse.json({
+          IIU: [
+            release("2026.2.1", "2026-08-10", "idea"),
+            release("2026.2.0.1", "2026-07-23", "idea"),
+            release("2025.2.6.3", "2026-07-29", "ideaIU"),
+            // Predates the windowsZip/macM1 keys, as most of the real feed does.
+            {
+              version: "2016.1",
+              date: "2016-03-15",
+              majorVersion: "2016.1",
+              downloads: { windows: { link: "https://download.jetbrains.com/idea/old.exe" } },
+            },
+          ],
+        }),
+      ),
+      http.head("https://download.jetbrains.com/idea/*", () =>
+        HttpResponse.text("", { headers: { "content-length": "1614981679" } }),
+      ),
+    );
+  });
+
+  afterEach(() => {
+    server.close();
+    vi.restoreAllMocks();
+  });
+
+  it("validates and resolves both platforms without touching an artifact body", async () => {
+    const logs: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    });
+
+    const ok = await validatePackage(CONFIG, { online: false, transform: false });
+
+    expect(ok).toBe(true);
+    const joined = logs.join("\n");
+    expect(joined).toMatch(/Discovery: json-api/);
+    // Windows-only spot-check label, since linux/x86-64 is not configured here.
+    expect(joined).toMatch(/spot-check: 2026\.2\.1 windows\/x86-64/);
+    expect(joined).toMatch(/idea-2026\.2\.1\.win\.zip/);
+    expect(joined).toMatch(/Retention: would keep 1 version/);
+  });
+
+  it("declares the platform keys, CPE pair and floor the onboarding depends on", () => {
+    // Pins the real file: each of these is load-bearing and silently wrong if edited away.
+    const config = loadPackageConfig(CONFIG);
+
+    expect(config.discovery.type).toBe("json-api");
+    expect(config.platforms.map((p) => `${p.os}/${p.arch}:${p.os_upstream}`)).toEqual([
+      "windows/x86-64:windowsZip",
+      "macos/arm64:macM1",
+    ]);
+    expect(config.versioning.min_version).toBe("2024.1");
+    expect(config.vulnerabilities?.cpes).toEqual(["jetbrains:intellij_idea"]);
+    // IDEA's fourth component is JetBrains' own, not a rebuild counter as gitwindows' is, so
+    // CVE ranges compare against the served version directly (WAL-78 / ADR-008).
+    expect(config.vulnerabilities?.cve_version_extract).toBeUndefined();
+    // No filename_template anywhere: the ideaIU- to idea- rename runs through the window.
+    expect(config.platforms.every((p) => p.filename_template === undefined)).toBe(true);
+  });
+});
+
 describe("validate-package CLI — transform exercise (WAL-59)", () => {
   const server = setupServer();
   let tmpDir: string;

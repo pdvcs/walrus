@@ -109,6 +109,14 @@ export class JsonApiStrategy implements DiscoveryStrategy {
 
     const discovered: DiscoveredVersion[] = [];
 
+    // A configured platform with no matching download is worth reporting, but reporting it
+    // per release drowns the log: JetBrains' feed carries every IDEA release back to 2011,
+    // and 152 of its 281 records predate the `windowsZip` / `macM1` keys entirely — 276 warn
+    // lines on a feed where nothing is wrong. Collected here and summarised once after the
+    // loop, so the signal survives at a volume someone will actually read (WAL-68).
+    const unmatchedPlatforms: Array<{ version: string; platform: string; key: string }> = [];
+    const urllessDownloads: Array<{ version: string; platform: string; field: string }> = [];
+
     for (const release of releases) {
       let version: string;
       let releaseObj: Record<string, unknown>;
@@ -155,20 +163,22 @@ export class JsonApiStrategy implements DiscoveryStrategy {
         for (const platform of config.platforms) {
           const entry = downloads[platform.os_upstream];
           if (!isRecord(entry)) {
-            log.warn(
-              { version, platform: platformKey(platform), key: platform.os_upstream },
-              "json-api platform-map: no download under this key, skipping",
-            );
+            unmatchedPlatforms.push({
+              version,
+              platform: platformKey(platform),
+              key: platform.os_upstream,
+            });
             continue;
           }
 
           // Guaranteed present by the schema: platform-map requires file_url_field.
           const fileUrl = file_url_field ? str(entry[file_url_field]) : "";
           if (!fileUrl) {
-            log.warn(
-              { version, platform: platformKey(platform), field: file_url_field },
-              "json-api platform-map: download object carries no URL, skipping",
-            );
+            urllessDownloads.push({
+              version,
+              platform: platformKey(platform),
+              field: file_url_field ?? "",
+            });
             continue;
           }
 
@@ -304,6 +314,8 @@ export class JsonApiStrategy implements DiscoveryStrategy {
         releasedAt,
       });
     }
+
+    summarisePlatformMapSkips(unmatchedPlatforms, urllessDownloads);
 
     return discovered;
   }
@@ -536,5 +548,46 @@ export class JsonApiStrategy implements DiscoveryStrategy {
     }
 
     return results;
+  }
+}
+
+/**
+ * One log line per sync for everything the platform-map pass skipped, rather than one per
+ * release and platform.
+ *
+ * The distinction that matters to a reader is *how much* of the feed a configured platform
+ * missed, not which records: a handful of misses on a current feed means an asset went absent
+ * and wants looking at, while a miss on most of the feed means the config is pointed at an
+ * archive whose older records predate the download keys — normal, and not something to say
+ * hundreds of times. Both are reported; only the first is worth acting on, and the counts are
+ * what tell them apart. A sample carries enough to start from without pinning the whole set.
+ */
+function summarisePlatformMapSkips(
+  unmatchedPlatforms: Array<{ version: string; platform: string; key: string }>,
+  urllessDownloads: Array<{ version: string; platform: string; field: string }>,
+): void {
+  const SAMPLE = 5;
+
+  if (unmatchedPlatforms.length > 0) {
+    const byPlatform: Record<string, { key: string; count: number; sample: string[] }> = {};
+    for (const skip of unmatchedPlatforms) {
+      const entry = (byPlatform[skip.platform] ??= { key: skip.key, count: 0, sample: [] });
+      entry.count += 1;
+      if (entry.sample.length < SAMPLE) entry.sample.push(skip.version);
+    }
+    log.warn(
+      { platforms: byPlatform, total: unmatchedPlatforms.length },
+      "json-api platform-map: releases with no download under the configured key, skipped",
+    );
+  }
+
+  if (urllessDownloads.length > 0) {
+    log.warn(
+      {
+        total: urllessDownloads.length,
+        sample: urllessDownloads.slice(0, SAMPLE),
+      },
+      "json-api platform-map: download objects carrying no URL, skipped",
+    );
   }
 }
