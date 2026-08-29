@@ -202,7 +202,9 @@ JSONB, KEV flag), `cve_affects` (version ranges per package, `source` = `nvd` | 
 by a `UNIQUE NULLS NOT DISTINCT` constraint), `package_cpes` and `package_aliases`
 (reconciled from each package's optional `[vulnerabilities]` TOML section at boot),
 `vuln_sync_state` (per-source ingestion cursors), and `unresolved_queries` (alias-curation feed).
-`packages` gains `osv_ecosystem` / `osv_name`.
+`packages` gains `osv_ecosystem` / `osv_name`. Migration `0015_cve_suppressions.sql` adds
+operator assertions that exclude a CVE from the gate for one package or all packages without
+deleting the CVE or its affects rows.
 
 **Matching core** (`src/vuln/`, ported behaviour-for-behaviour, property-tested):
 
@@ -228,6 +230,13 @@ application CPE matches. Walrus does not represent or fully evaluate node/config
 inherited from VulnCheck, can over-report CVEs whose applicability depends on another product,
 operating system, or hardware condition.
 
+**Operator suppressions** are the escape hatch for a false positive that cannot be described by a
+general matching rule. Active, unexpired suppressions are joined onto affects rows on every read,
+so expiry restores gating without a sweep and re-ingestion cannot erase the assertion. The public
+vulnerability responses keep the CVE visible with its reason. Preview/create/revoke are admin HTTP
+APIs and the explorer is a client of them (ADR-007); both mutations are audited and re-evaluate
+availability history.
+
 **Query API** (`/api/v1/vulns`, `/api/v1/vulns/products/search`,
 `/api/v1/vulns/products/:name`, `/api/v1/cves/:id`,
 `/api/v1/packages/:name/vulns`) — Zod schemas in `src/routes/schemas.ts`, registered in
@@ -237,8 +246,8 @@ CVE badges in the admin UI. Every response carries a standing disclaimer and `da
 `/health` gains nullable `vuln_data_freshness` (last successful runs) and per-source latest-attempt
 status. Golden tests ported from vulncheck prove behavioural parity.
 
-**Out of scope (v1):** authn/authz + rate limiting, tracking tools walrus doesn't serve,
-download-blocking of affected artifacts (v1 informs only).
+**Out of scope (v1):** application-layer authn/authz + rate limiting, and tracking tools walrus
+doesn't serve. Cloud Run ingress/IAM remains the admin access boundary.
 
 ---
 

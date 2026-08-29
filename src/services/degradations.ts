@@ -5,6 +5,7 @@ import {
   VulnSyncStatus,
 } from "../db/queries/vuln-sync-state.js";
 import { getVulnHints } from "./vuln-hints.js";
+import { countActiveCveSuppressions } from "../db/queries/cve-suppressions.js";
 
 /**
  * Degradation reporting (PO decision 2026-08-26).
@@ -161,6 +162,14 @@ export async function getDegradations(
   const hints = await getVulnHints(pool, { autoBackfillEnabled: opts.autoBackfillEnabled });
   for (const hint of hints) {
     degradations.push({ component: "vuln-backfill", reason: hint });
+  }
+
+  const activeSuppressions = await countActiveCveSuppressions(pool);
+  if (activeSuppressions > 0) {
+    degradations.push({
+      component: "cve-suppressions",
+      reason: `${activeSuppressions} operator CVE suppression${activeSuppressions === 1 ? "" : "s"} active; review the list regularly for a missing general rule or an assertion that can be retired.`,
+    });
   }
 
   return degradations;

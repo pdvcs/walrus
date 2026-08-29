@@ -118,6 +118,17 @@ New deps: `fuzzball`, `semver` (runtime); `fast-check` (dev). `pg_trgm` extensio
   through `GET .../versions/:group/latest` and OpenAPI; for untransformed artifacts the new
   fields are NULL. Redownloading a transformed artifact now re-verifies against
   `source_checksum` instead of the stored zip digest it would never match.
+
+**Wave 13 — CPE version semantics**
+
+- **WAL-70 (Added):** Operator CVE suppressions are stored independently of ingestion and can be
+  scoped to one package or all packages, optionally expiring. Public vulnerability responses keep
+  suppressed CVEs visible with their reason; the critical gate ignores only active assertions.
+  The API-first admin flow previews affected cached versions before create/revoke, audits both
+  mutations with operator attribution, records availability transitions, and surfaces the active
+  count in health degradations and the vulnerability explorer. The bounded
+  `GET /admin/v1/vuln-suppressions/audit` endpoint exposes the create/revoke trail without
+  production shell or database access.
 - **WAL-59 (Added):** `npm run validate -- --transform` exercises a package's transforms for
   real against upstream — full pipeline into a no-op sink, nothing persisted — and reports
   entry count, output size, output digest, `require_paths` hits/misses, and symlink drops,

@@ -22,6 +22,13 @@ export interface VersionVuln {
   fixed_in: string | null;
   is_kev: boolean;
   matched_because: string | null;
+  suppression: {
+    id: number;
+    reason: string;
+    created_by: string;
+    package_name: string | null;
+    expires_at: string | null;
+  } | null;
 }
 
 export interface VersionCounts {
@@ -94,6 +101,7 @@ export function crossReferenceVersions(
       fixed_in: matched.fixed_in,
       is_kev: matched.is_kev,
       matched_because: reason,
+      suppression: suppressionDetails(matched),
     }));
 
     return {
@@ -160,6 +168,7 @@ export function findBlockingCve(
   const cveVersion = deriveCveVersion(version, patternFromAffects(affects));
   for (const row of affects) {
     if (!isKnownCritical(row)) continue;
+    if (row.suppressed) continue;
     if (row.version_na) continue;
     const result = evaluateRange(cveVersion.value, toRange(row));
     if (result.matched && result.reason !== "range-uncomparable") return row;
@@ -236,6 +245,17 @@ export function meetsCriticalGate(cve: {
 
 function isKnownCritical(row: AffectsWithCveRow): boolean {
   return meetsCriticalGate(row);
+}
+
+function suppressionDetails(row: AffectsWithCveRow): VersionVuln["suppression"] {
+  if (!row.suppressed || row.suppression_id == null || !row.suppression_reason) return null;
+  return {
+    id: row.suppression_id,
+    reason: row.suppression_reason,
+    created_by: row.suppression_created_by ?? "unknown",
+    package_name: row.suppression_package_name ?? null,
+    expires_at: row.suppression_expires_at?.toISOString() ?? null,
+  };
 }
 
 function hasConcreteCriticalMatch(version: string, criticalRows: AffectsWithCveRow[]): boolean {

@@ -315,6 +315,27 @@ curl -X POST "$WALRUS_URL/internal/vuln-backfill" \
   -H 'Content-Type: application/json' -d '{"package":"<name>"}'
 ```
 
+### Operator CVE suppressions
+
+When upstream has attributed a CVE to the right CPE shape but the wrong product in fact, use the
+admin vulnerability explorer to preview and apply a package-scoped suppression. There is no
+production shell or supported manual-SQL path (ADR-004/ADR-007). Complete six-eyes review and formal
+approval before applying the change; walrus records the executing operator, reason, scope, expiry,
+and suppression ID in `admin_actions`. Revocation is a separate audited action.
+
+Suppression never deletes vulnerability evidence. The CVE remains in public responses marked
+suppressed with its reason, while only the download gate ignores it. An optional expiry restores
+gating automatically. Active suppressions are counted in `/health.degradations` and the explorer
+status strip so the list is regularly revisited.
+
+```bash
+# Latest create/revoke audit entries (50 by default, maximum 100)
+curl -sS "$WALRUS_URL/admin/v1/vuln-suppressions/audit" | jq .
+
+# One CVE only; use next_before_id from the response for the next page
+curl -sS "$WALRUS_URL/admin/v1/vuln-suppressions/audit?cve_id=CVE-2099-0001&limit=20" | jq .
+```
+
 ### Data-source attribution
 
 - **NVD** — This product uses data from the NVD API but is not endorsed or certified by the NVD.

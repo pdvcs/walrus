@@ -283,6 +283,38 @@ describe("getVersionAvailabilityStatus", () => {
     ];
     expect(getVersionAvailabilityStatus("1.24.13", rows)).toBe("available");
   });
+
+  it("keeps a suppressed critical CVE visible but excludes it from the gate", () => {
+    const row = affects({
+      cve_id: "CVE-SUPPRESSED",
+      severity: "CRITICAL",
+      cvss_v3_score: "9.8",
+      exact_version: "1.24.13",
+      version_end: null,
+      suppressed: true,
+      suppression_id: 42,
+      suppression_reason: "Confirmed upstream mis-attribution",
+      suppression_created_by: "operator@example.com",
+      suppression_expires_at: null,
+    });
+    expect(getVersionAvailabilityStatus("1.24.13", [row])).toBe("available");
+    expect(findBlockingCve("1.24.13", [row])).toBeNull();
+
+    const [version] = crossReferenceVersions(
+      [{ version: "1.24.13", version_group: "1.24" }],
+      [row],
+    );
+    expect(version.vulns[0]).toMatchObject({
+      cve_id: "CVE-SUPPRESSED",
+      suppression: {
+        id: 42,
+        reason: "Confirmed upstream mis-attribution",
+        created_by: "operator@example.com",
+        package_name: null,
+        expires_at: null,
+      },
+    });
+  });
 });
 
 describe("CPE version NA is not ANY (WAL-69)", () => {

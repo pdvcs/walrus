@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import { runInNewContext } from "node:vm";
 import express from "express";
 import request from "supertest";
 import { Pool } from "pg";
@@ -42,6 +43,7 @@ function resolvedResult(): VulnQueryResult {
         is_kev: true,
         sources: ["nvd"],
         references: [],
+        suppression: null,
       },
     ],
     counts: { total: 1, critical: 1, high: 0, medium: 0, low: 0, kev: 1 },
@@ -119,6 +121,43 @@ describe("admin vuln explorer + sync (isolated)", () => {
           kev: { last_attempt: null, last_success: null, last_failure: null, last_ok: null },
           osv: { last_attempt: null, last_success: null, last_failure: null, last_ok: null },
           cvss: { last_attempt: null, last_success: null, last_failure: null, last_ok: null },
+        }),
+        getActiveSuppressionCount: async () => 0,
+        listActiveSuppressions: async () => [],
+        listSuppressionAudit: async () => [],
+        cveExists: async () => true,
+        packageExists: async () => true,
+        previewSuppression: async (input) => ({
+          action: "suppress",
+          cve_id: input.cve_id,
+          package_name: input.package_name,
+          newly_available: [],
+          newly_blocked: [],
+          versions_changed: 0,
+        }),
+        createSuppression: async (input) => ({
+          id: 1,
+          ...input,
+          created_at: new Date(),
+          revoked_at: null,
+        }),
+        previewSuppressionRevocation: async (_id) => ({
+          action: "revoke",
+          cve_id: "CVE-2023-0001",
+          package_name: "openjdk",
+          newly_available: [],
+          newly_blocked: [],
+          versions_changed: 0,
+        }),
+        revokeSuppression: async ({ id }) => ({
+          id,
+          cve_id: "CVE-2023-0001",
+          package_name: "openjdk",
+          reason: "not applicable",
+          created_by: "operator@example.com",
+          created_at: new Date(),
+          expires_at: null,
+          revoked_at: new Date(),
         }),
         vulnSyncImpls: { kev: async () => ({ flagged: 3, cleared: 0, skippedUnknown: 0 }) },
         logAdminAction: (details) => insertAdminAction(pool, { action_type: "vuln-sync", details }),
@@ -233,6 +272,477 @@ describe("admin vuln explorer + sync (isolated)", () => {
     expect(res.text).toContain("CVE-2023-0001");
     expect(res.text).toMatch(/CRITICAL/);
     expect(res.text).toMatch(/KEV/);
+    expect(res.text).toContain("Suppress");
+    expect(res.text).toMatch(/id="suppression-apply"[^>]*disabled/);
+    expect(res.text).toContain("six-eyes review and formal approval");
+  });
+
+  it("surfaces the active suppression count in the explorer status strip", async () => {
+    const res = await request(
+      buildApp({
+        getActiveSuppressionCount: async () => 1,
+        listActiveSuppressions: async () => [
+          {
+            id: 42,
+            cve_id: "CVE-2023-0001",
+            package_name: "openjdk",
+            reason: "Confirmed mis-attribution",
+            created_by: "operator@example.com",
+            created_at: new Date("2026-08-29T10:00:00Z"),
+            expires_at: null,
+            revoked_at: null,
+          },
+        ],
+      }),
+    ).get("/admin/v1/vulns");
+    expect(res.text).toContain("1 active suppression");
+    expect(res.text).toContain("Active CVE suppressions (1)");
+    expect(res.text).toContain("Confirmed mis-attribution");
+    expect(res.text).toContain("operator@example.com");
+    expect(res.text).toMatch(/data-mode="revoke" data-id="42"/);
+  });
+
+  it("keeps Apply locked in the browser until the exact suppression payload is previewed", async () => {
+    class FakeElement {
+      disabled = false;
+      hidden = true;
+      title = "";
+      value = "";
+      innerHTML = "";
+      textContent = "";
+      private listeners = new Map<string, Array<() => unknown>>();
+
+      constructor(private attributes: Record<string, string> = {}) {}
+
+      addEventListener(type: string, listener: () => unknown): void {
+        const listeners = this.listeners.get(type) ?? [];
+        listeners.push(listener);
+        this.listeners.set(type, listeners);
+      }
+
+      getAttribute(name: string): string | null {
+        return this.attributes[name] ?? null;
+      }
+
+      scrollIntoView(): void {}
+
+      async dispatch(type: string): Promise<void> {
+        for (const listener of this.listeners.get(type) ?? []) await listener();
+      }
+    }
+
+    const response = await request(buildApp()).get(
+      "/admin/v1/vulns?product=openjdk&version=11.0.2",
+    );
+    const startMarker = "// WAL-70 suppression-ui:start";
+    const endMarker = "// WAL-70 suppression-ui:end";
+    const start = response.text.indexOf(startMarker);
+    const end = response.text.indexOf(endMarker);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const script = response.text.slice(start, end);
+
+    const elements = new Map<string, FakeElement>();
+    for (const id of [
+      "suppression-panel",
+      "suppression-title",
+      "suppression-scope",
+      "suppression-operator",
+      "suppression-reason",
+      "suppression-expiry",
+      "suppression-expiry-wrap",
+      "suppression-preview",
+      "suppression-apply",
+      "suppression-cancel",
+      "suppression-out",
+    ]) {
+      elements.set(id, new FakeElement());
+    }
+    const open = new FakeElement({
+      "data-mode": "suppress",
+      "data-id": "",
+      "data-cve": "CVE-2023-0001",
+      "data-package": "openjdk",
+      "data-scope": "openjdk",
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: 200,
+        json: async () => ({
+          preview: {
+            newly_available: [{ package_name: "openjdk", versions: ["11.0.2"] }],
+            newly_blocked: [],
+            versions_changed: 1,
+          },
+        }),
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        json: async () => ({
+          preview: { newly_available: [], newly_blocked: [], versions_changed: 0 },
+        }),
+      })
+      .mockResolvedValueOnce({ status: 201, json: async () => ({ suppression: { id: 1 } }) });
+    const reload = vi.fn();
+
+    runInNewContext(script, {
+      document: {
+        getElementById: (id: string) => elements.get(id),
+        querySelectorAll: (selector: string) => (selector === ".suppression-open" ? [open] : []),
+      },
+      fetch: fetchMock,
+      confirm: vi.fn(() => true),
+      window: { location: { reload } },
+      esc: (value: unknown) => String(value),
+    });
+
+    await open.dispatch("click");
+    const apply = elements.get("suppression-apply")!;
+    const operator = elements.get("suppression-operator")!;
+    const reason = elements.get("suppression-reason")!;
+    expect(elements.get("suppression-panel")?.hidden).toBe(false);
+    expect(apply.disabled).toBe(true);
+
+    operator.value = "operator@example.com";
+    reason.value = "Confirmed false positive";
+    await elements.get("suppression-preview")!.dispatch("click");
+    expect(fetchMock.mock.calls[0][0]).toBe("/admin/v1/vuln-suppressions/preview");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+      cve_id: "CVE-2023-0001",
+      package_name: "openjdk",
+      reason: "Confirmed false positive",
+      created_by: "operator@example.com",
+    });
+    expect(apply.disabled).toBe(false);
+
+    reason.value = "Changed after preview";
+    await reason.dispatch("input");
+    expect(apply.disabled).toBe(true);
+    expect(apply.title).toContain("Preview this exact change first");
+
+    await elements.get("suppression-preview")!.dispatch("click");
+    expect(apply.disabled).toBe(false);
+    await apply.dispatch("click");
+    expect(fetchMock.mock.calls[2][0]).toBe("/admin/v1/vuln-suppressions");
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body).reason).toBe("Changed after preview");
+    expect(reload).toHaveBeenCalledOnce();
+  });
+
+  it("renders active suppression health degradation in the admin browser banner", async () => {
+    const response = await request(buildApp()).get("/admin/v1/vulns");
+    const startMarker = "// health-degradation-ui:start";
+    const endMarker = "// health-degradation-ui:end";
+    const start = response.text.indexOf(startMarker);
+    const end = response.text.indexOf(endMarker);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+
+    const banner = { className: "", innerHTML: "" };
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        status: "ok",
+        degradations: [
+          {
+            component: "cve-suppressions",
+            reason: "1 operator CVE suppression active; review regularly.",
+          },
+        ],
+      }),
+    }));
+    const execution = runInNewContext(response.text.slice(start, end), {
+      fetch: fetchMock,
+      document: {
+        getElementById: (id: string) => (id === "degraded-banner" ? banner : null),
+        createElement: () => {
+          let html = "";
+          return {
+            get innerHTML() {
+              return html;
+            },
+            set textContent(value: unknown) {
+              html = typeof value === "string" ? value : (JSON.stringify(value) ?? "");
+            },
+          };
+        },
+      },
+    });
+    await execution;
+
+    expect(fetchMock).toHaveBeenCalledWith("/health");
+    expect(banner.className).toBe("degraded-banner");
+    expect(banner.innerHTML).toContain("System degraded");
+    expect(banner.innerHTML).toContain("cve-suppressions");
+    expect(banner.innerHTML).toContain("1 operator CVE suppression active");
+  });
+
+  it("rejects blank audit fields before previewing or applying a suppression", async () => {
+    const app = buildApp();
+    const preview = await request(app).post("/admin/v1/vuln-suppressions/preview").send({
+      cve_id: "CVE-2023-0001",
+      package_name: "openjdk",
+      reason: "   ",
+      created_by: "operator@example.com",
+    });
+    expect(preview.status).toBe(400);
+    expect(preview.body.error).toContain("reason");
+
+    const apply = await request(app).post("/admin/v1/vuln-suppressions").send({
+      cve_id: "CVE-2023-0001",
+      package_name: "openjdk",
+      reason: "Confirmed false positive",
+      created_by: "",
+    });
+    expect(apply.status).toBe(400);
+    expect(apply.body.error).toContain("created_by");
+  });
+
+  it("validates suppression expiry and passes a future timestamp as a Date", async () => {
+    const app = buildApp();
+    for (const expires_at of ["not-a-date", "2020-01-01T00:00:00.000Z"]) {
+      const res = await request(app).post("/admin/v1/vuln-suppressions/preview").send({
+        cve_id: "CVE-2023-0001",
+        package_name: "openjdk",
+        reason: "Confirmed false positive",
+        created_by: "operator@example.com",
+        expires_at,
+      });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain("expires_at");
+    }
+
+    let receivedExpiry: Date | null = null;
+    const future = new Date(Date.now() + 86_400_000).toISOString();
+    const accepted = await request(
+      buildApp({
+        createSuppression: async (input) => {
+          receivedExpiry = input.expires_at;
+          return {
+            id: 2,
+            ...input,
+            created_at: new Date(),
+            revoked_at: null,
+          };
+        },
+      }),
+    )
+      .post("/admin/v1/vuln-suppressions")
+      .send({
+        cve_id: "cve-2023-0001",
+        package_name: "openjdk",
+        reason: "Confirmed false positive",
+        created_by: "operator@example.com",
+        expires_at: future,
+      });
+    expect(accepted.status).toBe(201);
+    expect(receivedExpiry?.toISOString()).toBe(future);
+    expect(accepted.body.suppression.cve_id).toBe("CVE-2023-0001");
+  });
+
+  it("rejects unknown suppression scopes and maps duplicate scopes to 409", async () => {
+    const unknownCve = await request(buildApp({ cveExists: async () => false }))
+      .post("/admin/v1/vuln-suppressions")
+      .send({
+        cve_id: "CVE-2023-9999",
+        reason: "Confirmed false positive",
+        created_by: "operator@example.com",
+      });
+    expect(unknownCve.status).toBe(404);
+    expect(unknownCve.body.error).toContain("Unknown CVE");
+
+    const unknownPackage = await request(buildApp({ packageExists: async () => false }))
+      .post("/admin/v1/vuln-suppressions/preview")
+      .send({
+        cve_id: "CVE-2023-0001",
+        package_name: "missing",
+        reason: "Confirmed false positive",
+        created_by: "operator@example.com",
+      });
+    expect(unknownPackage.status).toBe(404);
+    expect(unknownPackage.body.error).toContain("Unknown package");
+
+    const duplicate = Object.assign(new Error("duplicate"), { code: "23505" });
+    const conflict = await request(
+      buildApp({
+        createSuppression: async () => {
+          throw duplicate;
+        },
+      }),
+    )
+      .post("/admin/v1/vuln-suppressions")
+      .send({
+        cve_id: "CVE-2023-0001",
+        package_name: "openjdk",
+        reason: "Confirmed false positive",
+        created_by: "operator@example.com",
+      });
+    expect(conflict.status).toBe(409);
+    expect(conflict.body.error).toContain("already exists");
+  });
+
+  it("validates revocation ids and returns 404 for missing suppressions", async () => {
+    const app = buildApp({
+      previewSuppressionRevocation: async () => null,
+      revokeSuppression: async () => null,
+    });
+    const invalid = await request(app)
+      .post("/admin/v1/vuln-suppressions/not-an-id/revoke/preview")
+      .send({ reason: "No longer needed", revoked_by: "operator@example.com" });
+    expect(invalid.status).toBe(400);
+    expect(invalid.body.error).toContain("Invalid suppression id");
+
+    const missingPreview = await request(app)
+      .post("/admin/v1/vuln-suppressions/999/revoke/preview")
+      .send({ reason: "No longer needed", revoked_by: "operator@example.com" });
+    expect(missingPreview.status).toBe(404);
+
+    const missingApply = await request(app)
+      .post("/admin/v1/vuln-suppressions/999/revoke")
+      .send({ reason: "No longer needed", revoked_by: "operator@example.com" });
+    expect(missingApply.status).toBe(404);
+  });
+
+  it("lists suppression audit entries with CVE filtering and cursor pagination", async () => {
+    let received: unknown;
+    const res = await request(
+      buildApp({
+        listSuppressionAudit: async (opts) => {
+          received = opts;
+          return [
+            {
+              id: 12,
+              action_type: "cve-suppression-revoked",
+              package_name: "openjdk",
+              version: null,
+              performed_by: "second.operator@example.com",
+              details: {
+                cve_id: "CVE-2023-0001",
+                reason: "Upstream attribution corrected",
+              },
+              created_at: new Date("2026-08-29T12:00:00.000Z"),
+            },
+            {
+              id: 11,
+              action_type: "cve-suppression-created",
+              package_name: "openjdk",
+              version: null,
+              performed_by: "operator@example.com",
+              details: { cve_id: "CVE-2023-0001", reason: "Confirmed false positive" },
+              created_at: new Date("2026-08-29T11:00:00.000Z"),
+            },
+          ];
+        },
+      }),
+    ).get("/admin/v1/vuln-suppressions/audit?limit=2&before_id=20&cve_id=cve-2023-0001");
+
+    expect(res.status).toBe(200);
+    expect(received).toEqual({ limit: 2, beforeId: 20, cveId: "CVE-2023-0001" });
+    expect(res.body.actions).toHaveLength(2);
+    expect(res.body.actions[0]).toMatchObject({
+      id: 12,
+      action_type: "cve-suppression-revoked",
+      performed_by: "second.operator@example.com",
+      created_at: "2026-08-29T12:00:00.000Z",
+    });
+    expect(res.body.next_before_id).toBe(11);
+  });
+
+  it("rejects invalid suppression audit pagination parameters", async () => {
+    const app = buildApp();
+    for (const query of ["limit=0", "limit=101", "limit=nope", "before_id=0", "cve_id="]) {
+      const res = await request(app).get(`/admin/v1/vuln-suppressions/audit?${query}`);
+      expect(res.status).toBe(400);
+    }
+  });
+
+  it("previews over the API without applying and returns exact availability changes", async () => {
+    let created = false;
+    const app = buildApp({
+      previewSuppression: async (input) => ({
+        action: "suppress",
+        cve_id: input.cve_id,
+        package_name: input.package_name,
+        newly_available: [{ package_name: "openjdk", versions: ["11.0.2"] }],
+        newly_blocked: [],
+        versions_changed: 1,
+      }),
+      createSuppression: async (input) => {
+        created = true;
+        return {
+          id: 9,
+          ...input,
+          created_at: new Date(),
+          revoked_at: null,
+        };
+      },
+    });
+    const res = await request(app).post("/admin/v1/vuln-suppressions/preview").send({
+      cve_id: "CVE-2023-0001",
+      package_name: "openjdk",
+      reason: "Confirmed false positive",
+      created_by: "operator@example.com",
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.preview).toMatchObject({
+      versions_changed: 1,
+      newly_available: [{ package_name: "openjdk", versions: ["11.0.2"] }],
+    });
+    expect(created).toBe(false);
+  });
+
+  it("applies a suppression through the API and records availability transitions", async () => {
+    const transitions: string[] = [];
+    const res = await request(
+      buildApp({
+        recordAvailability: async (source) => {
+          transitions.push(source);
+          return {
+            newlyBlocked: [],
+            newlyAvailable: [{ package_name: "openjdk", version: "11.0.2" }],
+          };
+        },
+      }),
+    )
+      .post("/admin/v1/vuln-suppressions")
+      .send({
+        cve_id: "CVE-2023-0001",
+        package_name: "openjdk",
+        reason: "Confirmed false positive",
+        created_by: "operator@example.com",
+      });
+    expect(res.status).toBe(201);
+    expect(res.body.suppression).toMatchObject({
+      cve_id: "CVE-2023-0001",
+      package_name: "openjdk",
+    });
+    expect(transitions).toEqual(["suppression"]);
+  });
+
+  it("requires a reason and operator to preview and apply revocation", async () => {
+    const app = buildApp();
+    const invalid = await request(app)
+      .post("/admin/v1/vuln-suppressions/1/revoke")
+      .send({ reason: "", revoked_by: "operator@example.com" });
+    expect(invalid.status).toBe(400);
+
+    const transitions: string[] = [];
+    const applied = await request(
+      buildApp({
+        recordAvailability: async (source) => {
+          transitions.push(source);
+          return {
+            newlyBlocked: [{ package_name: "openjdk", version: "11.0.2", cve_id: "CVE-2023-0001" }],
+            newlyAvailable: [],
+          };
+        },
+      }),
+    )
+      .post("/admin/v1/vuln-suppressions/1/revoke")
+      .send({ reason: "Attribution corrected", revoked_by: "operator@example.com" });
+    expect(applied.status).toBe(200);
+    expect(applied.body.suppression.revoked_at).toBeTruthy();
+    expect(transitions).toEqual(["suppression"]);
   });
 
   it("renders the not-matched state with suggestions for garbage", async () => {

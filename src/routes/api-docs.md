@@ -311,6 +311,18 @@ Endpoints under `/admin/v1/` provide:
 - Artifact redownload and removal
 - Version group retention management
 - Sync job history
+- CVE suppression preview/create/revoke and its audit trail
+
+### GET /admin/v1/vuln-suppressions/audit
+
+Returns suppression creation and revocation audit entries newest-first. This is the supported
+production inspection path: Cloud Run has no shell or manual-SQL workflow. `limit` defaults to 50
+and must be between 1 and 100; pass `next_before_id` back as `before_id` for the next page. Optional
+`cve_id` filters the trail to one CVE.
+
+```bash
+curl "$WALRUS_URL/admin/v1/vuln-suppressions/audit?cve_id=CVE-2099-0001&limit=20"
+```
 
 ---
 
@@ -355,7 +367,8 @@ curl 'http://localhost:8080/api/v1/vulns?product=openjdk&version=11.0.2'
       "fixed_in": "20",
       "is_kev": false,
       "sources": ["nvd"],
-      "references": ["https://nvd.nist.gov/vuln/detail/CVE-2023-XXXXX"]
+      "references": ["https://nvd.nist.gov/vuln/detail/CVE-2023-XXXXX"],
+      "suppression": null
     }
   ],
   "counts": { "total": 1, "critical": 0, "high": 1, "medium": 0, "low": 0, "kev": 0 },
@@ -384,6 +397,10 @@ The three **"no result"** cases are deliberately distinguishable:
   ```
 
 Missing `product` → **HTTP 400**.
+
+An active operator suppression is returned as
+`{"reason":"…","expires_at":null}` instead of `null`.
+Suppression excludes the CVE from the download gate but never hides it from this response.
 
 ### GET /api/v1/vulns/products/search?q=
 
@@ -437,7 +454,14 @@ curl 'http://localhost:8080/api/v1/packages/openjdk/vulns'
       "version_group": "11",
       "counts": { "total": 12, "critical": 1, "high": 6, "medium": 5, "low": 0, "kev": 0 },
       "vulns": [
-        { "cve_id": "…", "severity": "…", "fixed_in": "…", "is_kev": false, "matched_because": "…" }
+        {
+          "cve_id": "…",
+          "severity": "…",
+          "fixed_in": "…",
+          "is_kev": false,
+          "matched_because": "…",
+          "suppression": null
+        }
       ]
     }
   ],
@@ -445,6 +469,9 @@ curl 'http://localhost:8080/api/v1/packages/openjdk/vulns'
   "disclaimer": "…"
 }
 ```
+
+Suppressed CVEs remain in each version's `vulns` array and carry the active assertion in
+`suppression`; they do not make that version's download status blocked.
 
 ### GET /api/v1/packages/:name/availability
 

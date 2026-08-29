@@ -47,6 +47,44 @@ describe("migrations", () => {
     }
   });
 
+  it("creates the CVE suppression lifecycle table (migration 0015)", async () => {
+    const { rows } = await pool.query<{ tablename: string }>(
+      `SELECT tablename FROM pg_tables
+       WHERE schemaname = 'public' AND tablename = 'cve_suppressions'`,
+    );
+    expect(rows).toHaveLength(1);
+
+    const { rows: columns } = await pool.query<{ column_name: string; is_nullable: string }>(
+      `SELECT column_name, is_nullable
+         FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'cve_suppressions'`,
+    );
+    expect(columns.map((column) => column.column_name).sort()).toEqual(
+      [
+        "created_at",
+        "created_by",
+        "cve_id",
+        "expires_at",
+        "id",
+        "package_name",
+        "reason",
+        "revoked_at",
+      ].sort(),
+    );
+    for (const required of ["id", "cve_id", "reason", "created_by", "created_at"]) {
+      expect(columns.find((column) => column.column_name === required)?.is_nullable).toBe("NO");
+    }
+
+    const { rows: indexes } = await pool.query<{ indexdef: string }>(
+      `SELECT indexdef FROM pg_indexes
+        WHERE schemaname = 'public' AND indexname = 'cve_suppressions_unrevoked_scope'`,
+    );
+    expect(indexes).toHaveLength(1);
+    expect(indexes[0].indexdef).toContain("UNIQUE");
+    expect(indexes[0].indexdef).toContain("NULLS NOT DISTINCT");
+    expect(indexes[0].indexdef).toContain("revoked_at IS NULL");
+  });
+
   it("adds the osv mapping columns to packages", async () => {
     const { rows } = await pool.query<{ column_name: string }>(
       `SELECT column_name FROM information_schema.columns

@@ -36,7 +36,7 @@ import {
   listRecentTransitions,
   recordAvailabilityTransitions,
 } from "./services/availability-history.js";
-import { insertAdminAction } from "./db/queries/admin-actions.js";
+import { insertAdminAction, listSuppressionAuditActions } from "./db/queries/admin-actions.js";
 import { resolvePackage } from "./vuln/resolver.js";
 import {
   listAffectsWithCveForPackage,
@@ -84,6 +84,16 @@ import {
 } from "./db/queries/vuln-backfill-jobs.js";
 import { CloudRunBackfillLauncher, LocalBackfillLauncher } from "./vuln/backfill-launcher.js";
 import { isVulnSyncRunning } from "./vuln/sync/lock.js";
+import {
+  countActiveCveSuppressions,
+  listActiveCveSuppressions,
+} from "./db/queries/cve-suppressions.js";
+import {
+  createAuditedCveSuppression,
+  previewCveSuppression,
+  previewCveSuppressionRevocation,
+  revokeAuditedCveSuppression,
+} from "./services/cve-suppression-service.js";
 
 const storage = createStorageBackend();
 const vulnSyncImpls = createVulnSyncImpls(pool);
@@ -296,6 +306,15 @@ export function createApp(): express.Express {
         recordAvailabilityTransitions(pool, { source, trigger: "admin" }),
       startVulnBackfill,
       getVulnBackfill: (id) => getVulnBackfillJob(pool, id),
+      getActiveSuppressionCount: () => countActiveCveSuppressions(pool),
+      listActiveSuppressions: () => listActiveCveSuppressions(pool),
+      listSuppressionAudit: (opts) => listSuppressionAuditActions(pool, opts),
+      cveExists: async (cveId) => (await getCveById(pool, cveId)) !== null,
+      packageExists: async (packageName) => (await getPackage(pool, packageName)) !== null,
+      previewSuppression: (input) => previewCveSuppression(pool, input),
+      createSuppression: (input) => createAuditedCveSuppression(pool, input),
+      previewSuppressionRevocation: (id) => previewCveSuppressionRevocation(pool, id),
+      revokeSuppression: (input) => revokeAuditedCveSuppression(pool, input),
     }),
   );
 

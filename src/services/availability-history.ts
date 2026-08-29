@@ -22,7 +22,7 @@ import { findBlockingCve, VersionAvailabilityStatus } from "./vuln-service.js";
 /** Ingestion labels a transition can be attributed to. Documentation of the expected
  * values rather than a constraint: the recorder stores whatever label the caller supplies,
  * because the routes have already validated the source they dispatched. */
-export type TransitionSource = "nvd" | "kev" | "osv" | "cvss" | "all" | "backfill";
+export type TransitionSource = "nvd" | "kev" | "osv" | "cvss" | "all" | "backfill" | "suppression";
 export type TransitionTrigger = "internal" | "admin";
 
 export interface AvailabilityTransition {

@@ -13,7 +13,13 @@ import type { VulnSourceStatus, VulnSyncStatus } from "../db/queries/vuln-sync-s
 import type { VulnBackfillJobRow } from "../db/queries/vuln-backfill-jobs.js";
 import { buildPublicationWindows } from "../vuln/sync/nvd-sync.js";
 import { VERSION_NA } from "../vuln/version-ranges.js";
-import { CRITICAL_SCORE } from "../services/vuln-service.js";
+import { meetsCriticalGate } from "../services/vuln-service.js";
+import type {
+  CreateCveSuppressionInput,
+  CveSuppressionRow,
+} from "../db/queries/cve-suppressions.js";
+import type { SuppressionPreview } from "../services/cve-suppression-service.js";
+import type { AdminActionRow, ListSuppressionAuditOptions } from "../db/queries/admin-actions.js";
 
 export interface AdminVulnsRouteDeps {
   /** Bound /vulns query (same code path as the public API). */
@@ -34,6 +40,21 @@ export interface AdminVulnsRouteDeps {
     packageName?: string,
   ) => Promise<{ job?: VulnBackfillJobRow; alreadyRunning?: boolean }>;
   getVulnBackfill: (id: string) => Promise<VulnBackfillJobRow | null>;
+  getActiveSuppressionCount: () => Promise<number>;
+  listActiveSuppressions: () => Promise<CveSuppressionRow[]>;
+  listSuppressionAudit: (opts: ListSuppressionAuditOptions) => Promise<AdminActionRow[]>;
+  cveExists: (cveId: string) => Promise<boolean>;
+  packageExists: (packageName: string) => Promise<boolean>;
+  previewSuppression: (
+    input: Pick<CreateCveSuppressionInput, "cve_id" | "package_name">,
+  ) => Promise<SuppressionPreview>;
+  createSuppression: (input: CreateCveSuppressionInput) => Promise<CveSuppressionRow>;
+  previewSuppressionRevocation: (id: number) => Promise<SuppressionPreview | null>;
+  revokeSuppression: (input: {
+    id: number;
+    reason: string;
+    revoked_by: string;
+  }) => Promise<CveSuppressionRow | null>;
 }
 
 /**
@@ -52,10 +73,14 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
       const syncError = optionalString(req.query.sync_error);
       const backfillStarted = optionalString(req.query.backfill_started);
 
-      const [freshness, syncStatus] = await Promise.all([
-        deps.getDataFreshness(),
-        deps.getSyncStatus(),
-      ]);
+      const [freshness, syncStatus, activeSuppressionCount, activeSuppressions] = await Promise.all(
+        [
+          deps.getDataFreshness(),
+          deps.getSyncStatus(),
+          deps.getActiveSuppressionCount(),
+          deps.listActiveSuppressions(),
+        ],
+      );
       const hints = deps.getHints ? await deps.getHints() : [];
       const result = product ? await deps.queryVulns(product, version) : null;
 
@@ -70,6 +95,8 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
           freshness,
           syncStatus,
           hints,
+          activeSuppressionCount,
+          activeSuppressions,
           result,
         }),
       );
@@ -148,6 +175,87 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
       res.status(allOk ? 200 : alreadyRunning ? 409 : 207).json({ source, outcomes });
     } catch (err) {
       next(err);
+    }
+  });
+
+  router.post("/vuln-suppressions/preview", async (req, res, next) => {
+    try {
+      const parsed = parseSuppressionBody(req.body);
+      if (!parsed.ok) return void res.status(400).json({ error: parsed.error });
+      const existenceError = await validateSuppressionScope(deps, parsed.input);
+      if (existenceError) return void res.status(404).json({ error: existenceError });
+      const preview = await deps.previewSuppression(parsed.input);
+      res.json({ preview });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/vuln-suppressions/audit", async (req, res, next) => {
+    try {
+      const parsed = parseSuppressionAuditQuery(req.query);
+      if (!parsed.ok) return void res.status(400).json({ error: parsed.error });
+      const actions = await deps.listSuppressionAudit(parsed.options);
+      res.json({
+        actions,
+        next_before_id:
+          actions.length === parsed.options.limit ? (actions.at(-1)?.id ?? null) : null,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/vuln-suppressions", async (req, res, next) => {
+    try {
+      const parsed = parseSuppressionBody(req.body);
+      if (!parsed.ok) return void res.status(400).json({ error: parsed.error });
+      const existenceError = await validateSuppressionScope(deps, parsed.input);
+      if (existenceError) return void res.status(404).json({ error: existenceError });
+      let suppression;
+      try {
+        suppression = await deps.createSuppression(parsed.input);
+      } catch (error) {
+        if (isUniqueViolation(error)) {
+          return void res.status(409).json({
+            error: "An active suppression already exists for this CVE and package scope",
+          });
+        }
+        throw error;
+      }
+      const availability = await deps.recordAvailability?.("suppression");
+      res.status(201).json({ suppression, availability });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/vuln-suppressions/:id/revoke/preview", async (req, res, next) => {
+    try {
+      const id = positiveInteger(req.params.id);
+      if (id === null) return void res.status(400).json({ error: "Invalid suppression id" });
+      const parsed = parseRevocationBody(req.body);
+      if (!parsed.ok) return void res.status(400).json({ error: parsed.error });
+      const preview = await deps.previewSuppressionRevocation(id);
+      if (!preview) return void res.status(404).json({ error: "Suppression not found" });
+      res.json({ preview });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/vuln-suppressions/:id/revoke", async (req, res, next) => {
+    try {
+      const id = positiveInteger(req.params.id);
+      if (id === null) return void res.status(400).json({ error: "Invalid suppression id" });
+      const parsed = parseRevocationBody(req.body);
+      if (!parsed.ok) return void res.status(400).json({ error: parsed.error });
+      const suppression = await deps.revokeSuppression({ id, ...parsed.input });
+      if (!suppression) return void res.status(404).json({ error: "Suppression not found" });
+      const availability = await deps.recordAvailability?.("suppression");
+      res.json({ suppression, availability });
+    } catch (error) {
+      next(error);
     }
   });
 
@@ -237,6 +345,8 @@ function renderExplorer(ctx: {
   freshness: DataFreshness;
   syncStatus: VulnSyncStatus;
   hints: string[];
+  activeSuppressionCount: number;
+  activeSuppressions: CveSuppressionRow[];
   result: VulnQueryResult | null;
 }): string {
   const esc = escHtml;
@@ -276,6 +386,7 @@ function renderExplorer(ctx: {
       <div class="status-row">
         <strong>Data sources</strong>
         <span class="src-chips">${sourceChips}</span>
+        <span class="suppression-count" title="Active operator assertions excluded from the critical-CVE gate">${ctx.activeSuppressionCount} active suppression${ctx.activeSuppressionCount === 1 ? "" : "s"}</span>
         <span class="strip-actions">
           <form method="post" action="/admin/v1/vuln-sync/nvd"><button class="btn btn-sm btn-secondary">Sync NVD</button></form>
           <form method="post" action="/admin/v1/vuln-sync/kev"><button class="btn btn-sm btn-secondary">Sync KEV</button></form>
@@ -334,6 +445,54 @@ function renderExplorer(ctx: {
     ? renderResult(ctx.result)
     : `<p class="empty">Enter a product to look up known CVEs.</p>`;
 
+  const suppressionPanel = `
+    <section id="suppression-panel" class="suppression-panel" hidden>
+      <h2 id="suppression-title">CVE suppression</h2>
+      <p id="suppression-scope" class="meta"></p>
+      <div class="note note-warn">This changes what <code>/download</code> serves. Apply only after
+        the team's six-eyes review and formal approval. The operator and reason are written to the
+        database audit trail.</div>
+      <div class="suppression-fields">
+        <label>Operator <input id="suppression-operator" autocomplete="username" required></label>
+        <label>Reason <textarea id="suppression-reason" rows="3" required></textarea></label>
+        <label id="suppression-expiry-wrap">Expires at (optional)
+          <input id="suppression-expiry" type="datetime-local">
+        </label>
+      </div>
+      <div class="suppression-actions">
+        <button id="suppression-preview" class="btn btn-sm btn-secondary" type="button">Preview</button>
+        <button id="suppression-apply" class="btn btn-sm btn-danger" type="button" disabled>Apply</button>
+        <button id="suppression-cancel" class="btn btn-sm btn-secondary" type="button">Cancel</button>
+      </div>
+      <div id="suppression-out"></div>
+    </section>`;
+
+  const activeSuppressionList =
+    ctx.activeSuppressions.length === 0
+      ? ""
+      : `<details class="active-suppressions">
+          <summary>Active CVE suppressions (${ctx.activeSuppressions.length})</summary>
+          <p class="meta">Operational exceptions remain visible here until revoked or expired.</p>
+          <table>
+            <thead><tr><th>CVE</th><th>Scope</th><th>Reason</th><th>Operator</th><th>Expires</th><th></th></tr></thead>
+            <tbody>${ctx.activeSuppressions
+              .map(
+                (s) => `<tr>
+                  <td>${esc(s.cve_id)}</td>
+                  <td>${esc(s.package_name ?? "all packages")}</td>
+                  <td>${esc(s.reason)}</td>
+                  <td>${esc(s.created_by)}</td>
+                  <td>${esc(s.expires_at ? fmtTs(s.expires_at.toISOString()) : "until revoked")}</td>
+                  <td><button class="btn btn-sm btn-danger suppression-open" type="button"
+                    data-mode="revoke" data-id="${s.id}" data-cve="${esc(s.cve_id)}"
+                    data-package="${esc(s.package_name ?? "")}"
+                    data-scope="${esc(s.package_name ?? "")}">Revoke</button></td>
+                </tr>`,
+              )
+              .join("")}</tbody>
+          </table>
+        </details>`;
+
   const body = `
     <h1>Vulnerability Explorer</h1>
     ${syncErrorBanner}
@@ -341,6 +500,8 @@ function renderExplorer(ctx: {
     ${backfillBanner}
     ${form}
     <div id="results-anchor">${results}</div>
+    ${suppressionPanel}
+    ${activeSuppressionList}
     ${hintsBanner}
     ${statusStrip}
     ${enrichPanel}`;
@@ -591,7 +752,161 @@ function renderExplorer(ctx: {
       } finally {
         lockApply('Preview again before applying');
       }
-    });`;
+    });
+
+    // WAL-70 suppression-ui:start
+    // ── CVE suppression/revocation preview + apply (ADR-007) ──
+    const suppressionPanel = document.getElementById('suppression-panel');
+    const suppressionTitle = document.getElementById('suppression-title');
+    const suppressionScope = document.getElementById('suppression-scope');
+    const suppressionOperator = document.getElementById('suppression-operator');
+    const suppressionReason = document.getElementById('suppression-reason');
+    const suppressionExpiry = document.getElementById('suppression-expiry');
+    const suppressionExpiryWrap = document.getElementById('suppression-expiry-wrap');
+    const suppressionPreview = document.getElementById('suppression-preview');
+    const suppressionApply = document.getElementById('suppression-apply');
+    const suppressionCancel = document.getElementById('suppression-cancel');
+    const suppressionOut = document.getElementById('suppression-out');
+    let suppressionState = null;
+    let suppressionPreviewSignature = null;
+
+    function lockSuppressionApply() {
+      suppressionApply.disabled = true;
+      suppressionApply.title = 'Preview this exact change first';
+      suppressionPreviewSignature = null;
+    }
+
+    function suppressionPayload() {
+      const reason = suppressionReason.value.trim();
+      const operator = suppressionOperator.value.trim();
+      if (!reason || !operator) throw new Error('Operator and reason are required');
+      if (suppressionState.mode === 'revoke') {
+        return { reason: reason, revoked_by: operator };
+      }
+      const payload = {
+        cve_id: suppressionState.cve,
+        package_name: suppressionState.packageName,
+        reason: reason,
+        created_by: operator,
+      };
+      if (suppressionExpiry.value) payload.expires_at = new Date(suppressionExpiry.value).toISOString();
+      return payload;
+    }
+
+    function suppressionUrl(preview) {
+      if (suppressionState.mode === 'revoke') {
+        return '/admin/v1/vuln-suppressions/' + suppressionState.id + '/revoke'
+          + (preview ? '/preview' : '');
+      }
+      return '/admin/v1/vuln-suppressions' + (preview ? '/preview' : '');
+    }
+
+    async function postSuppression(preview, payload) {
+      const response = await fetch(suppressionUrl(preview), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      let data = {};
+      try { data = await response.json(); } catch (e) {}
+      return { status: response.status, data: data };
+    }
+
+    function renderSuppressionPreview(preview) {
+      const available = preview.newly_available || [];
+      const blocked = preview.newly_blocked || [];
+      let html = '<div class="note note-info">Dry run — nothing was written. '
+        + esc(preview.versions_changed) + ' cached version(s) would change.</div>';
+      if (available.length) {
+        html += '<div class="note note-ok"><strong>Would become available:</strong><ul>'
+          + available.map(x => '<li>' + esc(x.package_name) + ': '
+              + x.versions.map(esc).join(', ') + '</li>').join('') + '</ul></div>';
+      }
+      if (blocked.length) {
+        html += '<div class="note note-warn"><strong>Would become blocked:</strong><ul>'
+          + blocked.map(x => '<li>' + esc(x.package_name) + ': '
+              + x.versions.map(esc).join(', ') + '</li>').join('') + '</ul></div>';
+      }
+      suppressionOut.innerHTML = html;
+    }
+
+    document.querySelectorAll('.suppression-open').forEach(button => {
+      button.addEventListener('click', () => {
+        suppressionState = {
+          mode: button.getAttribute('data-mode'),
+          id: button.getAttribute('data-id'),
+          cve: button.getAttribute('data-cve'),
+          packageName: button.getAttribute('data-package'),
+          scopePackage: button.getAttribute('data-scope'),
+        };
+        suppressionTitle.textContent = suppressionState.mode === 'revoke'
+          ? 'Revoke CVE suppression' : 'Suppress CVE from gate';
+        const displayScope = suppressionState.mode === 'revoke'
+          ? (suppressionState.scopePackage || 'all packages')
+          : suppressionState.packageName;
+        suppressionScope.textContent = suppressionState.cve + ' · '
+          + (displayScope === 'all packages' ? displayScope : 'package ' + displayScope);
+        suppressionExpiryWrap.hidden = suppressionState.mode === 'revoke';
+        suppressionReason.value = '';
+        suppressionExpiry.value = '';
+        suppressionOut.innerHTML = '';
+        lockSuppressionApply();
+        suppressionPanel.hidden = false;
+        suppressionPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      });
+    });
+    [suppressionOperator, suppressionReason, suppressionExpiry].forEach(inputEl => {
+      inputEl.addEventListener('input', lockSuppressionApply);
+    });
+    suppressionCancel.addEventListener('click', () => {
+      suppressionPanel.hidden = true;
+      suppressionState = null;
+      lockSuppressionApply();
+    });
+    suppressionPreview.addEventListener('click', async () => {
+      try {
+        const payload = suppressionPayload();
+        suppressionPreview.disabled = true;
+        suppressionOut.innerHTML = '<p class="empty">Previewing…</p>';
+        const result = await postSuppression(true, payload);
+        if (result.status !== 200) {
+          suppressionOut.innerHTML = '<div class="note note-warn">'
+            + esc(result.data.error || 'Preview failed') + '</div>';
+          lockSuppressionApply();
+          return;
+        }
+        renderSuppressionPreview(result.data.preview);
+        suppressionPreviewSignature = JSON.stringify(payload);
+        suppressionApply.disabled = false;
+        suppressionApply.title = 'Apply the previewed change';
+      } catch (e) {
+        suppressionOut.innerHTML = '<div class="note note-warn">' + esc(String(e)) + '</div>';
+        lockSuppressionApply();
+      } finally {
+        suppressionPreview.disabled = false;
+      }
+    });
+    suppressionApply.addEventListener('click', async () => {
+      try {
+        const payload = suppressionPayload();
+        if (JSON.stringify(payload) !== suppressionPreviewSignature) {
+          throw new Error('Inputs changed — preview again');
+        }
+        if (!confirm('Apply the previewed gate change?')) return;
+        suppressionApply.disabled = true;
+        const result = await postSuppression(false, payload);
+        if (result.status !== 200 && result.status !== 201) {
+          suppressionOut.innerHTML = '<div class="note note-warn">'
+            + esc(result.data.error || 'Apply failed') + '</div>';
+          return;
+        }
+        window.location.reload();
+      } catch (e) {
+        suppressionOut.innerHTML = '<div class="note note-warn">' + esc(String(e)) + '</div>';
+        lockSuppressionApply();
+      }
+    });
+    // WAL-70 suppression-ui:end`;
 
   const styleTail = `<style>
     .vform { display:flex; gap:8px; margin:16px 0; flex-wrap:wrap; }
@@ -613,6 +928,7 @@ function renderExplorer(ctx: {
     .src-never { background:#f3f4f6; color:#6b7280; }
     .src-never .dot { background:#9ca3af; }
     .src-ts { color:inherit; opacity:0.75; font-size:0.75rem; }
+    .suppression-count { font-size:0.78rem; color:#7c2d12; background:#ffedd5; padding:3px 9px; border-radius:12px; }
     .strip-actions { display:flex; gap:8px; flex-wrap:wrap; margin-left:auto; }
     .enrich-wrap { margin-top:12px; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:10px 14px; }
     .enrich-wrap summary { cursor:pointer; font-size:0.85rem; font-weight:700; color:#111; }
@@ -641,6 +957,16 @@ function renderExplorer(ctx: {
     .filter-count { margin:6px 0 0; }
     .hist-link { font-size:0.8rem; }
     .badge-blocked-gate { background:#b91c1c; color:#fff; margin-left:6px; }
+    .badge-suppressed { background:#ffedd5; color:#9a3412; margin-right:6px; }
+    .suppression-cell { white-space:nowrap; }
+    .suppression-panel { margin:14px 0; padding:14px; border:1px solid #fdba74; border-radius:8px; background:#fff7ed; }
+    .suppression-panel h2 { margin:0 0 4px; font-size:1rem; }
+    .suppression-fields { display:grid; gap:8px; max-width:680px; }
+    .suppression-fields label { display:grid; gap:3px; font-size:0.8rem; color:#4b5563; }
+    .suppression-fields input, .suppression-fields textarea { padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; font:inherit; }
+    .suppression-actions { display:flex; gap:8px; margin-top:10px; }
+    .active-suppressions { margin:14px 0; padding:10px 14px; border:1px solid #fdba74; border-radius:8px; background:#fff; }
+    .active-suppressions summary { cursor:pointer; font-weight:700; color:#9a3412; }
     .pkg-backfill { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin:0 0 14px; }
     .pkg-backfill label { font-size:0.8rem; color:#4b5563; }
     .pkg-backfill input[type=date] { font-size:0.8rem; padding:3px 6px; }
@@ -723,10 +1049,22 @@ function renderResult(r: VulnQueryResult): string {
       const gateable =
         v.affected.matched_because !== VERSION_NA &&
         v.affected.matched_because !== "range-uncomparable";
+      const meetsGate = gateable && meetsCriticalGate(v);
       const gates =
-        gateable && maxScore !== null && maxScore >= CRITICAL_SCORE
-          ? ` <span class="badge badge-blocked-gate">blocks at ${maxScore}</span>`
+        meetsGate && !v.suppression
+          ? ` <span class="badge badge-blocked-gate">${maxScore === null ? "blocks" : `blocks at ${maxScore}`}</span>`
           : "";
+      const suppression = v.suppression
+        ? `<span class="badge badge-suppressed" title="${esc(v.suppression.reason)}">suppressed</span>
+           <button class="btn btn-sm btn-danger suppression-open" type="button"
+             data-mode="revoke" data-id="${v.suppression.id}" data-cve="${esc(v.cve_id)}"
+             data-package="${esc(m.product_slug ?? "")}"
+             data-scope="${esc(v.suppression.package_name ?? "")}">Revoke</button>`
+        : meetsGate
+          ? `<button class="btn btn-sm btn-secondary suppression-open" type="button"
+               data-mode="suppress" data-cve="${esc(v.cve_id)}"
+               data-package="${esc(m.product_slug ?? "")}">Suppress</button>`
+          : "—";
       const scoreLabel = maxScore !== null ? ` (${maxScore})` : "";
       return `<tr>
         <td><a href="https://nvd.nist.gov/vuln/detail/${esc(v.cve_id)}" target="_blank" rel="noopener">${esc(v.cve_id)}</a></td>
@@ -735,13 +1073,14 @@ function renderResult(r: VulnQueryResult): string {
         <td>${v.fixed_in ? esc(v.fixed_in) : "—"}</td>
         <td>${kev || "—"}</td>
         <td>${v.sources.map((s) => esc(s)).join(", ")}</td>
+        <td class="suppression-cell">${suppression}</td>
       </tr>`;
     })
     .join("");
 
   return `${header}${warn}
     <table>
-      <thead><tr><th>CVE</th><th>Severity</th><th>Affected range</th><th>Fixed in</th><th>KEV</th><th>Sources</th></tr></thead>
+      <thead><tr><th>CVE</th><th>Severity</th><th>Affected range</th><th>Fixed in</th><th>KEV</th><th>Sources</th><th>Gate action</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
 }
@@ -760,6 +1099,140 @@ function fmtTs(ts: string | null): string {
 function optionalString(value: unknown): string | undefined {
   if (typeof value === "string" && value.length > 0) return value;
   return undefined;
+}
+
+function requiredTrimmedString(
+  value: unknown,
+  field: string,
+):
+  | { ok: true; value: string }
+  | {
+      ok: false;
+      error: string;
+    } {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return { ok: false, error: `${field} must be a non-empty string` };
+  }
+  return { ok: true, value: value.trim() };
+}
+
+function parseSuppressionBody(
+  body: unknown,
+): { ok: true; input: CreateCveSuppressionInput } | { ok: false; error: string } {
+  const value = (body ?? {}) as Record<string, unknown>;
+  const cve = requiredTrimmedString(value.cve_id, "cve_id");
+  if (!cve.ok) return cve;
+  const reason = requiredTrimmedString(value.reason, "reason");
+  if (!reason.ok) return reason;
+  const createdBy = requiredTrimmedString(value.created_by, "created_by");
+  if (!createdBy.ok) return createdBy;
+
+  let packageName: string | null = null;
+  if (
+    value.package_name !== undefined &&
+    value.package_name !== null &&
+    value.package_name !== ""
+  ) {
+    const parsed = requiredTrimmedString(value.package_name, "package_name");
+    if (!parsed.ok) return parsed;
+    packageName = parsed.value;
+  }
+
+  let expiresAt: Date | null = null;
+  if (value.expires_at !== undefined && value.expires_at !== null && value.expires_at !== "") {
+    if (typeof value.expires_at !== "string") {
+      return { ok: false, error: "expires_at must be an ISO-8601 timestamp" };
+    }
+    expiresAt = new Date(value.expires_at);
+    if (Number.isNaN(expiresAt.getTime())) {
+      return { ok: false, error: "expires_at must be an ISO-8601 timestamp" };
+    }
+    if (expiresAt.getTime() <= Date.now()) {
+      return { ok: false, error: "expires_at must be in the future" };
+    }
+  }
+
+  return {
+    ok: true,
+    input: {
+      cve_id: cve.value.toUpperCase(),
+      package_name: packageName,
+      reason: reason.value,
+      created_by: createdBy.value,
+      expires_at: expiresAt,
+    },
+  };
+}
+
+function parseRevocationBody(
+  body: unknown,
+): { ok: true; input: { reason: string; revoked_by: string } } | { ok: false; error: string } {
+  const value = (body ?? {}) as Record<string, unknown>;
+  const reason = requiredTrimmedString(value.reason, "reason");
+  if (!reason.ok) return reason;
+  const revokedBy = requiredTrimmedString(value.revoked_by, "revoked_by");
+  if (!revokedBy.ok) return revokedBy;
+  return { ok: true, input: { reason: reason.value, revoked_by: revokedBy.value } };
+}
+
+function parseSuppressionAuditQuery(
+  query: unknown,
+): { ok: true; options: ListSuppressionAuditOptions } | { ok: false; error: string } {
+  const value = (query ?? {}) as Record<string, unknown>;
+  let limit = 50;
+  if (value.limit !== undefined) {
+    if (typeof value.limit !== "string") return { ok: false, error: "limit must be an integer" };
+    const parsed = positiveInteger(value.limit);
+    if (parsed === null || parsed > 100) {
+      return { ok: false, error: "limit must be an integer between 1 and 100" };
+    }
+    limit = parsed;
+  }
+
+  let beforeId: number | undefined;
+  if (value.before_id !== undefined) {
+    if (typeof value.before_id !== "string") {
+      return { ok: false, error: "before_id must be a positive integer" };
+    }
+    const parsed = positiveInteger(value.before_id);
+    if (parsed === null) return { ok: false, error: "before_id must be a positive integer" };
+    beforeId = parsed;
+  }
+
+  let cveId: string | undefined;
+  if (value.cve_id !== undefined) {
+    const parsed = requiredTrimmedString(value.cve_id, "cve_id");
+    if (!parsed.ok) return parsed;
+    cveId = parsed.value.toUpperCase();
+  }
+
+  return { ok: true, options: { limit, beforeId, cveId } };
+}
+
+async function validateSuppressionScope(
+  deps: AdminVulnsRouteDeps,
+  input: Pick<CreateCveSuppressionInput, "cve_id" | "package_name">,
+): Promise<string | null> {
+  if (!(await deps.cveExists(input.cve_id))) return `Unknown CVE: ${input.cve_id}`;
+  if (input.package_name && !(await deps.packageExists(input.package_name))) {
+    return `Unknown package: ${input.package_name}`;
+  }
+  return null;
+}
+
+function positiveInteger(value: string): number | null {
+  if (!/^\d+$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "23505"
+  );
 }
 
 /** Chip state class for one source: ok / fail / never drives the strip's color coding. */

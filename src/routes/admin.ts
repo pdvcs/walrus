@@ -1083,6 +1083,7 @@ export function renderSharedHtml(
 ${scripts}
 </script>
 <script>
+// health-degradation-ui:start
 // Degradation banner (PO decision 2026-08-26): walrus's vulnerability ingestion runs
 // unattended, so the admin homepage is where an operator learns it has stopped working.
 // Fed by /health's degradations array; /health keeps status "ok" for these.
@@ -1103,6 +1104,7 @@ ${scripts}
         ).join('') + '</ul>';
   } catch (e) { /* the banner must never break an admin page */ }
 })();
+// health-degradation-ui:end
 </script>${rawTail}
 </body>
 </html>`;

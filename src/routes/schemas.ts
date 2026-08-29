@@ -220,6 +220,16 @@ export const VulnItemSchema = z
     is_kev: z.boolean(),
     sources: z.array(z.string()),
     references: z.array(z.string()),
+    suppression: z
+      .object({
+        reason: z.string(),
+        expires_at: z.string().datetime().nullable(),
+      })
+      .nullable()
+      .openapi({
+        description:
+          "Active operator assertion excluding this CVE from the download gate. The advisory remains visible.",
+      }),
   })
   .openapi("VulnItem");
 
@@ -311,6 +321,12 @@ export const PackageVersionVulnSchema = z
     fixed_in: z.string().nullable(),
     is_kev: z.boolean(),
     matched_because: z.string().nullable(),
+    suppression: z
+      .object({
+        reason: z.string(),
+        expires_at: z.string().datetime().nullable(),
+      })
+      .nullable(),
   })
   .openapi("PackageVersionVuln");
 

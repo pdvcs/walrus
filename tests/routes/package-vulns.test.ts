@@ -17,6 +17,10 @@ import { generateSortKey } from "../../src/common/version-utils.js";
 import { createPackageVulnsRouter } from "../../src/routes/package-vulns.js";
 import { listAvailabilityHistory } from "../../src/services/availability-history.js";
 import type { AvailabilityTransition } from "../../src/services/availability-history.js";
+import {
+  createCveSuppression,
+  revokeCveSuppression,
+} from "../../src/db/queries/cve-suppressions.js";
 
 const TEST_DB_URL =
   process.env.DATABASE_URL ?? "postgresql://walrus:walrus@localhost:5432/walrus_test";
@@ -141,6 +145,28 @@ describe("GET /api/v1/packages/:name/vulns", () => {
     const res = await request(app).get(`/api/v1/packages/${TRACKED}/vulns?version=11.0.2`);
     expect(res.body.versions).toHaveLength(1);
     expect(res.body.versions[0].version).toBe("11.0.2");
+  });
+
+  it("keeps a suppressed CVE visible with its reason while hiding operator identity", async () => {
+    const suppression = await createCveSuppression(pool, {
+      cve_id: CVE,
+      package_name: TRACKED,
+      reason: "Confirmed mis-attribution",
+      created_by: "operator@example.com",
+      expires_at: null,
+    });
+    try {
+      const res = await request(app).get(`/api/v1/packages/${TRACKED}/vulns?version=11.0.2`);
+      expect(res.status).toBe(200);
+      expect(res.body.versions[0].vulns[0]).toMatchObject({
+        cve_id: CVE,
+        suppression: { reason: "Confirmed mis-attribution", expires_at: null },
+      });
+      expect(res.body.versions[0].vulns[0].suppression).not.toHaveProperty("created_by");
+      expect(res.body.versions[0].vulns[0].suppression).not.toHaveProperty("id");
+    } finally {
+      await revokeCveSuppression(pool, suppression.id);
+    }
   });
 
   it("unknown version → empty versions array (not 404)", async () => {

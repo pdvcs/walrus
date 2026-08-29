@@ -46,6 +46,13 @@ export interface VulnItem {
   is_kev: boolean;
   sources: string[];
   references: string[];
+  suppression: {
+    id: number;
+    reason: string;
+    created_by: string;
+    package_name: string | null;
+    expires_at: string | null;
+  } | null;
 }
 
 export interface VulnCounts {
@@ -174,6 +181,16 @@ export async function queryVulns(
       is_kev: row.is_kev,
       sources,
       references: buildReferences(cveId, row),
+      suppression:
+        row.suppressed && row.suppression_id != null && row.suppression_reason
+          ? {
+              id: row.suppression_id,
+              reason: row.suppression_reason,
+              created_by: row.suppression_created_by ?? "unknown",
+              package_name: row.suppression_package_name ?? null,
+              expires_at: row.suppression_expires_at?.toISOString() ?? null,
+            }
+          : null,
     };
     if (entry.matchedRow) vulns.push(item);
     else if (includeUnmatched)

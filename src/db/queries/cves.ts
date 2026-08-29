@@ -85,6 +85,13 @@ export interface AffectsWithCveRow {
   description: string | null;
   is_kev: boolean;
   raw: { cve?: { references?: Array<{ url: string }> } } | null;
+  /** Active operator assertion excluding this CVE from the download gate (WAL-70). */
+  suppressed?: boolean;
+  suppression_id?: number | null;
+  suppression_reason?: string | null;
+  suppression_created_by?: string | null;
+  suppression_package_name?: string | null;
+  suppression_expires_at?: Date | null;
   /**
    * The owning package's `cve_version_extract` (ADR-008), joined on so the rule travels with
    * the rows it governs. There is exactly one affects loader and it is always package-scoped,
@@ -258,18 +265,36 @@ export async function getCveById(pool: Pool, id: string): Promise<CveRow | null>
 export async function listAffectsWithCveForPackage(
   pool: Pool,
   packageName: string,
+  opts: { excludeSuppressionId?: number } = {},
 ): Promise<AffectsWithCveRow[]> {
   const { rows } = await pool.query<AffectsWithCveRow>(
     `SELECT ca.cve_id, ca.version_start, ca.version_start_excl, ca.version_end,
             ca.version_end_excl, ca.exact_version, ca.fixed_in, ca.source, ca.version_na,
             c.severity, c.severity_source, c.cvss_v3_score, c.cvss_v4_score, c.cvss_v2_score,
-            c.description, c.is_kev, c.raw, p.cve_version_extract
+            c.description, c.is_kev, c.raw, p.cve_version_extract,
+            (s.id IS NOT NULL) AS suppressed,
+            s.id AS suppression_id,
+            s.reason AS suppression_reason,
+            s.created_by AS suppression_created_by,
+            s.package_name AS suppression_package_name,
+            s.expires_at AS suppression_expires_at
      FROM cve_affects ca
      JOIN cves c ON c.id = ca.cve_id
      JOIN packages p ON p.name = ca.package_name
+     LEFT JOIN LATERAL (
+       SELECT cs.id, cs.reason, cs.created_by, cs.package_name, cs.expires_at
+         FROM cve_suppressions cs
+        WHERE cs.cve_id = ca.cve_id
+          AND (cs.package_name IS NULL OR cs.package_name = ca.package_name)
+          AND cs.revoked_at IS NULL
+          AND (cs.expires_at IS NULL OR cs.expires_at > now())
+          AND ($2::integer IS NULL OR cs.id <> $2)
+        ORDER BY (cs.package_name IS NOT NULL) DESC, cs.created_at DESC
+        LIMIT 1
+     ) s ON true
      WHERE ca.package_name = $1
      ORDER BY ca.cve_id DESC`,
-    [packageName],
+    [packageName, opts.excludeSuppressionId ?? null],
   );
   return rows;
 }

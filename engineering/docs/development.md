@@ -272,6 +272,44 @@ npm run vuln:backfill
 npm run vuln:backfill -- --since 2015-01-01
 ```
 
+### 9. Suppress a mis-attributed CVE
+
+Use the vulnerability explorer at `/admin/v1/vulns?product=<package>&version=<version>`. A gating
+CVE has a **Suppress** action; an active assertion stays visible with its reason and a **Revoke**
+action. The UI requires a preview of the exact fields before apply and shows every cached version
+that would become available or blocked.
+
+This is a production action, not a CLI/database procedure (ADR-004/ADR-007). Complete the team's
+six-eyes review and formal approval first. The operator identity and non-empty reason are required
+and stored in `admin_actions`; create and revoke use distinct action types.
+
+API clients use the same handlers:
+
+```bash
+# Preview (no write)
+curl -sS -X POST "$WALRUS_URL/admin/v1/vuln-suppressions/preview" \
+  -H 'Content-Type: application/json' \
+  -d '{"cve_id":"CVE-2099-0001","package_name":"openjdk","reason":"Confirmed mis-attribution","created_by":"operator@example.com"}' | jq .
+
+# Apply the approved package-scoped assertion
+curl -sS -X POST "$WALRUS_URL/admin/v1/vuln-suppressions" \
+  -H 'Content-Type: application/json' \
+  -d '{"cve_id":"CVE-2099-0001","package_name":"openjdk","reason":"Confirmed mis-attribution","created_by":"operator@example.com"}' | jq .
+
+# Preview revocation, then apply it with the same body
+curl -sS -X POST "$WALRUS_URL/admin/v1/vuln-suppressions/42/revoke/preview" \
+  -H 'Content-Type: application/json' \
+  -d '{"reason":"Upstream attribution corrected","revoked_by":"operator@example.com"}' | jq .
+
+# Inspect the create/revoke audit trail; optionally filter by cve_id
+curl -sS "$WALRUS_URL/admin/v1/vuln-suppressions/audit?limit=50" | jq .
+```
+
+Omit `package_name` only for an explicitly approved CVE-wide assertion. Optional `expires_at`
+must be a future ISO-8601 timestamp; once it passes, the CVE gates again on read without a job.
+Audit responses are newest-first. Pass the returned `next_before_id` as `before_id` to fetch the
+next page; `limit` defaults to 50 and is capped at 100.
+
 ---
 
 ## API schema architecture
