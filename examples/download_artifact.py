@@ -70,6 +70,18 @@ def http_json(url: str) -> dict:
         raise DownloadError(f"cannot reach {url}: {err.reason}") from err
 
 
+def error_body(err: urllib.error.HTTPError) -> dict:
+    """Read and cache the JSON body of an error response; the stream can only be read once."""
+    cached = getattr(err, "_walrus_body", None)
+    if cached is None:
+        try:
+            cached = json.loads(err.read().decode("utf-8", "replace"))
+        except Exception:
+            cached = {}
+        err._walrus_body = cached
+    return cached
+
+
 def describe_http_error(err: urllib.error.HTTPError) -> str:
     """Turn walrus's JSON error bodies into something worth printing.
 
@@ -78,11 +90,7 @@ def describe_http_error(err: urllib.error.HTTPError) -> str:
     cooling-off embargo (with `Retry-After`), and 400 `range_required` means the artifact is
     too large to fetch in one request.
     """
-    try:
-        body = json.loads(err.read().decode("utf-8", "replace"))
-    except Exception:
-        body = {}
-
+    body = error_body(err)
     detail = body.get("error") or err.reason
 
     if err.code == 403:
@@ -195,6 +203,16 @@ def fetch_chunk(url: str, start: int, end: int, etag: str | None) -> tuple[bytes
             raise DownloadError(
                 "requested range is not satisfiable — the local partial file is longer than "
                 "the artifact, so delete it and start again"
+            ) from err
+        # Above the server's range-required threshold, a stale `If-Range` cannot be answered
+        # the way RFC 9110 asks — the whole representation is precisely what the server has
+        # refused to send at this size — so the mismatch surfaces as `400 range_required`
+        # instead of `200`. We sent a Range, so that code cannot mean what it says; on this
+        # request it can only mean the validator no longer matches.
+        if err.code == 400 and error_body(err).get("code") == "range_required" and etag:
+            raise ArtifactChanged(
+                "walrus rejected a ranged request carrying our If-Range validator — the "
+                "artifact has been re-synced since this download started"
             ) from err
         raise DownloadError(describe_http_error(err)) from err
 

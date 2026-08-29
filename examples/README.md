@@ -45,11 +45,21 @@ are known good, and a failure costs one chunk rather than the whole transfer. `-
 tunes that granularity; the server answers whatever you ask for and has no opinion.
 
 **`If-Range` is what stops two builds being spliced together.** If the artifact is re-synced
-mid-download, the bytes on disk and the bytes still to come belong to different files. Walrus
-answers a stale `If-Range` with `200` and the whole representation instead of `206` — meaning
-"start over". Splicing across that boundary produces a corrupt archive that still looks
-plausible, which is the worst available outcome, so the script stops and says so rather than
-silently restarting.
+mid-download, the bytes on disk and the bytes still to come belong to different files. Splicing
+across that boundary produces a corrupt archive that still looks plausible, which is the worst
+available outcome, so the script stops and says so rather than silently restarting.
+
+A stale validator is reported two different ways, and a client has to handle both:
+
+- **below the range-required threshold**, walrus does what RFC 9110 asks — ignores the `Range`
+  and answers `200` with the whole representation, which is itself the "start over" signal;
+- **above it**, that answer is impossible: the whole representation is exactly what the server
+  refuses to send at this size. The mismatch surfaces as `400 range_required` instead. On a
+  request that _did_ carry a `Range`, that code cannot mean what its message says, so the script
+  reads it as the validator having gone stale.
+
+The second case is the one that matters in practice, since large artifacts are the ones actually
+resumed across processes — see the note in `download_artifact.py`.
 
 The ETag is saved next to the `.part` file, because resuming is usually something a _later
 process_ does — the first run was interrupted. Without persisting it, the first request of a
