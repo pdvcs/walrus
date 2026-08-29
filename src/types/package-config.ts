@@ -1,5 +1,31 @@
 import { z } from "zod";
 
+// Repackaging stage (WAL-56/57): declared per platform; `extension` / `filename_template` here
+// describe what walrus *serves*, while the platform's own `extension` / `filename_template` keep
+// meaning what upstream publishes and what asset matching looks for. One member today; a second
+// conversion is a new file in src/transform/ plus a variant here, never a DownloadService change.
+const TransformSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("tar-bz2-to-zip"),
+    extension: z.string(),
+    filename_template: z.string().optional(),
+    // Post-transform gate, enforced before the artifact reaches `available`: each path must have
+    // been a file entry in the transformed output, and the output must hold at least
+    // `min_entries` file entries. A transform that silently produced an empty or truncated
+    // archive would otherwise be served.
+    require_paths: z.array(z.string().min(1)).default([]),
+    min_entries: z.number().int().positive().optional(),
+    // Hardlink targets must still be in the link cache when their hardlink streams past; this
+    // is the cache's byte budget (default 64 MiB). Size it to the measured distance between a
+    // target and its farthest hardlink in the real archive, not to a guess.
+    link_cache_bytes: z.number().int().positive().optional(),
+    // Symlinks are a hard failure (WAL-57 AC4: a zip that extracts and then misbehaves is the
+    // worst outcome) EXCEPT paths listed here, which are dropped and reported. Exists for
+    // entries the target estate provably cannot miss — record the evidence in a comment.
+    drop_symlinks: z.array(z.string().min(1)).default([]),
+  }),
+]);
+
 const PlatformSchema = z.object({
   os: z.enum(["windows", "macos", "linux"]),
   arch: z.enum(["x86-64", "arm64"]),
@@ -9,6 +35,7 @@ const PlatformSchema = z.object({
   filename_template: z.string().optional(),
   url_template: z.string().optional(),
   name_must_contain: z.string().optional(),
+  transform: TransformSchema.optional(),
 });
 
 const DiscoverySchema = z.discriminatedUnion("type", [
@@ -192,6 +219,7 @@ export const PackageConfigSchema = z.object({
 
 export type PackageConfig = z.infer<typeof PackageConfigSchema>;
 export type Platform = z.infer<typeof PlatformSchema>;
+export type TransformConfig = z.infer<typeof TransformSchema>;
 export type DiscoveryConfig = z.infer<typeof DiscoverySchema>;
 export type VersioningConfig = z.infer<typeof VersioningSchema>;
 export type ChecksumConfig = z.infer<typeof ChecksumSchema>;

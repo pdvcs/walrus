@@ -260,6 +260,10 @@ export function createPackagesRouter(deps: PackagesRouteDeps): Router {
             checksum_type: artifact.checksum_type,
             download_url: `/download/${packageName}/${version.version}/${artifact.os}/${artifact.arch}`,
             requires_range: requiresRangedTransfer(artifact.file_size, deps.transferLimits),
+            upstream_url: artifact.upstream_url,
+            source_checksum: artifact.source_checksum,
+            source_file_size: artifact.source_file_size,
+            transform: artifact.transform,
           },
         }),
       );

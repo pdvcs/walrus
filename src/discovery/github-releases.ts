@@ -308,6 +308,9 @@ export class GitHubReleasesStrategy implements DiscoveryStrategy {
       const info: ArtifactInfo = {
         url: asset.browser_download_url,
         filename: asset.name,
+        // The API's own byte count, preferred over the response's Content-Length when the
+        // download checks for truncation (WAL-67).
+        size: asset.size,
       };
 
       if (config.checksum?.type === "github-asset" && config.checksum.asset_suffix) {

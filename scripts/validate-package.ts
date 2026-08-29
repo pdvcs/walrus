@@ -6,9 +6,17 @@
  *   npm run validate                        # validate all packages/*.toml
  *   npm run validate -- packages/uv.toml    # validate a single file
  *   npm run validate -- --online <file>     # also probe CPE pairs against NVD (WAL-45)
+ *   npm run validate -- --transform <file>  # also run [platforms.transform] for real (WAL-59)
  *
  * The same CPE check is available in production without shell access via the admin UI's
  * validate page, which probes automatically for any TOML with CPE pairs.
+ *
+ * --transform runs each platform's configured transform against the real upstream artifact
+ * through the normal download pipeline into a no-op storage backend: nothing is written, and
+ * the report shows entry count, output size, output digest, and require_paths hits/misses.
+ * It is off by default because it is minutes of CPU and hundreds of megabytes of transfer —
+ * authoring stays fast; a config with a transform block still validates fully without it,
+ * the transform exercise is the opt-in.
  */
 
 import fs from "fs";
@@ -16,11 +24,14 @@ import path from "path";
 import { loadPackageConfig, loadAllPackages } from "../src/services/package-registry.js";
 import { getStrategy } from "../src/discovery/index.js";
 import { sortVersionsDesc } from "../src/common/version-utils.js";
-import { PackageConfig } from "../src/types/package-config.js";
-import { DiscoveredVersion } from "../src/discovery/types.js";
+import { PackageConfig, Platform } from "../src/types/package-config.js";
+import { DiscoveredVersion, platformKey } from "../src/discovery/types.js";
 import { computeVulnInput } from "../src/services/vuln-config.js";
 import { selectRetentionWindow } from "../src/common/retention-window.js";
 import { defaultCpeProbe } from "../src/vuln/cpe-verify.js";
+import { DownloadService } from "../src/services/download-service.js";
+import { StorageBackend } from "../src/storage/types.js";
+import { Pool } from "pg";
 
 const PACKAGES_DIR = path.join(process.cwd(), "packages");
 const SPOT_CHECK_PLATFORM = { os: "linux", arch: "x86-64" } as const;
@@ -117,9 +128,109 @@ async function probeCpePairs(cpes: string[]): Promise<boolean> {
   return warned;
 }
 
+// ── Transform exercise (--transform, WAL-59) ──────────────────────────────────
+
+/**
+ * The same download pipeline a sync would run — fetch, hash, transform, gate — into a no-op
+ * storage backend, so the transform is exercised for real while nothing persists. The
+ * DownloadService is the mechanism, not a bespoke second dry-run path.
+ */
+const nullStorage: StorageBackend = {
+  upload: async (_key: string, stream: import("stream").Readable) => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    for await (const _chunk of stream) {
+      /* discard: the pipeline runs, the bytes do not */
+    }
+  },
+  download: () => Promise.reject(new Error("storage is not available under validate")),
+  stream: () => {
+    throw new Error("storage is not available under validate");
+  },
+  delete: () => Promise.resolve(),
+  exists: () => Promise.resolve(false),
+};
+
+async function exerciseTransform(
+  config: PackageConfig,
+  versions: DiscoveredVersion[],
+  transformPlatforms: Platform[],
+): Promise<string[]> {
+  const problems: string[] = [];
+  const newest = versions[0];
+  if (!newest) return problems;
+
+  const downloadService = new DownloadService({} as Pool, nullStorage, {
+    statusRepo: { updateArtifactStatus: () => Promise.resolve(null) },
+    maxRetries: 0,
+  });
+
+  for (const platform of transformPlatforms) {
+    const key = platformKey(platform);
+    const artifact = newest.artifacts.get(key);
+    if (!artifact) {
+      problems.push(
+        `${newest.version} ${key}: transform platform has no resolved artifact to exercise`,
+      );
+      continue;
+    }
+
+    console.log(
+      `  ${c.dim("○")} Transform exercise (${newest.version} ${key}): fetching ${artifact.filename}...`,
+    );
+    const result = await downloadService.downloadArtifact(
+      {
+        artifactId: 0,
+        upstreamUrl: artifact.url,
+        storagePath: `validate/${config.name}/${newest.version}/${key}/${artifact.filename}`,
+        expectedChecksum: artifact.checksum,
+        checksumType: artifact.checksumType === "sha1" ? "sha1" : "sha256",
+        expectedSize: artifact.size,
+        transform: config.platforms.find((p) => p.os === platform.os && p.arch === platform.arch)
+          ?.transform,
+      },
+      true,
+    );
+
+    if (result.status === "failed") {
+      problems.push(
+        `${newest.version} ${key}: transform failed — ${result.error ?? "unknown error"}`,
+      );
+      continue;
+    }
+
+    const report = result.transformReport;
+    if (!report) {
+      problems.push(`${newest.version} ${key}: transform ran but produced no report`);
+      continue;
+    }
+
+    const size = `${(report.outputSize / 1_048_576).toFixed(1)} MB`;
+    console.log(`    ${c.green("✓")} Entries: ${report.entryCount}`);
+    console.log(`    ${c.green("✓")} Output: ${size}, sha256 ${report.outputChecksum}`);
+    for (const hit of report.requirePathsPresent) {
+      console.log(`    ${c.green("✓")} require_paths: ${hit}`);
+    }
+    for (const miss of report.requirePathsMissing) {
+      problems.push(`${newest.version} ${key}: require_paths miss: ${miss}`);
+    }
+    for (const dropped of report.droppedSymlinks) {
+      console.log(`    ${c.yellow("!")} dropped symlink (per drop_symlinks): ${dropped}`);
+    }
+  }
+
+  return problems;
+}
+
 // ── Single package validation ─────────────────────────────────────────────────
 
-async function validatePackage(filePath: string, online: boolean): Promise<boolean> {
+export interface ValidateOptions {
+  /** Probe CPE pairs against the live NVD dictionary. */
+  online: boolean;
+  /** Run `[platforms.transform]` for real against upstream (slow; off by default). */
+  transform: boolean;
+}
+
+export async function validatePackage(filePath: string, opts: ValidateOptions): Promise<boolean> {
   const shortName = path.relative(process.cwd(), filePath);
   console.log(c.bold(`\nValidating ${shortName}...`));
 
@@ -152,7 +263,7 @@ async function validatePackage(filePath: string, online: boolean): Promise<boole
     console.log(`    CPE pairs: ${cpeStr}`);
     console.log(`    OSV: ${osvStr}`);
     console.log(`    Aliases (${vulnInput.aliases.length}): ${vulnInput.aliases.join(", ")}`);
-    if (online && vulnInput.cpes.length > 0) {
+    if (opts.online && vulnInput.cpes.length > 0) {
       await probeCpePairs(vulnInput.cpes.map((c) => `${c.cpe_vendor}:${c.cpe_product}`));
     }
   } else {
@@ -178,8 +289,25 @@ async function validatePackage(filePath: string, online: boolean): Promise<boole
     return false;
   }
 
-  // Spot-check artifact URL for the newest version on linux/x86-64 (or first available platform)
   const warnings: string[] = [];
+  const transformProblems: string[] = [];
+
+  // Transform exercise (WAL-59) — before the spot-check, so a config that transforms gets its
+  // real signal even when the spot-check platform differs.
+  const transformPlatforms = config.platforms.filter((p) => p.transform !== undefined);
+  if (transformPlatforms.length > 0) {
+    if (opts.transform) {
+      const found = await exerciseTransform(config, versions, transformPlatforms);
+      transformProblems.push(...found);
+    } else {
+      const names = transformPlatforms.map((p) => `${p.os}/${p.arch}`).join(", ");
+      console.log(
+        `  ${c.dim("○")} Transform configured for ${names} — pass --transform to exercise it`,
+      );
+    }
+  }
+
+  // Spot-check artifact URL for the newest version on linux/x86-64 (or first available platform)
   const newestVersion = versions[0]; // strategies return newest first (or we sort below)
   if (newestVersion) {
     const artKey = `${SPOT_CHECK_PLATFORM.os}/${SPOT_CHECK_PLATFORM.arch}`;
@@ -221,14 +349,22 @@ async function validatePackage(filePath: string, online: boolean): Promise<boole
     );
   }
 
+  let ok = true;
   if (warnings.length > 0) {
     console.log(`\n  ${c.yellow(`${warnings.length} warning(s):`)}`);
     for (const w of warnings) {
       console.log(`  ${c.yellow("!")} ${w}`);
     }
   }
+  if (transformProblems.length > 0) {
+    ok = false;
+    console.log(`\n  ${c.red(`${transformProblems.length} transform problem(s):`)}`);
+    for (const p of transformProblems) {
+      console.log(`  ${c.red("✗")} ${p}`);
+    }
+  }
 
-  return true;
+  return ok;
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -236,7 +372,8 @@ async function validatePackage(filePath: string, online: boolean): Promise<boole
 async function main() {
   const args = process.argv.slice(2);
   const online = args.includes("--online");
-  const fileArgs = args.filter((a) => a !== "--online");
+  const transform = args.includes("--transform");
+  const fileArgs = args.filter((a) => a !== "--online" && a !== "--transform");
 
   let filePaths: string[];
 
@@ -267,7 +404,7 @@ async function main() {
 
   let allPassed = true;
   for (const fp of filePaths) {
-    const ok = await validatePackage(fp, online);
+    const ok = await validatePackage(fp, { online, transform });
     if (!ok) allPassed = false;
   }
 
@@ -281,7 +418,9 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error(c.red("Unexpected error:"), err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(c.red("Unexpected error:"), err);
+    process.exit(1);
+  });
+}

@@ -142,6 +142,27 @@ describe("generateSortKey ordering (WAL-63)", () => {
       byDate,
     );
   });
+
+  it("orders the Git for Windows revision ladder (WAL-60)", () => {
+    // gitwindows is the first served package whose version carries a fourth component
+    // (.windows.N rebuild revisions). Across a minor bump...
+    expect(sortVersionsDesc(["2.54.0.9", "2.55.0.1"])).toEqual(["2.55.0.1", "2.54.0.9"]);
+    // ...and across a two-digit revision: .9 must not outrank .10 lexicographically.
+    expect(sortVersionsDesc(["2.55.0.9", "2.55.0.10"])).toEqual(["2.55.0.10", "2.55.0.9"]);
+    // The first build of a series ships a three-component version (Git-2.55.0-...); its
+    // later rebuilds extend it.
+    expect(sortVersionsDesc(["2.55.0.2", "2.55.0", "2.55.0.5"])).toEqual([
+      "2.55.0.5",
+      "2.55.0.2",
+      "2.55.0",
+    ]);
+    // The revision ladder sits between series bumps.
+    expect(sortVersionsDesc(["2.55.0.4", "2.56.0.1", "2.55.0.5"])).toEqual([
+      "2.56.0.1",
+      "2.55.0.5",
+      "2.55.0.4",
+    ]);
+  });
 });
 
 describe("generateSortKey property: mixed component counts", () => {

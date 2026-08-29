@@ -55,6 +55,10 @@ export interface ArtifactStatusUpdate {
   file_size?: number | null;
   checksum?: string | null;
   checksum_type?: string | null;
+  /** Provenance (WAL-58): set when the stored bytes differ from upstream's. */
+  source_checksum?: string | null;
+  source_file_size?: number | null;
+  transform?: string | null;
   error_message?: string | null;
   download_started_at?: Date | null;
   download_completed_at?: Date | null;
@@ -74,6 +78,9 @@ export async function updateArtifactStatus(
     ["file_size", "file_size"],
     ["checksum", "checksum"],
     ["checksum_type", "checksum_type"],
+    ["source_checksum", "source_checksum"],
+    ["source_file_size", "source_file_size"],
+    ["transform", "transform"],
     ["error_message", "error_message"],
     ["download_started_at", "download_started_at"],
     ["download_completed_at", "download_completed_at"],

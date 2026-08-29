@@ -96,6 +96,52 @@ New deps: `fuzzball`, `semver` (runtime); `fast-check` (dev). `pg_trgm` extensio
 - **WAL-32 (Security):** `GET /download/:package/:version/:os/:arch` returns `403` before
   artifact lookup or storage access when the requested version carries a known critical CVE.
 
+**Wave 11 — Git for Windows and the transform stage**
+
+- **WAL-57 (Added):** A transform stage in the download pipeline, structured like discovery —
+  a registry in `src/transform/` with one file per conversion, `tar-bz2-to-zip` first. The
+  pipeline becomes `upstream → sourceHash → transform → outputHash → storage.upload`: the
+  upstream digest is verified against the source bytes, the artifact's `checksum`/`file_size`
+  describe the stored bytes, and output is deterministic (fixed deflate level, tar entry
+  order, mtime from the tar header — byte-identical output across runs, verified against the
+  real upstream archive). Peak memory is bounded by a measured link-cache window
+  (`link_cache_bytes`), never artifact size; hardlinks are duplicated from that window and a
+  target that falls out of it fails the artifact loudly. Symlinks and device/fifo entries fail
+  the artifact unless explicitly listed in the config's `drop_symlinks` — nothing is skipped
+  silently. A post-transform gate (`require_paths`, `min_entries`) blocks an empty or
+  truncated output from reaching `available`, and the failure-path storage delete is now
+  unconditional, since a transform can die mid-stream after a partial upload.
+- **WAL-58 (Added):** Artifact provenance, via migration `0013_artifact_provenance.sql`:
+  `source_checksum`, `source_file_size`, and `transform` join `artifacts`, while
+  `checksum`/`file_size` keep meaning the bytes we serve. `upstream_url` is the source URL —
+  no second column. The chain (source URL, source digest, transform identity) is exposed
+  through `GET .../versions/:group/latest` and OpenAPI; for untransformed artifacts the new
+  fields are NULL. Redownloading a transformed artifact now re-verifies against
+  `source_checksum` instead of the stored zip digest it would never match.
+- **WAL-59 (Added):** `npm run validate -- --transform` exercises a package's transforms for
+  real against upstream — full pipeline into a no-op sink, nothing persisted — and reports
+  entry count, output size, output digest, `require_paths` hits/misses, and symlink drops,
+  per platform. Default off (minutes of CPU, hundreds of MB of transfer); configs without a
+  transform behave exactly as before.
+- **WAL-60 (Added):** `packages/walrus-gitwindows.toml` — Git for Windows served as `zip`
+  transformed from upstream's streamable `Git-<version>-<arch>.tar.bz2`, because the portable
+  `.7z.exe` is quarantined on managed laptops. Version pivots off the asset name
+  (`asset_version_pattern`), since the tag (`v2.55.0.windows.5`) and the asset version
+  (`2.55.0.5`) disagree; first-of-series three-component versions are spanned. Verified live:
+  both arches transform (9,590 / 7,919 entries, `cmd/git.exe` and `usr/bin/bash.exe` present).
+  CPE pairs remain deliberately unset until PO verification against the live NVD dictionary
+  (WAL-60 MANUAL_TEST), and the served-size call is the PO's: measured **~162 MB (x86-64) /
+  ~207 MB (arm64)** against 59 MB for the `.7z`.
+- **WAL-61 (Changed):** Transform concurrency is bounded independently of
+  `DOWNLOAD_CONCURRENCY` (`TRANSFORM_CONCURRENCY`, semaphore shared process-wide): the sync
+  job runs transforms two at a time beside its eight IO-bound downloads, and the API service —
+  which can run on-demand syncs and had inherited a 512 MiB memory default — is now pinned
+  1Gi/1cpu with one transform at a time. Sized against the measured transform footprint
+  (up to ~475 MiB of hardlink link cache per artifact on the arm64 tree).
+- **WAL-57 (Fixed):** GitHub release discovery now carries the API's own `size` for each
+  asset, so the truncation check prefers an independent number over the response's
+  `Content-Length` (WAL-67's intent) instead of only when a checksum sidecar happens to exist.
+
 **Wave 12 — IntelliJ IDEA and multi-GB artifacts**
 
 - **WAL-63 (Fixed):** The version sorter ranked a four-component build below the

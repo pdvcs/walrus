@@ -102,6 +102,22 @@ export const ArtifactSchema = z
         "Whether this artifact can only be fetched with a `Range` request. An unranged GET of one is refused with 400 `range_required` rather than served, because a single request cannot complete inside the 3600s server deadline at this size. Published here so a client decides before it starts downloading.",
       example: false,
     }),
+    upstream_url: z.string().nullable().optional().openapi({
+      description:
+        "URL the source bytes were fetched from. For an untransformed artifact this is also where the served bytes came from; for a transformed one it is the start of the provenance chain.",
+    }),
+    source_checksum: z.string().nullable().optional().openapi({
+      description:
+        "Digest of the bytes upstream published, verified before any transform ran. Null means the served bytes are upstream's own and `checksum` already covers them.",
+    }),
+    source_file_size: z.number().int().nullable().optional().openapi({
+      description: "Byte count of the upstream source. Null on untransformed artifacts.",
+    }),
+    transform: z.string().nullable().optional().openapi({
+      description:
+        "Versioned identity of the conversion that produced the served bytes (e.g. `tar-bz2-to-zip@1`). Null means the artifact is untransformed.",
+      example: "tar-bz2-to-zip@1",
+    }),
   })
   .openapi("Artifact");
 

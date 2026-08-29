@@ -606,3 +606,180 @@ describe("GitHubReleasesStrategy — asset_version_pattern release dating", () =
     );
   });
 });
+
+// ── gitwindows (WAL-60): tag and asset version disagree ─────────────────────
+//
+// git-for-windows/git tags releases v2.55.0.windows.5 but names the assets
+// Git-2.55.0.5-64-bit.tar.bz2, and the first build of a Windows series carries a
+// three-component version (Git-2.54.0-...). The config therefore pivots on the asset
+// filename; these tests pin the shapes the shipped packages/walrus-gitwindows.toml relies
+// on, including that .windows.N rebuilds stay distinct versions.
+
+const GITWINDOWS_CONFIG: PackageConfig = {
+  name: "gitwindows",
+  display_name: "Git for Windows",
+  vendor: "Git for Windows project",
+  discovery: {
+    type: "github-releases",
+    repo: "git-for-windows/git",
+    include_prereleases: false,
+    asset_version_pattern: "^Git-(\\d+(?:\\.\\d+)+)-(64-bit|arm64)\\.tar\\.bz2$",
+    max_releases: 10,
+  },
+  versioning: {
+    type: "semver",
+    version_group_extract: "^(\\d+\\.\\d+)",
+    lts_support: false,
+    lts_source: "none",
+  },
+  retention: { versions_per_group: 2, groups_to_keep: 2 },
+  checksum: { type: "github-asset-digest", algorithm: "sha256" },
+  platforms: [
+    {
+      os: "windows",
+      arch: "x86-64",
+      os_upstream: "windows",
+      arch_upstream: "x64",
+      extension: "tar.bz2",
+      filename_template: "Git-{version}-64-bit.tar.bz2",
+    },
+    {
+      os: "windows",
+      arch: "arm64",
+      os_upstream: "windows",
+      arch_upstream: "arm64",
+      extension: "tar.bz2",
+      filename_template: "Git-{version}-arm64.tar.bz2",
+    },
+  ],
+};
+
+function gitwindowsAsset(name: string, digest: string) {
+  return {
+    name,
+    browser_download_url: `https://github.com/git-for-windows/git/releases/download/placeholder/${name}`,
+    size: 117482532,
+    digest: `sha256:${digest}`,
+  };
+}
+
+const GITWINDOWS_MOCK_RELEASES = [
+  {
+    tag_name: "v2.55.0.windows.5",
+    prerelease: false,
+    draft: false,
+    published_at: "2026-08-20T16:21:31Z",
+    assets: [
+      gitwindowsAsset("Git-2.55.0.5-64-bit.tar.bz2", "x8664d1"),
+      gitwindowsAsset("Git-2.55.0.5-arm64.tar.bz2", "arm64d1"),
+      // Noise from the same release: nothing but the tar.bz2 assets may match.
+      gitwindowsAsset("PortableGit-2.55.0.5-64-bit.7z.exe", "noise01"),
+      gitwindowsAsset("MinGit-2.55.0.5-64-bit.zip", "noise02"),
+      gitwindowsAsset("Git-2.55.0.5-64-bit.exe", "noise03"),
+    ],
+  },
+  {
+    tag_name: "v2.55.0.windows.4",
+    prerelease: false,
+    draft: false,
+    published_at: "2026-08-11T17:35:02Z",
+    assets: [
+      gitwindowsAsset("Git-2.55.0.4-64-bit.tar.bz2", "x8664d2"),
+      gitwindowsAsset("Git-2.55.0.4-arm64.tar.bz2", "arm64d2"),
+    ],
+  },
+  {
+    tag_name: "v2.54.0.windows.1",
+    prerelease: false,
+    draft: false,
+    published_at: "2026-04-20T18:22:08Z",
+    assets: [
+      // First build of a Windows series: three-component version in the asset name.
+      gitwindowsAsset("Git-2.54.0-64-bit.tar.bz2", "x8664d3"),
+      gitwindowsAsset("Git-2.54.0-arm64.tar.bz2", "arm64d3"),
+    ],
+  },
+  {
+    // Prerelease: its assets would match no digit-only version anyway; include_prereleases
+    // = false is the second gate.
+    tag_name: "v2.55.0-rc2.windows.1",
+    prerelease: true,
+    draft: false,
+    published_at: "2026-06-24T11:21:34Z",
+    assets: [gitwindowsAsset("Git-2.55.0-rc2-64-bit.tar.bz2", "rcnoise")],
+  },
+];
+
+describe("GitHubReleasesStrategy — gitwindows (WAL-60)", () => {
+  beforeEach(() => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve(GITWINDOWS_MOCK_RELEASES),
+        text: () => Promise.resolve(""),
+      }),
+    );
+  });
+
+  it("extracts the version from the asset name, not the tag", async () => {
+    const versions = await new GitHubReleasesStrategy().discoverVersions(GITWINDOWS_CONFIG);
+    const strings = versions.map((v) => v.version);
+    expect(strings).toContain("2.55.0.5");
+    expect(strings).toContain("2.55.0.4");
+    expect(strings).toContain("2.54.0");
+    for (const v of versions) expect(v.version).not.toMatch(/^v2\.55\.0\.windows/);
+  });
+
+  it("keeps .windows.N revisions of one Git version distinct", async () => {
+    const versions = await new GitHubReleasesStrategy().discoverVersions(GITWINDOWS_CONFIG);
+    const strings = versions.map((v) => v.version);
+    expect(strings).toContain("2.55.0.5");
+    expect(strings).toContain("2.55.0.4");
+    expect(new Set(strings).size).toBe(strings.length);
+  });
+
+  it("resolves both arches for the current release and for prior releases", async () => {
+    const versions = await new GitHubReleasesStrategy().discoverVersions(GITWINDOWS_CONFIG);
+
+    const newest = versions.find((v) => v.version === "2.55.0.5")!;
+    expect(newest.artifacts.get("windows/x86-64")!.filename).toBe("Git-2.55.0.5-64-bit.tar.bz2");
+    expect(newest.artifacts.get("windows/arm64")!.filename).toBe("Git-2.55.0.5-arm64.tar.bz2");
+
+    const prior = versions.find((v) => v.version === "2.54.0")!;
+    expect(prior.artifacts.get("windows/x86-64")!.filename).toBe("Git-2.54.0-64-bit.tar.bz2");
+    expect(prior.artifacts.get("windows/arm64")!.filename).toBe("Git-2.54.0-arm64.tar.bz2");
+  });
+
+  it("carries the upstream asset digest as the source checksum", async () => {
+    const versions = await new GitHubReleasesStrategy().discoverVersions(GITWINDOWS_CONFIG);
+    const art = versions.find((v) => v.version === "2.55.0.5")!.artifacts.get("windows/x86-64")!;
+    expect(art.checksum).toBe("x8664d1");
+    expect(art.checksumType).toBe("sha256");
+    expect(art.size).toBe(117482532);
+  });
+
+  it("groups by the underlying Git minor and keeps the retention window real", async () => {
+    const versions = await new GitHubReleasesStrategy().discoverVersions(GITWINDOWS_CONFIG);
+
+    expect(versions.find((v) => v.version === "2.55.0.5")!.versionGroup).toBe("2.55");
+    expect(versions.find((v) => v.version === "2.54.0")!.versionGroup).toBe("2.54");
+
+    // versions_per_group = 2, groups_to_keep = 2: the two newest 2.55 rebuilds plus the
+    // whole 2.54 group survive — real history for retention to act on.
+    const retained = versions.filter((v) => v.artifacts.size > 0).map((v) => v.version);
+    expect(retained).toEqual(["2.55.0.5", "2.55.0.4", "2.54.0"]);
+  });
+
+  it("ignores prerelease and non-matching assets", async () => {
+    const versions = await new GitHubReleasesStrategy().discoverVersions(GITWINDOWS_CONFIG);
+    const strings = versions.map((v) => v.version);
+    expect(strings).not.toContain("2.55.0-rc2");
+    for (const v of versions) {
+      for (const art of v.artifacts.values()) {
+        expect(art.filename).toMatch(/\.tar\.bz2$/);
+        expect(art.filename).not.toMatch(/MinGit|PortableGit|\.exe$/);
+      }
+    }
+  });
+});

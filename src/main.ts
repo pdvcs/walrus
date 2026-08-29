@@ -378,12 +378,20 @@ export function createApp(): express.Express {
         return { artifact, version: versionRow.version };
       },
       redownloadArtifact: async (artifact, packageName, version) => {
+        // A transformed artifact must be redownloaded through its transform, and verified
+        // against the SOURCE digest — the stored `checksum` describes the transformed bytes
+        // and would fail against the tar.bz2 upstream sends (WAL-56/58).
+        const packageConfig = configs.find((c) => c.name === packageName);
+        const platform = packageConfig?.platforms.find(
+          (p) => p.os === artifact.os && p.arch === artifact.arch,
+        );
         const request = {
           artifactId: artifact.id,
           upstreamUrl: artifact.upstream_url,
           storagePath: buildRedownloadPath(packageName, version, artifact),
-          expectedChecksum: artifact.checksum ?? undefined,
+          expectedChecksum: (artifact.source_checksum ?? artifact.checksum) || undefined,
           checksumType: normalizeChecksumType(artifact.checksum_type),
+          transform: platform?.transform,
         };
         return sharedDownloadService.downloadArtifact(request, false);
       },

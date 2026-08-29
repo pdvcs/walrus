@@ -35,6 +35,15 @@ export interface ArtifactRow {
   checksum: string | null;
   checksum_type: string | null;
   upstream_url: string;
+  /**
+   * Provenance split (WAL-58): checksum/file_size describe the served bytes; the source_*
+   * columns describe what upstream published and the transform produced it from. All three
+   * NULL = untransformed, where checksum already is the upstream digest and upstream_url the
+   * source URL.
+   */
+  source_checksum: string | null;
+  source_file_size: number | null;
+  transform: string | null;
   status: ArtifactStatus;
   error_message: string | null;
   download_started_at: Date | null;

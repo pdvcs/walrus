@@ -13,6 +13,15 @@ const configSchema = z.object({
   LOCAL_STORAGE_PATH: z.string().default("./data/artifacts"),
   SYNC_CONCURRENCY: z.coerce.number().default(4),
   DOWNLOAD_CONCURRENCY: z.coerce.number().default(2),
+  // How many transformed artifacts may be in flight at once, independent of
+  // DOWNLOAD_CONCURRENCY (WAL-61 AC2). A download is IO-bound and eight of those on the sync
+  // job have always been fine; a transform is CPU-bound — it holds live bzip2 and deflate
+  // state per artifact and costs ~10-30s of core time for a ~125 MB output. The number is
+  // sized for the sync job's 2 pinned vCPUs (WAL-67): two transforms saturate them without
+  // starving the IO-bound downloads sharing the container, and a third only adds contention
+  // that slows every artifact in flight. Do not raise DOWNLOAD_CONCURRENCY to compensate;
+  // the two limits govern different resources.
+  TRANSFORM_CONCURRENCY: z.coerce.number().int().min(1).default(2),
   // Resumable-upload chunk size for GCS. Setting it *at all* is what turns a single
   // unresumable PUT into a resumable multi-chunk upload: @google-cloud/storage 7.21.0 gates
   // its retry buffer on `multiChunkMode = !!chunkSize` (resumable-upload.js:504). The price is

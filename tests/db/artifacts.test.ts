@@ -220,4 +220,90 @@ describe("artifacts queries", () => {
     const all = await listArtifactsForVersion(pool, versionId);
     expect(all).toHaveLength(1);
   });
+
+  describe("provenance columns (WAL-58)", () => {
+    it("an untransformed row reads correctly: transform and source fields NULL", async () => {
+      const a = await insertArtifact(pool, {
+        version_id: versionId,
+        os: "linux",
+        arch: "x86-64",
+        filename: "tool-1.0.0-linux-x64.tar.gz",
+        upstream_url: "https://example.com/tool-1.0.0-linux-x64.tar.gz",
+      });
+      const available = await updateArtifactStatus(pool, a.id, {
+        status: "available",
+        gcs_path: "p/1.0.0/linux/x86-64/tool-1.0.0-linux-x64.tar.gz",
+        file_size: 100,
+        checksum: "aaa111",
+        checksum_type: "sha256",
+      });
+      // NULL is what "not a repackaging" looks like: the recorded checksum already IS the
+      // upstream digest, and upstream_url is the source URL.
+      expect(available!.transform).toBeNull();
+      expect(available!.source_checksum).toBeNull();
+      expect(available!.source_file_size).toBeNull();
+    });
+
+    it("round-trips the provenance fields of a transformed artifact", async () => {
+      const a = await insertArtifact(pool, {
+        version_id: versionId,
+        os: "windows",
+        arch: "x86-64",
+        filename: "tool-1.0.0-windows-x86-64.zip",
+        upstream_url: "https://example.com/tool-1.0.0-64-bit.tar.bz2",
+      });
+      const available = await updateArtifactStatus(pool, a.id, {
+        status: "available",
+        gcs_path: "p/1.0.0/windows/x86-64/tool-1.0.0-windows-x86-64.zip",
+        // checksum / file_size describe the SERVED bytes — the zip — even though the
+        // upstream URL still points at the tar.bz2 (WAL-58 AC3).
+        file_size: 125_000_000,
+        checksum: "zipdigest",
+        checksum_type: "sha256",
+        source_checksum: "tardigest",
+        source_file_size: 117_000_000,
+        transform: "tar-bz2-to-zip@1",
+      });
+      expect(available!.status).toBe("available");
+      expect(available!.filename).toBe("tool-1.0.0-windows-x86-64.zip");
+      expect(available!.checksum).toBe("zipdigest");
+      expect(available!.file_size).toBe(125_000_000);
+      expect(available!.upstream_url).toBe("https://example.com/tool-1.0.0-64-bit.tar.bz2");
+      expect(available!.source_checksum).toBe("tardigest");
+      expect(available!.source_file_size).toBe(117_000_000);
+      expect(available!.transform).toBe("tar-bz2-to-zip@1");
+
+      // ...and the fields survive a plain re-read, since SELECT * carries them.
+      const refetched = await getArtifactById(pool, a.id);
+      expect(refetched!.source_checksum).toBe("tardigest");
+      expect(refetched!.transform).toBe("tar-bz2-to-zip@1");
+    });
+
+    it("a later failure clears the served digest but provenance keeps its last known value", async () => {
+      const a = await insertArtifact(pool, {
+        version_id: versionId,
+        os: "windows",
+        arch: "arm64",
+        filename: "tool-1.0.0-windows-arm64.zip",
+        upstream_url: "https://example.com/tool-1.0.0-arm64.tar.bz2",
+      });
+      await updateArtifactStatus(pool, a.id, {
+        status: "available",
+        gcs_path: "p/1.0.0/windows/arm64/tool.zip",
+        file_size: 1,
+        checksum: "oldzip",
+        source_checksum: "oldtar",
+        source_file_size: 2,
+        transform: "tar-bz2-to-zip@1",
+      });
+      const failed = await updateArtifactStatus(pool, a.id, {
+        status: "failed",
+        error_message: "checksum mismatch",
+      });
+      expect(failed!.status).toBe("failed");
+      // Provenance is historical record, not lifecycle state: it survives a redownload
+      // failure and is overwritten by the next successful download.
+      expect(failed!.source_checksum).toBe("oldtar");
+    });
+  });
 });

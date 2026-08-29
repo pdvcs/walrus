@@ -14,6 +14,7 @@ import { createSyncJob, incrementJobCounters, updateSyncJob } from "../db/querie
 import { getMaxAvailableVersionSort, insertVersion } from "../db/queries/versions.js";
 import { buildArtifactPath } from "../storage/types.js";
 import { PackageConfig } from "../types/package-config.js";
+import { renderServedFilename } from "../transform/index.js";
 import { SyncJobRow } from "../types/db.js";
 import { DownloadRequest, DownloadResult, DownloadService } from "./download-service.js";
 import { RetentionResult, RetentionService } from "./retention-service.js";
@@ -393,11 +394,24 @@ export class SyncService {
       if (!os || !arch) {
         continue;
       }
+      // A transform changes what walrus serves: the row's filename and storage path describe
+      // the transformed output, while upstream_url below keeps pointing at the source bytes.
+      const platformConfig = this.packageConfig.platforms.find(
+        (p) => p.os === os && p.arch === arch,
+      );
+      const filename = platformConfig?.transform
+        ? renderServedFilename(
+            platformConfig.transform,
+            platformConfig,
+            version.version,
+            artifact.filename,
+          )
+        : artifact.filename;
       const artifactRow = await this.deps.insertArtifact(this.pool, {
         version_id: versionRow.id,
         os,
         arch,
-        filename: artifact.filename,
+        filename,
         upstream_url: artifact.url,
         sync_job_id: jobId,
         cooling_off_until: coolingOffUntil,
@@ -423,12 +437,13 @@ export class SyncService {
             version: version.version,
             os,
             arch,
-            filename: artifact.filename,
+            filename,
           }),
           expectedChecksum: artifact.checksum,
           checksumUrl: artifact.checksumUrl,
           checksumType: normalizeChecksumType(artifact.checksumType),
           expectedSize: artifact.size,
+          transform: platformConfig?.transform,
         });
       }
     }

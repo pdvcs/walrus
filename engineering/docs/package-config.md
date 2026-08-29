@@ -520,18 +520,17 @@ Use this only as a last resort. Note it in a comment explaining why.
 
 ## `[[platforms]]`
 
-One block per supported OS/arch combination. Use TOML's array-of-tables syntax (`[[platforms]]`).
-
-```toml
+One block per supported OS/arch combination. Use TOML's array-of-tables syntax (`[[platforms]]`).```toml
 [[platforms]]
-os = "linux"               # "linux" | "macos" | "windows" — Walrus's canonical name
-arch = "x86-64"            # "x86-64" | "arm64" — Walrus's canonical name
-os_upstream = "linux"      # the word the upstream uses for this OS
-arch_upstream = "amd64"    # the word the upstream uses for this arch
-extension = "tar.gz"       # file extension (without leading dot)
-filename_template = "..."  # how to construct the filename (see below)
-url_template = "..."       # alternative to filename_template: full URL
-```
+os = "linux" # "linux" | "macos" | "windows" — Walrus's canonical name
+arch = "x86-64" # "x86-64" | "arm64" — Walrus's canonical name
+os_upstream = "linux" # the word the upstream uses for this OS
+arch_upstream = "amd64" # the word the upstream uses for this arch
+extension = "tar.gz" # file extension (without leading dot)
+filename_template = "..." # how to construct the filename (see below)
+url_template = "..." # alternative to filename_template: full URL
+
+````
 
 `os` and `arch` are Walrus's fixed canonical names and must be one of the values above. `os_upstream` and `arch_upstream` are whatever strings the upstream project actually uses in filenames or API fields — look these up from the real download URLs or API responses.
 
@@ -553,7 +552,7 @@ Use `filename_template` when the download URL is `{base}/{filename}` and only th
 ```toml
 filename_template = "uv-{arch}-{os}.{ext}"
 # → "uv-aarch64-apple-darwin.tar.gz"
-```
+````
 
 **`url_template` example** (Maven style — version in path):
 
@@ -598,6 +597,82 @@ arch_upstream = "aarch64"
 extension = "zip"
 url_template = "https://services.gradle.org/distributions/gradle-{version}-bin.{ext}"
 ```
+
+---
+
+## `[platforms.transform]` — serving a different format than upstream publishes
+
+Some upstreams publish a format the consuming estate cannot use. The worked example is
+`packages/walrus-gitwindows.toml`: corporate managed laptops quarantine `.7z` payloads, and
+Git for Windows' portable build is a self-extracting `.7z.exe` — but upstream also publishes
+the identical tree as a streamable `.tar.bz2`. A transform block repackages that stream into
+a zip during sync:
+
+```
+upstream → sourceHash → bunzip2 → tar-parse → zip-write → outputHash → storage.upload
+```
+
+The pipeline stays streaming (no temp file; peak memory is bounded by the link-cache window
+below, never artifact size), and the output is deterministic: the same source bytes produce
+byte-identical output across re-syncs, so a changed digest means changed input, not a changed
+transformer.
+
+```toml
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+extension = "tar.bz2"                                # what upstream publishes
+filename_template = "Git-{version}-64-bit.tar.bz2"   # asset matching still uses this
+
+  [platforms.transform]
+  type = "tar-bz2-to-zip"
+  extension = "zip"                                  # what walrus serves
+  filename_template = "Git-{version}-{os}-{arch}.zip"
+  require_paths = ["cmd/git.exe", "usr/bin/bash.exe"]
+  min_entries = 3000
+  link_cache_bytes = 536870912
+  drop_symlinks = ["dev/fd", "dev/stdin", "dev/stdout", "dev/stderr", "etc/mtab"]
+```
+
+| Field               | Required? | Notes                                                                                                                                                                      |
+| ------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `type`              | Yes       | Which conversion to run. Only `tar-bz2-to-zip` exists today.                                                                                                               |
+| `extension`         | Yes       | The served file's extension.                                                                                                                                               |
+| `filename_template` | No        | Served filename; `{version}`/`{os}`/`{arch}` are walrus's canonical values, `{ext}` the transform's extension. Falls back to the upstream stem with the extension swapped. |
+| `require_paths`     | No        | Post-transform gate: each path must appear as a file in the output, or the artifact is marked `failed`.                                                                    |
+| `min_entries`       | No        | Post-transform gate: the output must hold at least this many file entries.                                                                                                 |
+| `link_cache_bytes`  | No        | Byte window of file content kept so hardlinks can be duplicated (default 64 MiB). Size to the measured target-to-link distance in the real archive.                        |
+| `drop_symlinks`     | No        | Symlink paths that may be dropped, listed explicitly. Anything not listed is a hard failure; drops are reported and logged, never silent.                                  |
+
+**Semantics that change with a transform:**
+
+- The platform's `extension` / `filename_template` keep meaning _what upstream publishes_ — asset matching is unchanged. The transform block describes _what walrus serves_: the artifact row's `filename`, its storage path, and the download URL all use the transformed name.
+- `[checksum]` still describes the **upstream source bytes** and is verified before the transform runs. The artifact's own `checksum` / `file_size` describe the **stored zip**. `source_checksum` / `source_file_size` carry the upstream side, and `transform` names the conversion (`tar-bz2-to-zip@1`); all three are exposed through the API for provenance (ADR-006). They are `null` for untransformed artifacts.
+- Inside the archive: directories become implicit zip paths; **hardlinks** are duplicated from the link cache (a hardlink whose target is out of window fails the artifact); **symlinks and device/fifo entries fail the artifact** unless listed in `drop_symlinks` — a zip that extracts and then misbehaves is the worst outcome, so nothing is skipped silently.
+
+**Sizing `link_cache_bytes`:** a hardlink's target must still be in the cache when the link streams past. The window is a property of the real archive — measure it, do not guess (the gitwindows comments record the method: 92 hardlinks, farthest distance 321 MiB on x86-64, 463 MiB on arm64, in v2.55.0.windows.5). If upstream outgrows the window, sync fails naming the gap; re-measure and bump, then re-check the container's memory pin (WAL-61).
+
+### Verifying a transform before onboarding
+
+`npm run validate` skips the transform by default (it is minutes of CPU and hundreds of MB of
+transfer). Pass `--transform` to run it for real against upstream — nothing is persisted; the
+pipeline drains into a no-op sink:
+
+```bash
+npm run validate -- --transform packages/walrus-gitwindows.toml
+```
+
+```
+  ○ Transform exercise (2.55.0.5 windows/x86-64): fetching Git-2.55.0.5-64-bit.tar.bz2...
+    ✓ Entries: 9590
+    ✓ Output: 162.4 MB, sha256 6b43d87f0dfc2638211424f2a74145a962389add825a4ecc357e3fec50757be5
+    ✓ require_paths: cmd/git.exe
+    ✓ require_paths: usr/bin/bash.exe
+    ! dropped symlink (per drop_symlinks): dev/fd
+```
+
+A failing gate (a `require_paths` miss, a `min_entries` shortfall, an unsupported entry type)
+is reported with the cause and the command exits non-zero.
 
 ---
 
@@ -682,28 +757,29 @@ Validating packages/walrus-mytool.toml...
 
 ## Quick reference: which fields are required vs optional
 
-| Field                                | Required?   | Notes                                                                                   |
-| ------------------------------------ | ----------- | --------------------------------------------------------------------------------------- |
-| `name`                               | Yes         |                                                                                         |
-| `display_name`                       | Yes         |                                                                                         |
-| `vendor`                             | Yes         |                                                                                         |
-| `website`                            | No          |                                                                                         |
-| `description`                        | No          |                                                                                         |
-| `[discovery]`                        | Yes         | All sub-fields depend on `type`                                                         |
-| `[versioning].type`                  | Yes         |                                                                                         |
-| `[versioning].version_group_extract` | Yes         |                                                                                         |
-| `[versioning].min_version`           | No          | Recommended for packages with many EOL releases                                         |
-| `[versioning].lts_support`           | No          | Default: `false`                                                                        |
-| `[retention].versions_per_group`     | No          | Default: `3`                                                                            |
-| `[retention].groups_to_keep`         | No          | Default: unlimited                                                                      |
-| `[retention].cooling_off_days`       | No          | Default: no cooling-off period                                                          |
-| `[checksum]`                         | No          | Omit only when `file_checksum_field` provides the checksum inline                       |
-| `[[platforms]]`                      | Yes         | At least one block required                                                             |
-| `[[platforms]].filename_template`    | Conditional | Required if not using `url_template` or inline json-api                                 |
-| `[[platforms]].url_template`         | Conditional | Required in string-list files inline mode; alternative to `filename_template` elsewhere |
-| `[[platforms]].name_must_contain`    | No          | Extra filter when OS/arch matching isn't selective enough                               |
-| `[discovery].release_date_field`     | No          | Field on each release object holding the upstream release date (cooling-off anchor)     |
-| `[discovery].release_lts_field`      | No          | Inline json-api only: field on each release whose truthy string value marks it as LTS   |
+| Field                                | Required?   | Notes                                                                                             |
+| ------------------------------------ | ----------- | ------------------------------------------------------------------------------------------------- |
+| `name`                               | Yes         |                                                                                                   |
+| `display_name`                       | Yes         |                                                                                                   |
+| `vendor`                             | Yes         |                                                                                                   |
+| `website`                            | No          |                                                                                                   |
+| `description`                        | No          |                                                                                                   |
+| `[discovery]`                        | Yes         | All sub-fields depend on `type`                                                                   |
+| `[versioning].type`                  | Yes         |                                                                                                   |
+| `[versioning].version_group_extract` | Yes         |                                                                                                   |
+| `[versioning].min_version`           | No          | Recommended for packages with many EOL releases                                                   |
+| `[versioning].lts_support`           | No          | Default: `false`                                                                                  |
+| `[retention].versions_per_group`     | No          | Default: `3`                                                                                      |
+| `[retention].groups_to_keep`         | No          | Default: unlimited                                                                                |
+| `[retention].cooling_off_days`       | No          | Default: no cooling-off period                                                                    |
+| `[checksum]`                         | No          | Omit only when `file_checksum_field` provides the checksum inline                                 |
+| `[[platforms]]`                      | Yes         | At least one block required                                                                       |
+| `[[platforms]].filename_template`    | Conditional | Required if not using `url_template` or inline json-api                                           |
+| `[[platforms]].url_template`         | Conditional | Required in string-list files inline mode; alternative to `filename_template` elsewhere           |
+| `[[platforms]].name_must_contain`    | No          | Extra filter when OS/arch matching isn't selective enough                                         |
+| `[[platforms]].transform`            | No          | Serve a converted archive — see `[platforms.transform]` above; `gitwindows` is the worked example |
+| `[discovery].release_date_field`     | No          | Field on each release object holding the upstream release date (cooling-off anchor)               |
+| `[discovery].release_lts_field`      | No          | Inline json-api only: field on each release whose truthy string value marks it as LTS             |
 
 ---
 

@@ -33,6 +33,15 @@ resource "google_cloud_run_v2_service" "walrus" {
         name  = "DOWNLOAD_CONCURRENCY"
         value = "8"
       }
+      # One, not the sync job's two (WAL-61 AC2). This service runs on-demand syncs of the
+      # same packages the job does, and a transform holds its measured link-cache window in
+      # memory (~475 MiB for gitwindows' arm64 tree) — which does not fit the 512 MiB
+      # Cloud Run default this service otherwise inherits, hence the resources pin below.
+      # One transform at a time keeps the worst case inside 1Gi with room for Node.
+      env {
+        name  = "TRANSFORM_CONCURRENCY"
+        value = "1"
+      }
       env {
         name  = "STORAGE_BACKEND"
         value = "gcs"
@@ -66,6 +75,18 @@ resource "google_cloud_run_v2_service" "walrus" {
       volume_mounts {
         name       = "cloudsql"
         mount_path = "/cloudsql"
+      }
+
+      # Pinned for the on-demand sync path this service can execute (WAL-61): a transform
+      # holds its link-cache window in RAM (~475 MiB for gitwindows arm64), which does not
+      # fit the 512 MiB default. 1Gi covers one transform (TRANSFORM_CONCURRENCY = 1 above)
+      # plus Node and the 8 MiB x 8 upload chunks. The scheduled syncs with their heavier
+      # workload run on the sync job, which pins 2Gi for them.
+      resources {
+        limits = {
+          cpu    = "1"
+          memory = "1Gi"
+        }
       }
 
       startup_probe {
@@ -184,6 +205,17 @@ resource "google_cloud_run_v2_job" "sync" {
         env {
           name  = "DOWNLOAD_CONCURRENCY"
           value = "8"
+        }
+        # Bounded independently of DOWNLOAD_CONCURRENCY (WAL-61 AC2): downloads are IO-bound
+        # and eight of them are fine; a transform is CPU-bound and holds live bzip2/deflate
+        # state plus the measured hardlink link-cache window (~475 MiB for gitwindows' arm64
+        # tree) per artifact. Two transforms saturate the 2 pinned vCPUs; the worst-case
+        # resident set is 2 x 512 MiB of link cache + 256 MiB of upload chunks + Node — inside
+        # the 2Gi above, with little to spare. Do not raise DOWNLOAD_CONCURRENCY to compensate
+        # for a slow transform: the two limits govern different resources.
+        env {
+          name  = "TRANSFORM_CONCURRENCY"
+          value = "2"
         }
         # 32 MiB, above the code default: this job pins the memory that pays for it, and larger
         # chunks mean fewer round trips across a 25.8 GB backfill.

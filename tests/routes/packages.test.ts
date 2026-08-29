@@ -296,6 +296,121 @@ describe("packages routes", () => {
     expect(body.artifact.download_url).toBe("/download/uv/0.6.2/linux/x86-64");
   });
 
+  describe("artifact provenance (WAL-58)", () => {
+    function provenanceDeps(artifact: Record<string, unknown>) {
+      const deps = baseDeps();
+      deps.getPackage = vi.fn().mockResolvedValue({
+        name: "gitwindows",
+        display_name: "Git for Windows",
+        vendor: "Git for Windows project",
+        description: null,
+        website: null,
+        config_hash: "x",
+        enabled: true,
+        created_at: new Date(),
+        updated_at: new Date(),
+      });
+      deps.listAvailableVersionsInGroup = vi.fn().mockResolvedValue([
+        {
+          id: 7,
+          package_name: "gitwindows",
+          version: "2.55.0.5",
+          version_group: "2.55",
+          is_lts: false,
+          discovered_at: new Date(),
+          version_sort: "000002.000055.000000~000005~",
+        },
+      ]);
+      deps.listAffectsForPackage = vi.fn().mockResolvedValue([]);
+      deps.listArtifactsForVersion = vi.fn().mockResolvedValue([artifact]);
+      return deps;
+    }
+
+    it("exposes the provenance chain for a transformed artifact", async () => {
+      const deps = provenanceDeps({
+        id: 30,
+        version_id: 7,
+        os: "windows",
+        arch: "x86-64",
+        filename: "Git-2.55.0.5-windows-x86-64.zip",
+        gcs_path: "gitwindows/2.55.0.5/windows/x86-64/Git-2.55.0.5-windows-x86-64.zip",
+        file_size: 125_000_000,
+        checksum: "zipdigest",
+        checksum_type: "sha256",
+        upstream_url: "https://github.com/.../Git-2.55.0.5-64-bit.tar.bz2",
+        source_checksum: "tardigest",
+        source_file_size: 117_000_000,
+        transform: "tar-bz2-to-zip@1",
+        status: "available",
+        error_message: null,
+        download_started_at: null,
+        download_completed_at: null,
+        removed_at: null,
+        created_at: new Date(),
+      });
+      const app = createTestApp(deps);
+
+      const response = await request(app).get(
+        "/api/v1/packages/gitwindows/versions/2.55/latest?os=windows&arch=x86-64",
+      );
+      const body = response.body as { artifact: Record<string, unknown> };
+
+      expect(response.status).toBe(200);
+      expect(body.artifact).toMatchObject({
+        filename: "Git-2.55.0.5-windows-x86-64.zip",
+        // Served bytes:
+        checksum: "zipdigest",
+        file_size: 125_000_000,
+        // ...vs the chain that produced them:
+        upstream_url: "https://github.com/.../Git-2.55.0.5-64-bit.tar.bz2",
+        source_checksum: "tardigest",
+        source_file_size: 117_000_000,
+        transform: "tar-bz2-to-zip@1",
+      });
+    });
+
+    it("leaves an untransformed package's response unchanged apart from the new fields", async () => {
+      const deps = provenanceDeps({
+        id: 31,
+        version_id: 7,
+        os: "windows",
+        arch: "x86-64",
+        filename: "tool-1.0.zip",
+        gcs_path: "p/1/windows/x86-64/tool-1.0.zip",
+        file_size: 59_000_000,
+        checksum: "vendordigest",
+        checksum_type: "sha256",
+        upstream_url: "https://example.test/tool-1.0.zip",
+        source_checksum: null,
+        source_file_size: null,
+        transform: null,
+        status: "available",
+        error_message: null,
+        download_started_at: null,
+        download_completed_at: null,
+        removed_at: null,
+        created_at: new Date(),
+      });
+      const app = createTestApp(deps);
+
+      const response = await request(app).get(
+        "/api/v1/packages/gitwindows/versions/2.55/latest?os=windows&arch=x86-64",
+      );
+      const body = response.body as { artifact: Record<string, unknown> };
+
+      expect(response.status).toBe(200);
+      expect(body.artifact).toMatchObject({
+        checksum: "vendordigest",
+        file_size: 59_000_000,
+        upstream_url: "https://example.test/tool-1.0.zip",
+        // NULL provenance columns mean "not a repackaging".
+        source_checksum: null,
+        source_file_size: null,
+        transform: null,
+      });
+    });
+  });
+
   it("returns 404 when every available version in the group is blocked", async () => {
     const deps = baseDeps();
     deps.getPackage = vi.fn().mockResolvedValue({

@@ -1,0 +1,137 @@
+# Git for Windows — the only Git walrus serves. The package name is `gitwindows`, not
+# `git`: there is no Linux or macOS build behind it, and the name should not imply one.
+# Human-facing names ("git", "git for windows", ...) live in [vulnerabilities].aliases,
+# so resolution and autocomplete are unaffected by the terse slug.
+#
+# Why this config has a [platforms.transform] block: on managed Windows laptops a .7z
+# payload is quarantined or slow-scanned by endpoint antimalware, so walrus must serve a
+# zip. Upstream's portable build is a self-extracting .7z.exe, but it also publishes the
+# identical tree as a streamable .tar.bz2 (verified 2026-08-27: the archive opens with
+# cmd/git.exe, cmd/git-gui.exe, etc/profile.d/*, mingw64/bin/* — the full portable tree,
+# not a source drop). The transform repackages that tar.bz2 into a zip during sync; the
+# served bytes are walrus's own, which is why [checksum] stays pointed at the upstream
+# asset digest and the provenance chain (upstream_url + source_checksum + transform) is
+# exposed through the API. Decision: engineering/decisions/ADR-006-transformed-artifacts.md
+# (Proposed; PO acceptance travels with WAL-60 sign-off). Plan:
+# engineering/plans/git-for-windows-onboarding.md
+
+name = "gitwindows"
+display_name = "Git for Windows"
+vendor = "Git for Windows project"
+website = "https://gitforwindows.org"
+description = "Git for Windows provides a BASH emulation environment with git command line and GUI tools"
+
+[discovery]
+type = "github-releases"
+repo = "git-for-windows/git"
+# The tag (v2.55.0.windows.5) and the asset version (2.55.0.5) do not agree, and
+# applyTagPattern returns match[1] only, so no single capture group can bridge them — pivot
+# on the asset filename instead. The tail alternates between -64-bit and -arm64; the first
+# build of a Windows series ships a three-component version (Git-2.55.0-64-bit.tar.bz2)
+# while later rebuilds carry the .windows.N revision (Git-2.55.0.5-...), so the version
+# capture accepts both. Prerelease (-rc*) assets do not match this pattern's digit-only
+# version, and include_prereleases stays false as a second gate.
+asset_version_pattern = "^Git-(\\d+(?:\\.\\d+)+)-(64-bit|arm64)\\.tar\\.bz2$"
+# Per-package, not global: only this config and walrus-python.toml set max_releases at all;
+# every other github-releases package omits it and already fetches the API maximum of 100.
+#
+# 10 was too shallow and silently cost us the second group. Measured 2026-08-28: the newest
+# servable 2.54 sits at release depth 12, just outside a 10-window, so retention only ever
+# saw one group. Widening past ~20 adds no kept versions (retention prunes what it finds) —
+# 50 is bought purely as drift headroom, ~38 releases at the observed ~25-30/year, so the
+# second group cannot slide out again as upstream publishes. Cost is one request either way:
+# fetchReleases issues a single GET with per_page = min(max_releases, 100) and does NOT
+# paginate, so 100 is the hard ceiling and anything above it silently behaves as 100.
+# Measured response: 2.8 MB / ~1.0 s at 50, against 1.1 MB / 0.7 s at 10. No extra DB rows
+# or downloads — sync applies the retention window before it inserts anything.
+max_releases = 50
+
+[versioning]
+type = "semver"
+# A Windows series is the underlying Git minor: 2.55.0.1 through 2.55.0.5 are rebuilds of
+# git 2.55.0, so the group is major.minor — not major, which would merge years of series.
+version_group_extract = "^(\\d+\\.\\d+)"
+lts_support = false
+
+[retention]
+# One per group for now — deliberately below the eventual target. Raise to 2 before release
+# so a bad rebuild has a same-series fallback; kept at 1 while the transform stage is still
+# being reviewed, so a re-sync moves ~370 MB per group rather than ~740 MB.
+versions_per_group = 1
+groups_to_keep = 2
+# Deliberate, not defaults: within one Windows series, only the newest .windows.N rebuild
+# matters and the one before it covers a bad rebuild; older revisions of the same git
+# version have no standalone value. Two groups (e.g. 2.55 and 2.54) keep a fallback across
+# a git minor bump.
+#
+# Note for when versions_per_group goes to 2: it is best-effort here, not a guarantee, and
+# the older group will often supply only one. Upstream publishes the portable tree this
+# package serves (Git-*.tar.bz2) only while a series is current — once superseded, further
+# .windows.N releases of it ship MinGit zips and MSYS2 packages with no Git-* asset at all,
+# and are flagged prerelease. Measured across 300 releases on 2026-08-28, servable versions
+# per series: 2.55 -> 5, 2.54 -> 1, 2.53 -> 3, 2.52 -> 1, 2.51 -> 4, 2.50 -> 3, 2.49 -> 2,
+# 2.48 -> 1. No window size changes that; a two-deep fallback would need groups_to_keep = 3.
+#
+# Upstream publishes release dates, so the embargo below is date-anchored.
+cooling_off_days = 3
+
+[checksum]
+# Every release asset carries digest: "sha256:..." in the GitHub API response. The digest
+# describes the tar.bz2 — the SOURCE bytes — which is exactly what the pipeline must verify
+# before transforming; the served zip's own digest is computed in flight and recorded as
+# the artifact checksum (WAL-57/58 provenance split).
+type = "github-asset-digest"
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "windows"
+arch_upstream = "x64"
+extension = "tar.bz2" # what upstream publishes
+filename_template = "Git-{version}-64-bit.tar.bz2"
+
+[platforms.transform]
+type = "tar-bz2-to-zip"
+extension = "zip" # what walrus serves
+filename_template = "Git-{version}-{os}-{arch}.zip"
+# Post-transform gate: a sync that produced a zip without a working git or Git Bash would
+# otherwise reach `available` and be served. Paths are as they sit inside the tar.
+require_paths = ["cmd/git.exe", "usr/bin/bash.exe"]
+# The full tree holds several thousand entries (9,590 file entries measured in
+# v2.55.0.windows.5 on 2026-08-28); 3,000 catches a truncated or wrong-asset transform
+# without pinning an exact count that upstream growth would trip.
+min_entries = 3000
+# Hardlink resolution needs the target's content still in cache when the link streams
+# past. Measured in v2.55.0.windows.5 (2026-08-28): 92 hardlinks, farthest target-to-link
+# distance 321 MiB (libexec/git-core/*.dll -> bin/*.dll), 333 MiB tree. If a future
+# upstream exceeds it, the sync fails naming the gap rather than serving a zip missing
+# files; re-measure, bump, and re-check the container pins (WAL-61).
+#
+# 512 MiB is now above what this platform alone needs: it was sized for the arm64 tree
+# (463 MiB), which is no longer configured. Left as-is deliberately — the number is load
+# bearing in the WAL-61 container sizing (cloudrun.tf, src/config/index.ts both cite
+# ~475 MiB per transform) and dropping it to ~384 MiB should be one deliberate change
+# with those pins, not a side effect of removing an arch.
+link_cache_bytes = 536870912
+# The tar carries five symlinks — dev/{fd,stdin,stdout,stderr} and etc/mtab, all pointing
+# into /proc, which does not exist on Windows. Upstream's own zip distribution (MinGit)
+# ships none of them, and MSYS2 synthesizes /proc at runtime, so dropping them mirrors
+# upstream packaging rather than losing content. Anything NOT listed still fails the
+# artifact (WAL-57 AC4); drops are reported by validate and logged by sync.
+drop_symlinks = ["dev/fd", "dev/stdin", "dev/stdout", "dev/stderr", "etc/mtab"]
+
+# Only windows/x86-64 is served. Upstream also publishes 32-bit and arm64 portable trees,
+# and arm64 was configured and verified working (7,919 entries / 207.0 MB, both require_paths
+# hit, 2026-08-28) before being dropped to keep the first release to one platform. Re-adding
+# it is a [[platforms]] block, no code: arch_upstream = "arm64",
+# filename_template = "Git-{version}-arm64.tar.bz2", and link_cache_bytes >= 463 MiB, which
+# is what the current 512 MiB was originally sized for. 32-bit remains open question 5 in
+# the onboarding plan; revisit on demand.
+
+[vulnerabilities]
+# CPE pairs deliberately not set yet: none of the candidate pairs for Git for Windows is
+# assumed correct (git-scm:git, git:git, git_for_windows:git_for_windows are the
+# candidates), and a wrong pair silently attaches another product's CVEs. Verification
+# against the live NVD CPE dictionary is MANUAL_TEST step 8 of WAL-60 — record date and
+# entry counts here once signed off, per the walrus-vscode.toml precedent.
+aliases = ["git", "git for windows", "git-for-windows", "gitwin"]
