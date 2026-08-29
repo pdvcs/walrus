@@ -33,12 +33,13 @@ You can also validate interactively online at the `/admin/v1/validate` endpoint.
 
 ## Documentation
 
-| Doc                                                                      | Contents                                                    |
-| ------------------------------------------------------------------------ | ----------------------------------------------------------- |
-| [engineering/docs/design.md](engineering/docs/design.md)                 | Architecture, discovery engine, database schema, API design |
-| [engineering/docs/package-config.md](engineering/docs/package-config.md) | How to write a TOML package config                          |
-| [engineering/docs/build-release.md](engineering/docs/build-release.md)   | Dev setup, building, testing                                |
-| [engineering/docs/development.md](engineering/docs/development.md)       | Common commands, development scenarios, env vars            |
+| Doc                                                                      | Contents                                                      |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------- |
+| [engineering/docs/design.md](engineering/docs/design.md)                 | Architecture, discovery engine, database schema, API design   |
+| [engineering/docs/package-config.md](engineering/docs/package-config.md) | How to write a TOML package config                            |
+| [engineering/docs/build-release.md](engineering/docs/build-release.md)   | Dev setup, building, testing                                  |
+| [engineering/docs/development.md](engineering/docs/development.md)       | Common commands, development scenarios, env vars              |
+| [examples/](examples/)                                                   | Client code samples — resumable ranged download with progress |
 
 API docs are served at `http://localhost:8080/api` (human-readable) and `http://localhost:8080/openapi.json` (OpenAPI 3.1).
 
