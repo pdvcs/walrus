@@ -447,6 +447,15 @@ update` return anyway — including a service-level `scaling` block the API repo
   wire boundary, and `CloudRunBackfillLauncher` has test coverage for the first time — only the
   local launcher, which passes the id to an in-process call where a number is fine, had any.
 
+- **WAL-99 (Fixed):** With the job id serialised correctly, launching the backfill began failing
+  403 instead of 400: `walrus-api` held `roles/run.invoker` on the job, which grants a plain
+  execution but not `run.jobs.runWithOverrides` — and overrides are how the job id reaches the
+  container, so the binding could never have worked. Replaced with a custom role carrying exactly
+  `run.jobs.run` and `run.jobs.runWithOverrides`, rather than `roles/run.developer`, which would
+  also grant create, update and delete over every Cloud Run resource in the project. The two
+  defects were layered: fixing the first only revealed the second, and neither is visible without
+  a real launch.
+
 ## Version 0.1.0: Initial Release
 
 Initial Walrus release: a configuration-driven package ingress engine that discovers, caches, and

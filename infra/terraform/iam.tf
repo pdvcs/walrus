@@ -22,12 +22,30 @@ resource "google_project_iam_member" "walrus_api_cloudsql" {
   member  = "serviceAccount:${google_service_account.walrus_api.email}"
 }
 
-# walrus-api may launch the dedicated long-running vulnerability backfill job.
+# walrus-api launches the dedicated long-running vulnerability backfill job, passing the database
+# job id through `overrides.containerOverrides`. That needs `run.jobs.runWithOverrides`, which
+# `roles/run.invoker` does **not** grant — invoker covers a plain `:run` only. The autonomous
+# sweep therefore failed every launch with
+# `Permission 'run.jobs.runWithOverrides' denied` until 2026-08-30 (WAL-99), silently, because
+# per-package launch failures are logged and swallowed.
+#
+# A custom role rather than `roles/run.developer`, which would also carry create/update/delete on
+# every Cloud Run resource in the project. This account needs to start one job and nothing else.
+resource "google_project_iam_custom_role" "job_runner" {
+  role_id     = "walrusJobRunner"
+  title       = "Walrus Cloud Run Job Runner"
+  description = "Start a Cloud Run Job, with container overrides. Least-privilege alternative to roles/run.developer."
+  permissions = [
+    "run.jobs.run",
+    "run.jobs.runWithOverrides",
+  ]
+}
+
 resource "google_cloud_run_v2_job_iam_member" "walrus_api_backfill_runner" {
   project  = var.project_id
   location = var.region
   name     = google_cloud_run_v2_job.vuln_backfill.name
-  role     = "roles/run.invoker"
+  role     = google_project_iam_custom_role.job_runner.id
   member   = "serviceAccount:${google_service_account.walrus_api.email}"
 }
 
