@@ -96,8 +96,14 @@ export function createDownloadRouter(deps: DownloadRouteDeps): Router {
       // two different builds together. An If-Range that does not match the current entity means:
       // ignore the range, send the whole thing, let the client start over. A date-form If-Range
       // is treated the same way — the conservative direction.
+      //
+      // "Send the whole thing" is unavailable above the size threshold, though, so the mismatch
+      // has to survive as far as the refusal and be named there — otherwise the one mechanism
+      // protecting a resumed download from splicing is unreportable on precisely the artifacts
+      // large enough to be resumed across processes (WAL-66 AC16).
       const ifRange = req.headers["if-range"];
       const rangeIsUsable = ifRange === undefined || ifRange === etag;
+      const staleValidator = !rangeIsUsable && req.headers.range !== undefined;
 
       // With no recorded size there is no way to answer a range correctly: Content-Range has to
       // state the total, and a 416 would claim the object is empty. Ignore the header instead,
@@ -131,6 +137,7 @@ export function createDownloadRouter(deps: DownloadRouteDeps): Router {
       const decision = decideWholeObjectTransfer(
         artifact.file_size,
         deps.transferLimits ?? defaultTransferLimits,
+        staleValidator ? "stale-validator" : "no-range",
       );
       if (decision.kind === "refuse") {
         res.status(decision.status).json(decision.body);

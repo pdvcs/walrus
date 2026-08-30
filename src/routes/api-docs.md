@@ -288,6 +288,42 @@ Accept-Ranges: bytes
 that cannot be satisfied and `428` is about lost updates — so the requirement is carried by the
 `code` field, which will not change. `suggested_chunk_bytes` is a hint, not a constraint.
 
+##### A stale `If-Range` above the threshold
+
+Above the threshold the two rules above collide. An `If-Range` that no longer matches should be
+answered by ignoring the range and sending the whole representation — but the whole
+representation is exactly what walrus has just refused to send at this size. The mismatch is
+therefore reported as a refusal too, under its own code:
+
+```http
+GET /download/intellij/2026.2.1/windows/x86-64
+Range: bytes=1048576-34603007
+If-Range: "sha256-an-older-build"
+```
+
+```json
+HTTP/1.1 400 Bad Request
+Accept-Ranges: bytes
+ETag: "sha256-8aa16db629952300ab74d2d5e095150d1a534593e65bbbbd795b859759c00cbc"
+
+{
+  "error": "The artifact has changed since this download began, so the requested range belongs to a build walrus no longer holds. Discard any partial data and restart from byte 0 against the current ETag. This artifact is too large to be sent whole, which is why the mismatch is reported here rather than as a 200.",
+  "code": "stale_range_validator",
+  "file_size": 1614981679,
+  "range_required_above_bytes": 1000000000,
+  "suggested_chunk_bytes": 33554432
+}
+```
+
+The distinction matters because the two codes ask for different things. `range_required` means
+"send a `Range`"; `stale_range_validator` means "the bytes you already have are from a different
+build — throw them away". A client that saw only the first would repeat the identical request
+forever and never learn that its partial file is the problem. The current `ETag` rides on the
+refusal, so restarting needs no extra round trip.
+
+**Below** the threshold this case is unchanged and unremarkable: the range is ignored and the
+whole representation is sent with `200`, exactly as RFC 9110 asks.
+
 Below the threshold nothing changes: a plain `GET` behaves exactly as it always has, and ranged
 transfer is a pure optimisation. Today every package walrus serves is below it.
 

@@ -101,6 +101,8 @@ def describe_http_error(err: urllib.error.HTTPError) -> str:
         when = f" until {available}" if available else ""
         wait = f", retry after {retry_after}s" if retry_after else ""
         return f"embargoed: {detail}{when}{wait}"
+    if err.code == 400 and body.get("code") == "stale_range_validator":
+        return str(body.get("error"))
     if err.code == 400 and body.get("code") == "range_required":
         above = body.get("range_required_above_bytes")
         return (
@@ -204,16 +206,12 @@ def fetch_chunk(url: str, start: int, end: int, etag: str | None) -> tuple[bytes
                 "requested range is not satisfiable — the local partial file is longer than "
                 "the artifact, so delete it and start again"
             ) from err
-        # Above the server's range-required threshold, a stale `If-Range` cannot be answered
+        # Above the server's range-required threshold a stale `If-Range` cannot be answered
         # the way RFC 9110 asks — the whole representation is precisely what the server has
-        # refused to send at this size — so the mismatch surfaces as `400 range_required`
-        # instead of `200`. We sent a Range, so that code cannot mean what it says; on this
-        # request it can only mean the validator no longer matches.
-        if err.code == 400 and error_body(err).get("code") == "range_required" and etag:
-            raise ArtifactChanged(
-                "walrus rejected a ranged request carrying our If-Range validator — the "
-                "artifact has been re-synced since this download started"
-            ) from err
+        # refused to send at this size — so the mismatch arrives as a refusal carrying its own
+        # code rather than as a `200`.
+        if err.code == 400 and error_body(err).get("code") == "stale_range_validator":
+            raise ArtifactChanged(error_body(err).get("error", "the artifact has changed")) from err
         raise DownloadError(describe_http_error(err)) from err
 
 

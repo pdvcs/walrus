@@ -212,6 +212,15 @@ New deps: `fuzzball`, `semver` (runtime); `fast-check` (dev). `pg_trgm` extensio
   builds into one corrupt archive. Multi-range requests are answered with the full
   representation, as RFC 9110 permits. `X-Checksum-*` still describes the whole artifact:
   verify after reassembly, not per chunk.
+- **WAL-66 (Fixed):** A stale `If-Range` on an artifact above the threshold is reported as
+  `400 stale_range_validator` rather than `400 range_required`. The two rules collided: a
+  validator mismatch is answered with the whole representation, which is the very thing an
+  oversized artifact refuses to send, so the mismatch fell through to the size refusal and told
+  a client that had sent a `Range` to send one. Nothing about that is actionable — the client
+  repeats the request, is refused identically, and never learns its partial file is stale — so
+  the protection against splicing two builds together was unreportable on precisely the
+  artifacts large enough to be resumed across processes. The refusal now names the cause and
+  carries the current `ETag`. Below the threshold the RFC behaviour is unchanged.
 - **WAL-66 (Changed):** An unranged `GET` of an artifact above `RANGE_REQUIRED_BYTES` (1 GB by
   default) is now refused with `400` and `code: "range_required"` rather than served. Cloud
   Run's 3600s request deadline is not raisable, and at that size a single request cannot finish

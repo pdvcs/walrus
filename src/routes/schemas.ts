@@ -99,7 +99,7 @@ export const ArtifactSchema = z
     download_url: z.string(),
     requires_range: z.boolean().openapi({
       description:
-        "Whether this artifact can only be fetched with a `Range` request. An unranged GET of one is refused with 400 `range_required` rather than served, because a single request cannot complete inside the 3600s server deadline at this size. Published here so a client decides before it starts downloading.",
+        "Whether this artifact can only be fetched with a `Range` request. An unranged GET of one is refused with 400 `range_required` rather than served, because a single request cannot complete inside the 3600s server deadline at this size. A ranged GET whose `If-Range` no longer matches is refused too, with 400 `stale_range_validator`, since the whole representation the RFC would have us send is the thing being refused. Published here so a client decides before it starts downloading.",
       example: false,
     }),
     upstream_url: z.string().nullable().optional().openapi({

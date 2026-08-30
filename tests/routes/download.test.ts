@@ -469,6 +469,62 @@ describe("ranged downloads (WAL-66)", () => {
       expect(response.headers["content-range"]).toBeUndefined();
     });
 
+    it("names a stale validator when the artifact is too large to send whole", async () => {
+      // The RFC answer to an If-Range mismatch — 200 with the whole representation — is
+      // exactly what the size policy refuses above the threshold, so the two collide. Answering
+      // `range_required` there tells a client that DID send a range to send one, which it can
+      // only respond to by repeating the identical request forever, never learning that the
+      // bytes on its disk are the problem (WAL-66 AC16).
+      const limits = { rangeRequiredBytes: 8, suggestedChunkBytes: 4 };
+      const streamFromStorage = rangedStorage();
+      const app = createTestApp(
+        depsForArtifact({ file_size: 9 }, { transferLimits: limits, streamFromStorage }),
+      );
+
+      const response = await request(app)
+        .get("/download/uv/0.10.10/linux/x86-64")
+        .set("Range", "bytes=2-5")
+        .set("If-Range", '"sha256-an-older-build"');
+      const body = response.body as { code: string; error: string; file_size: number };
+
+      expect(response.status).toBe(400);
+      expect(body.code).toBe("stale_range_validator");
+      expect(body.error).toMatch(/changed since this download began/);
+      expect(body.file_size).toBe(9);
+      // The current validator rides on the refusal, so restarting needs no extra round trip.
+      expect(response.headers.etag).toBe('"sha256-abc"');
+      expect(streamFromStorage).not.toHaveBeenCalled();
+    });
+
+    it("still reports range_required when no range was sent at all", async () => {
+      // An If-Range without a Range is meaningless, and must not be mistaken for a mismatch:
+      // the client's obligation here really is "send a range".
+      const limits = { rangeRequiredBytes: 8, suggestedChunkBytes: 4 };
+      const app = createTestApp(depsForArtifact({ file_size: 9 }, { transferLimits: limits }));
+
+      const response = await request(app)
+        .get("/download/uv/0.10.10/linux/x86-64")
+        .set("If-Range", '"sha256-an-older-build"');
+
+      expect(response.status).toBe(400);
+      expect((response.body as { code: string }).code).toBe("range_required");
+    });
+
+    it("keeps answering a stale validator with 200 below the threshold", async () => {
+      // Where walrus CAN send the whole representation it does, exactly as RFC 9110 asks.
+      // The refusal above is a consequence of the size policy, not a reinterpretation of
+      // If-Range.
+      const app = createTestApp(depsForArtifact({ file_size: 10 }));
+
+      const response = await request(app)
+        .get("/download/uv/0.10.10/linux/x86-64")
+        .set("Range", "bytes=2-5")
+        .set("If-Range", '"sha256-an-older-build"');
+
+      expect(response.status).toBe(200);
+      expect(response.headers["content-range"]).toBeUndefined();
+    });
+
     it("derives a validator from the write timestamp when there is no checksum", async () => {
       const completedAt = new Date("2026-08-27T10:00:00Z");
       const app = createTestApp(
