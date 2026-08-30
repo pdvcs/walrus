@@ -10,6 +10,12 @@ set -euo pipefail
 #   WALRUS_SESSION_SECRET      - HMAC session key (at least 32 bytes)
 #   WALRUS_ADMIN_PASSWORD      - built-in admin password (at least 16 bytes)
 #   TERRAFORM_STATE_BUCKET     - GCS bucket for Terraform state
+# Optional env vars:
+#   NVD_API_KEY                - upstream NVD API 2.0 key (WAL-92). Absent, the deployment runs
+#                                keyless at NVD's 5 req/30s instead of 50: slower ingestion, and
+#                                a historical backfill measured in hours rather than minutes.
+#                                Never required, so a fresh project can bootstrap without one.
+#   WALRUS_SESSION_SECRET_PREVIOUS - old session key during rotation
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,15 +52,30 @@ IMAGE_BASE="${REGION}-docker.pkg.dev/${PROJECT_ID}/walrus/walrus-api"
 GIT_SHA="$(git -C "${REPO_ROOT}" rev-parse --short HEAD)"
 export TF_VAR_image_tag="${GIT_SHA}"
 
+# The NVD key is optional, but Cloud Run refuses to start a revision that references a secret
+# with no versions — so Terraform must know whether one was populated before it wires the
+# secret_key_ref. Derived from the environment rather than exposed as a second operator switch,
+# which could disagree with what this script actually put in Secret Manager below.
+if [[ -n "${NVD_API_KEY:-}" ]]; then
+  export TF_VAR_nvd_api_key_configured="true"
+else
+  export TF_VAR_nvd_api_key_configured="false"
+  echo "NOTE: NVD_API_KEY is not set — deploying keyless. NVD ingestion is rate-limited to" >&2
+  echo "      5 req/30s (vs 50 with a key); set it and re-run to enable the higher limit." >&2
+fi
+
 echo "==> Phase 1: TypeScript build"
 npm --prefix "${REPO_ROOT}" run build
 
 echo "==> Phase 2: Ensure Terraform state bucket exists"
 if ! gcloud storage buckets describe "gs://${TERRAFORM_STATE_BUCKET}" --project="${PROJECT_ID}" &>/dev/null; then
+  # Versioned: this bucket is the only record of the whole deployment, and a truncated or
+  # corrupted state write is otherwise unrecoverable (WAL-40, 2026-08-30).
   gcloud storage buckets create "gs://${TERRAFORM_STATE_BUCKET}" \
     --project="${PROJECT_ID}" \
     --location="${REGION}" \
-    --uniform-bucket-level-access
+    --uniform-bucket-level-access \
+    --versioning
 fi
 
 echo "==> Phase 3: Ensure Artifact Registry repo exists"
@@ -91,6 +112,12 @@ populate_secret walrus-database-url "${DATABASE_URL}"
 populate_secret walrus-session-secret "${WALRUS_SESSION_SECRET}"
 populate_secret walrus-session-secret-previous "${PREVIOUS_SESSION_SECRET}"
 populate_secret walrus-admin-password "${WALRUS_ADMIN_PASSWORD}"
+# Optional (WAL-92 AC4): only add a version when a key was supplied. An empty version would be
+# worse than none — the workloads would mount a blank apiKey header rather than fall back to the
+# keyless path the client already implements.
+if [[ "${TF_VAR_nvd_api_key_configured}" == "true" ]]; then
+  populate_secret walrus-nvd-api-key "${NVD_API_KEY}"
+fi
 
 echo "==> Phase 6: Terraform apply (full)"
 # Import the secret if it exists outside Terraform state (e.g. first deploy)
@@ -113,6 +140,14 @@ if ! terraform -chdir="${TF_DIR}" state show google_secret_manager_secret.admin_
   terraform -chdir="${TF_DIR}" import \
     google_secret_manager_secret.admin_password \
     "projects/${PROJECT_ID}/secrets/walrus-admin-password" || true
+fi
+# Only when populated above: keyless, the secret has never been created outside Terraform, and
+# the apply below creates the (versionless) resource itself.
+if [[ "${TF_VAR_nvd_api_key_configured}" == "true" ]] &&
+  ! terraform -chdir="${TF_DIR}" state show google_secret_manager_secret.nvd_api_key &>/dev/null; then
+  terraform -chdir="${TF_DIR}" import \
+    google_secret_manager_secret.nvd_api_key \
+    "projects/${PROJECT_ID}/secrets/walrus-nvd-api-key" || true
 fi
 
 terraform -chdir="${TF_DIR}" apply -auto-approve

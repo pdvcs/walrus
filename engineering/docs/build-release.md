@@ -157,6 +157,18 @@ from Secret Manager. The reviewed `config/admins.toml` is the authorization sour
 passwords or session keys in Terraform variables/state; `infra/scripts/deploy.sh` adds secret
 versions before applying the Cloud Run references.
 
+On GCP the NVD key follows the same route, no hand-editing of deployed config (WAL-92): export
+`NVD_API_KEY` before running `infra/scripts/deploy.sh`, which writes a version of the
+`walrus-nvd-api-key` secret and mounts it on the `walrus-api` service and both Cloud Run Jobs.
+
+```bash
+export NVD_API_KEY="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+bash infra/scripts/deploy.sh
+```
+
+The key is **optional**: deploy without it and the script says so, skips the secret version, and
+Terraform leaves the mount off entirely — a fresh project bootstraps keyless rather than failing
+to deploy. Rotating it is a re-run of the deploy with the new value; the mount reads `latest`.
 Keyless operation works but is ~10× slower; the backfill will still complete.
 
 ### 2. One-time backfill
@@ -183,9 +195,9 @@ that URL for `queued`, `running`, `succeeded`, or `failed`; progress is reported
 `cpe_pairs_done` / `cpe_pairs_total`. A concurrent NVD backfill returns `409 already_running`.
 The API launches the dedicated `walrus-vuln-backfill` Cloud Run Job, whose 24-hour task timeout
 avoids the serving service's 3,600-second request deadline. The keyless NVD limit makes a full
-history run potentially take hours; configure `NVD_API_KEY` in production. The local
-`npm run vuln:backfill` command remains available for development only and shares the ingestion
-implementation with the job runner.
+history run potentially take hours; set `NVD_API_KEY` in the deploy environment (§1) so the job
+runs at 50 req/30s. The local `npm run vuln:backfill` command remains available for development
+only and shares the ingestion implementation with the job runner.
 
 The job pages the NVD `virtualMatchString` API per CPE pair, writes `cves` + `cve_affects`, and
 advances the `nvd-cve` cursor. Verify:

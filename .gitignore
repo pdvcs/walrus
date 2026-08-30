@@ -12,6 +12,7 @@ data/
 *.bak
 *.swp
 *~
+mise.toml
 
 .env.secrets
 

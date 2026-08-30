@@ -367,6 +367,47 @@ New deps: `fuzzball`, `semver` (runtime); `fast-check` (dev). `pg_trgm` extensio
   release date still takes precedence where one exists, and artifacts already stuck are corrected
   on the next sync rather than needing an operator, since the recomputed end is now in the past.
 
+**Wave 18 — Infrastructure re-validation**
+
+- **WAL-92 (Fixed):** `NVD_API_KEY` had no infrastructure-as-code route at all — no Secret Manager
+  resource, no env wiring, no IAM binding anywhere under `infra/` — while the runbook told
+  operators to configure it in production. The whole fleet therefore ran keyless at NVD's 5
+  requests/30s instead of 50 unless someone hand-edited deployed config outside version control,
+  which made every throughput figure in the runbook, and the `1800s` attempt deadline chosen for
+  the NVD scheduler job, an order of magnitude optimistic. The key now travels the same path as
+  every other runtime secret: `walrus-nvd-api-key` is declared in Terraform with no value in
+  source, `deploy.sh` adds a version when `NVD_API_KEY` is present, and it is mounted by reference
+  on the `walrus-api` service and both Cloud Run Jobs under one `secretAccessor` grant to the
+  account they share. The key stays optional — Cloud Run will not start a revision that references
+  a versionless secret, so the mounts are conditional on whether a version was populated, and a
+  project deploying without a key gets a note and the keyless path rather than a failed deploy.
+  Static wiring is now asserted in `tests/infra/nvd-api-key-terraform.test.ts`, since the gap was
+  originally found by a human grepping `infra/`.
+
+- **WAL-93 (Fixed):** `infra/scripts/teardown.sh` could not finish. Cloud Run Jobs default to
+  `deletion_protection = true` in the provider; `cloudrun.tf` opted the _service_ out but never the
+  two Jobs, and teardown lowered only the Cloud SQL and bucket guards. `terraform destroy` aborted
+  on `walrus-sync` and `walrus-vuln-backfill` — after the script's targeted apply had already
+  stripped protection from the database and set `force_destroy` on the artifact bucket, so a failed
+  teardown left the project less safe than not running it. Both Jobs now sit behind a
+  `job_deletion_protection` variable defaulting to protected, which teardown lowers alongside the
+  other two, on both its targeted apply and its destroy. The Terraform state bucket — the only
+  record of the deployment — is now created with object versioning. Found by the first
+  `terraform plan` ever run against a real project.
+
+- **WAL-95 (Fixed):** The scheduled incremental NVD sync crashed the service. It fetched the whole
+  lastMod window into one array before writing anything, and on a fresh database — where there is
+  no cursor, so the window is the full 119-day lookback — that is hundreds of thousands of parsed
+  CVE objects against a V8 heap capped near 512 MB. The process aborted on a heap-limit fatal
+  about two minutes in, well before the scheduler's 1,800-second deadline; Cloud Run restarted it
+  seconds later, so the only trace was a container log and a scheduled job that never completed.
+  The sync now streams a page at a time — filter, ingest, discard — so peak memory is flat in the
+  window's size rather than linear, and `knownCveIds` is queried per page instead of passing every
+  id in the window to one query. Each page is its own transaction; the cursor still advances only
+  on full success, and because every write is an upsert whose affects rows are rebuilt per CVE, an
+  interrupted run is redone idempotently instead of discarded. First live run after the fix walked
+  367,090 modified CVEs, wrote 15,915 affects rows, and left the serving instance up throughout.
+
 ## Version 0.1.0: Initial Release
 
 Initial Walrus release: a configuration-driven package ingress engine that discovers, caches, and

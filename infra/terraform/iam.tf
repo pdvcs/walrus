@@ -83,3 +83,12 @@ resource "google_cloud_run_v2_service_iam_member" "walrus_public_invoker" {
   role     = "roles/run.invoker"
   member   = "allUsers"
 }
+
+# walrus-api: Secret Accessor for the upstream NVD API key (WAL-92). One binding covers all three
+# workloads that read it — the service and both Cloud Run Jobs run as this account. Granted
+# whether or not a version exists yet, so populating the key later needs no IAM change.
+resource "google_secret_manager_secret_iam_member" "walrus_api_nvd_api_key" {
+  secret_id = google_secret_manager_secret.nvd_api_key.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.walrus_api.email}"
+}

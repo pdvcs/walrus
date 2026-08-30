@@ -15,7 +15,8 @@ Deploys Walrus to GCP using Cloud Run, Cloud SQL (Postgres 18), GCS, and Cloud S
 - **Cloud Run Jobs** — `walrus-sync` (package sync; artifact downloads outlast any request
   deadline) and `walrus-vuln-backfill` (one-time historical CVE ingestion)
 - **Artifact Registry** — Docker images
-- **Secret Manager** — database URL, built-in admin password, and current/previous session keys
+- **Secret Manager** — database URL, built-in admin password, current/previous session keys, and
+  the optional upstream `NVD_API_KEY`
 
 ## One-time bootstrap
 
@@ -60,6 +61,11 @@ export TF_VAR_cloud_sql_tier="db-f1-micro"  # default: db-f1-micro (~$7/month)
 export TF_VAR_cloud_run_min_instances="1"   # default: 1 (always-on)
 export TF_VAR_sync_schedule="0 */6 * * *"   # default: every 6 hours UTC
 export TF_VAR_internal_oidc_audience="walrus-internal"
+# Upstream NVD API 2.0 key. Absent, ingestion runs keyless at 5 req/30s instead of 50 and a
+# historical backfill takes hours rather than minutes; deploy.sh skips the secret and Terraform
+# leaves the mount off, so a keyless project still deploys. Request one at
+# https://nvd.nist.gov/developers/request-an-api-key
+export NVD_API_KEY="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 # During key rotation, set this to the old key before changing WALRUS_SESSION_SECRET.
 export WALRUS_SESSION_SECRET_PREVIOUS="$WALRUS_SESSION_SECRET"
 ```
@@ -74,7 +80,8 @@ The script:
 
 1. Runs `npm run build`
 2. Builds and pushes a Docker image tagged with the current git SHA
-3. Populates database, admin-password, and current/previous session secrets in Secret Manager
+3. Populates database, admin-password, and current/previous session secrets in Secret Manager,
+   plus `walrus-nvd-api-key` when `NVD_API_KEY` is set
 4. Runs `terraform apply` to provision/update all GCP resources
 
 ## Teardown
@@ -99,7 +106,9 @@ Prompts for confirmation, disables Cloud SQL deletion protection, then runs `ter
   bypass.
 - Cloud SQL uses IAM-only access; no authorized networks are required.
 - The `walrus-api` service account has minimal permissions: GCS Object Admin on the artifact bucket,
-  Cloud SQL Client, and Secret Accessor for its four runtime secrets.
+  Cloud SQL Client, and Secret Accessor for its five runtime secrets. `walrus-nvd-api-key` is an
+  upstream API credential, not a walrus principal: it grants nothing inside walrus, and it is
+  mounted only when a version was populated.
 
 ## Cost estimate (no VPC/NAT)
 

@@ -40,13 +40,17 @@ echo "==> Disabling deletion protection and enabling force-destroy"
 terraform -chdir="${TF_DIR}" apply -auto-approve \
   -target=google_sql_database_instance.walrus \
   -target=google_storage_bucket.artifacts \
+  -target=google_cloud_run_v2_job.sync \
+  -target=google_cloud_run_v2_job.vuln_backfill \
   -var="sql_deletion_protection=false" \
-  -var="gcs_force_destroy=true"
+  -var="gcs_force_destroy=true" \
+  -var="job_deletion_protection=false"
 
 echo "==> Terraform destroy"
 terraform -chdir="${TF_DIR}" destroy -auto-approve \
   -var="sql_deletion_protection=false" \
-  -var="gcs_force_destroy=true"
+  -var="gcs_force_destroy=true" \
+  -var="job_deletion_protection=false"
 
 echo ""
 echo "Teardown complete."

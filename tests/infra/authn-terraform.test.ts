@@ -28,7 +28,10 @@ describe("authentication deployment wiring", () => {
     expect(cloudRun).not.toMatch(
       /value\s*=\s*"[^\n]+"[^\n]*WALRUS_(?:SESSION_SECRET|ADMIN_PASSWORD)/,
     );
-    expect(iam.match(/roles\/secretmanager\.secretAccessor/g)).toHaveLength(4);
+    // Five bindings: the three above, walrus-database-url, and walrus-nvd-api-key (WAL-92).
+    // The count is the assertion — a new secretAccessor grant should have to justify itself
+    // here rather than arrive unnoticed.
+    expect(iam.match(/roles\/secretmanager\.secretAccessor/g)).toHaveLength(5);
   });
 
   it("uses one exact audience and scheduler principal on both sides of machine auth", () => {

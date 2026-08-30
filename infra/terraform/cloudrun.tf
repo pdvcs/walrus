@@ -2,6 +2,15 @@ resource "google_cloud_run_v2_service" "walrus" {
   name     = "walrus-api"
   location = var.region
 
+
+  # The connection_name reference in the volume waits for the instance; these wait for the things
+  # container actually needs to exist at boot. A user or database creation still in flight leaves
+  # the instance unable to issue an ephemeral cert, which the client reports as a 409 invalidState.
+  depends_on = [
+    google_sql_database.walrus,
+    google_sql_user.walrus,
+  ]
+
   template {
     service_account = google_service_account.walrus_api.email
 
@@ -14,7 +23,12 @@ resource "google_cloud_run_v2_service" "walrus" {
     volumes {
       name = "cloudsql"
       cloud_sql_instance {
-        instances = ["${var.project_id}:${var.region}:walrus-postgres"]
+        # A reference, not the equivalent literal string: the literal left Terraform's graph with
+        # no edge to the database at all, so this service could be created while the instance was
+        # still mid-operation. The container fails fast on an unreachable database, so that raced
+        # apply surfaced as "failed the configured startup probe checks" — see the depends_on
+        # below and WAL-94.
+        instances = [google_sql_database_instance.walrus.connection_name]
       }
     }
 
@@ -106,6 +120,23 @@ resource "google_cloud_run_v2_service" "walrus" {
           }
         }
       }
+      # Upstream NVD credential (WAL-92). This service runs the scheduled /internal/vuln-sync/nvd
+      # and /internal/vuln-sync/cvss walks in-request, so it is the fleet's steady-state NVD
+      # caller. Mounted only when deploy.sh saw an NVD_API_KEY and populated a version: Cloud Run
+      # will not start a revision whose referenced secret is empty, and keyless is a supported
+      # mode (5 req/30s instead of 50), so an unsupplied key must degrade, not break the deploy.
+      dynamic "env" {
+        for_each = var.nvd_api_key_configured ? [1] : []
+        content {
+          name = "NVD_API_KEY"
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.nvd_api_key.secret_id
+              version = "latest"
+            }
+          }
+        }
+      }
 
       volume_mounts {
         name       = "cloudsql"
@@ -145,6 +176,19 @@ resource "google_cloud_run_v2_job" "vuln_backfill" {
   name     = "walrus-vuln-backfill"
   location = var.region
 
+  # The connection_name reference in the volume waits for the instance; these wait for the things
+  # container actually needs to exist at boot. A user or database creation still in flight leaves
+  # the instance unable to issue an ephemeral cert, which the client reports as a 409 invalidState.
+  depends_on = [
+    google_sql_database.walrus,
+    google_sql_user.walrus,
+  ]
+
+
+  # See var.job_deletion_protection: the provider default is true, and teardown.sh
+  # cannot destroy this Job until it is lowered.
+  deletion_protection = var.job_deletion_protection
+
   template {
     template {
       service_account = google_service_account.walrus_api.email
@@ -154,7 +198,8 @@ resource "google_cloud_run_v2_job" "vuln_backfill" {
       volumes {
         name = "cloudsql"
         cloud_sql_instance {
-          instances = ["${var.project_id}:${var.region}:walrus-postgres"]
+          # A reference, not the literal — see the service above and WAL-94.
+          instances = [google_sql_database_instance.walrus.connection_name]
         }
       }
 
@@ -168,6 +213,22 @@ resource "google_cloud_run_v2_job" "vuln_backfill" {
             secret_key_ref {
               secret  = google_secret_manager_secret.database_url.secret_id
               version = "latest"
+            }
+          }
+        }
+        # Upstream NVD credential (WAL-92). This job pages NVD per CPE pair across the whole
+        # history, so it is the workload the key matters most to — keyless it is the multi-hour
+        # run build-release.md warns about. Mounted only when a version exists: Cloud Run will
+        # not start a revision whose referenced secret is empty.
+        dynamic "env" {
+          for_each = var.nvd_api_key_configured ? [1] : []
+          content {
+            name = "NVD_API_KEY"
+            value_source {
+              secret_key_ref {
+                secret  = google_secret_manager_secret.nvd_api_key.secret_id
+                version = "latest"
+              }
             }
           }
         }
@@ -188,6 +249,19 @@ resource "google_cloud_run_v2_job" "sync" {
   name     = "walrus-sync"
   location = var.region
 
+  # The connection_name reference in the volume waits for the instance; these wait for the things
+  # container actually needs to exist at boot. A user or database creation still in flight leaves
+  # the instance unable to issue an ephemeral cert, which the client reports as a 409 invalidState.
+  depends_on = [
+    google_sql_database.walrus,
+    google_sql_user.walrus,
+  ]
+
+
+  # See var.job_deletion_protection: the provider default is true, and teardown.sh
+  # cannot destroy this Job until it is lowered.
+  deletion_protection = var.job_deletion_protection
+
   template {
     template {
       service_account = google_service_account.walrus_api.email
@@ -199,7 +273,8 @@ resource "google_cloud_run_v2_job" "sync" {
       volumes {
         name = "cloudsql"
         cloud_sql_instance {
-          instances = ["${var.project_id}:${var.region}:walrus-postgres"]
+          # A reference, not the literal — see the service above and WAL-94.
+          instances = [google_sql_database_instance.walrus.connection_name]
         }
       }
 
@@ -264,6 +339,22 @@ resource "google_cloud_run_v2_job" "sync" {
             secret_key_ref {
               secret  = google_secret_manager_secret.database_url.secret_id
               version = "latest"
+            }
+          }
+        }
+        # Upstream NVD credential (WAL-92 AC2). This job does not reach NVD today — package sync
+        # never enters the vuln path — but the ticket wires all three workloads that run as
+        # walrus-api so no future caller here inherits the keyless 5 req/30s limit silently.
+        # Mounted only when a version exists: Cloud Run will not start a revision otherwise.
+        dynamic "env" {
+          for_each = var.nvd_api_key_configured ? [1] : []
+          content {
+            name = "NVD_API_KEY"
+            value_source {
+              secret_key_ref {
+                secret  = google_secret_manager_secret.nvd_api_key.secret_id
+                version = "latest"
+              }
             }
           }
         }

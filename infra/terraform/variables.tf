@@ -102,8 +102,30 @@ variable "sql_deletion_protection" {
   default     = true
 }
 
+# Cloud Run Jobs default to deletion_protection = true in the provider, which the service opts
+# out of but the Jobs never did — so `terraform destroy` aborted on both of them and left a
+# half-torn-down project behind, with Cloud SQL and the bucket already stripped of their own
+# protection by teardown.sh's targeted apply. Found by the first real plan (WAL-40, 2026-08-30).
+# Defaults to protected; teardown.sh lowers it the same way it lowers the other two.
+variable "job_deletion_protection" {
+  description = "Enable deletion protection on the Cloud Run Jobs (set to false for teardown)"
+  type        = bool
+  default     = true
+}
+
 variable "gcs_force_destroy" {
   description = "Allow Terraform to delete the GCS bucket even if it contains objects (set to true for teardown)"
+  type        = bool
+  default     = false
+}
+
+# Set automatically by deploy.sh from the presence of NVD_API_KEY (WAL-92 AC4); the key is
+# optional, so a fresh project can bootstrap keyless exactly as local dev does. This gates the
+# secret_key_ref, not the secret itself: Cloud Run refuses to deploy a revision whose referenced
+# secret has no versions, so wiring the reference unconditionally would turn an unsupplied key
+# from a slower NVD walk into a hard deploy failure.
+variable "nvd_api_key_configured" {
+  description = "Whether walrus-nvd-api-key holds a version to mount into the workloads"
   type        = bool
   default     = false
 }

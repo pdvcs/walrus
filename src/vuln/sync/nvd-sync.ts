@@ -362,24 +362,54 @@ export async function incrementalNvdSync(
   const end = new Date(Math.min(now.getTime(), start.getTime() + MAX_NVD_DATE_WINDOW_MS));
 
   try {
-    const items = await nvd.cvesModifiedSince(start.toISOString(), end.toISOString());
-    // A lastMod window returns EVERYTHING modified; keep only CVEs that touch a
-    // tracked package (or that we already know about).
+    // Streamed a page at a time, never accumulated (WAL-95). A lastMod window returns
+    // EVERYTHING modified, and on a fresh database there is no cursor, so the very first
+    // sync of any new environment requests the full MAX_NVD_DATE_WINDOW_MS lookback --
+    // hundreds of thousands of records. Holding them as parsed objects exhausted V8's heap
+    // and aborted the process (signal 6) roughly two minutes in, well before the scheduler's
+    // attempt deadline. Peak memory is now one page plus the ingested-id set, so it is flat
+    // in the window's size rather than linear.
     const lookup = await loadCpeLookup(pool);
-    const known = await knownCveIds(
-      pool,
-      items.map((item) => item.cve.id),
-    );
-    const relevantById = new Map<string, NvdCveItem>();
-    for (const item of items) {
-      if (known.has(item.cve.id) || extractAffects(item, lookup).rows.length > 0) {
-        relevantById.set(item.cve.id, item);
-      }
+    const counts: IngestCounts = { cves: 0, affects: 0, skippedCpes: 0 };
+    let modified = 0;
+    let relevantCount = 0;
+    // Ids only, not items: the window can legitimately repeat a CVE across pages when NVD's
+    // index shifts mid-pagination. The previous whole-window Map deduped by id and kept the
+    // last copy; this keeps the first and skips the rest, which differs only for a CVE
+    // modified again *during* the walk -- and the next run's overlapping window re-fetches it.
+    const ingested = new Set<string>();
+
+    for await (const page of nvd.cvePages({
+      lastModStartDate: start.toISOString(),
+      lastModEndDate: end.toISOString(),
+    })) {
+      modified += page.vulnerabilities.length;
+      const fresh = page.vulnerabilities.filter((item) => !ingested.has(item.cve.id));
+      // Per page, so the id list stays bounded: a single query carrying every id in a
+      // 119-day window would be its own problem.
+      const known = await knownCveIds(
+        pool,
+        fresh.map((item) => item.cve.id),
+      );
+      const relevant = fresh.filter(
+        (item) => known.has(item.cve.id) || extractAffects(item, lookup).rows.length > 0,
+      );
+      if (relevant.length === 0) continue;
+
+      // One transaction per page rather than one for the window. The cursor still only
+      // advances on full success, and every write here is an upsert keyed by CVE id with
+      // its nvd-sourced affects rebuilt per CVE, so a failure part-way through leaves the
+      // next run to redo the same work idempotently instead of discarding what landed.
+      const pageCounts = await ingestCveItems(pool, relevant, lookup);
+      counts.cves += pageCounts.cves;
+      counts.affects += pageCounts.affects;
+      counts.skippedCpes += pageCounts.skippedCpes;
+      relevantCount += relevant.length;
+      for (const item of relevant) ingested.add(item.cve.id);
     }
-    const relevant = [...relevantById.values()];
-    const counts = await ingestCveItems(pool, relevant, lookup);
+
     log(
-      `incremental: ${items.length} modified CVEs in window, ${relevant.length} relevant, ${counts.affects} affects rows`,
+      `incremental: ${modified} modified CVEs in window, ${relevantCount} relevant, ${counts.affects} affects rows`,
     );
     await setSyncState(pool, "nvd-cve", end.toISOString(), true);
     return counts;
