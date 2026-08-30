@@ -427,6 +427,26 @@ update` return anyway — including a service-level `scaling` block the API repo
   goes unnoticed. The instance ceiling and the Postgres pool size are now declared together, with
   the connection budget binding them enforced by a plan-time precondition.
 
+- **WAL-95 / WAL-97 (Fixed):** Container memory is now budgeted rather than inherited. Node caps
+  its heap at roughly half the container, which sounds conservative but is not: the archive
+  transform's link cache and the resumable-upload chunks are Buffers, which live outside that heap.
+  Both claimants could reach their maximum at once — 512 + 539 MiB against a 1Gi service, 1024 +
+  1280 against a 2Gi sync job — and the container would be OOM-killed with no stack to explain it.
+  Each workload now declares an old-space ceiling derived from what is left after its Buffer
+  budget, and `walrus-vuln-backfill`, previously the one workload with no resource limits at all,
+  is pinned. Postgres `max_connections` is pinned too, and the Cloud Run connection budget now
+  divides that number instead of a tier default nobody had checked.
+
+- **WAL-98 (Fixed):** The autonomous per-package CVE backfill had never launched successfully on
+  GCP. It passed the database job id into the Cloud Run Jobs API as a JSON number, and the API
+  type-checks that field, so every package on every sweep failed with a 400 — while the scheduler
+  reported success, because per-package launch failures are logged and swallowed. The id is
+  `BIGSERIAL` and a global BIGINT type parser hands it back as a JS number, so the `string` type on
+  both the row and the launcher signature was wrong at runtime; Postgres coerces either happily,
+  which is why every other consumer of that id worked. The launch payload now stringifies at the
+  wire boundary, and `CloudRunBackfillLauncher` has test coverage for the first time — only the
+  local launcher, which passes the id to an in-process call where a number is fine, had any.
+
 ## Version 0.1.0: Initial Release
 
 Initial Walrus release: a configuration-driven package ingress engine that discovers, caches, and

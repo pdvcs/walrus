@@ -43,7 +43,10 @@ variable "cloud_run_min_instances" {
 # precondition on the Cloud Run service in cloudrun.tf, so a config that over-subscribes the
 # database fails at plan time rather than at 3am:
 #
-#   service_db_pool_max x cloud_run_max_instances  +  job_db_pool_max x 2  <=  db_usable_connections
+#   service_db_pool_max x cloud_run_max_instances  +  job_db_pool_max x 2  <=  usable
+#
+# where `usable` is derived, not declared: db_max_connections - db_reserved_connections. Deriving
+# it means the budget cannot silently disagree with what Postgres is actually configured to allow.
 #
 # The defaults below size a **test** environment on the db-f1-micro default: 3 x 4 + 4 x 2 = 20.
 # UAT and production should raise the Cloud SQL tier first and then all four of these together --
@@ -51,10 +54,23 @@ variable "cloud_run_min_instances" {
 # the tier exhausts Postgres, where a scale-up becomes the outage instead of relieving it.
 # Sizing the real tiers is deliberately deferred; see plans/gcp-testing-tasks.md.
 
-variable "db_usable_connections" {
-  description = "Connections the Cloud SQL tier can actually serve, less Postgres' superuser reserve and Cloud SQL's own management sessions. db-f1-micro: max_connections defaults to ~25, so ~20."
+# Pinned via databaseFlags in sql.tf rather than inherited: the whole budget divides this number,
+# and a tier default is not something to divide by. db-f1-micro's default is ~25; setting it makes
+# the divisor deterministic and survives a tier change being made without re-reading this block.
+# NOTE: changing this restarts the Cloud SQL instance.
+variable "db_max_connections" {
+  description = "Postgres max_connections, pinned on the instance (see sql.tf)"
   type        = number
-  default     = 20
+  default     = 25
+}
+
+# Not available to walrus: Postgres' own superuser_reserved_connections (default 3) plus the
+# sessions Cloud SQL's management agents hold. Five is deliberately a little generous — running the
+# database to its literal ceiling turns a routine admin query into a failed one.
+variable "db_reserved_connections" {
+  description = "Connections held back from the pool budget for superuser and Cloud SQL management"
+  type        = number
+  default     = 5
 }
 
 variable "service_db_pool_max" {

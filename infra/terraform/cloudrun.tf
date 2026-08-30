@@ -1,3 +1,9 @@
+# Derived from the pinned max_connections rather than declared alongside it, so the two cannot
+# drift. See the budget block in variables.tf.
+locals {
+  db_usable_connections = var.db_max_connections - var.db_reserved_connections
+}
+
 resource "google_cloud_run_v2_service" "walrus" {
   name     = "walrus-api"
   location = var.region
@@ -66,6 +72,23 @@ resource "google_cloud_run_v2_service" "walrus" {
       env {
         name  = "DB_POOL_MAX"
         value = tostring(var.service_db_pool_max)
+      }
+      # V8's old-space ceiling, set rather than inherited (WAL-95 AC4). Node defaults to roughly
+      # half the container, which sounds conservative and is not: the heap is only one claimant on
+      # the 1Gi below, and Buffers live *outside* it. Both can reach their maximum at once, and the
+      # container is then OOM-killed with no stack.
+      #
+      #   1024 MiB container
+      #   - 475  link cache, one transform (TRANSFORM_CONCURRENCY = 1)
+      #   -  64  upload chunks, 8 MiB x DOWNLOAD_CONCURRENCY 8 (the code default; unpinned here)
+      #   -  80  Node itself: code, stacks, young generation, native allocations
+      #   = 405 available to old space -> 384, rounded down for headroom
+      #
+      # A heap-limit fatal is also a better failure than an OOM-kill: it names the limit and prints
+      # a stack, which is exactly how WAL-95 was diagnosed.
+      env {
+        name  = "NODE_OPTIONS"
+        value = "--max-old-space-size=384"
       }
       env {
         name  = "STORAGE_BACKEND"
@@ -205,8 +228,8 @@ resource "google_cloud_run_v2_service" "walrus" {
     # mode it guards against is a scale-up that exhausts Postgres and takes the service down
     # instead of relieving it.
     precondition {
-      condition     = ((var.service_db_pool_max * var.cloud_run_max_instances) + (var.job_db_pool_max * 2)) <= var.db_usable_connections
-      error_message = "Cloud SQL connection budget exceeded: service_db_pool_max x cloud_run_max_instances + job_db_pool_max x 2 must be <= db_usable_connections. Raise the Cloud SQL tier and db_usable_connections together, or lower the pools/ceiling."
+      condition     = ((var.service_db_pool_max * var.cloud_run_max_instances) + (var.job_db_pool_max * 2)) <= local.db_usable_connections
+      error_message = "Cloud SQL connection budget exceeded: service_db_pool_max x cloud_run_max_instances + job_db_pool_max x 2 must be <= db_max_connections - db_reserved_connections. Raise the Cloud SQL tier and db_max_connections together, or lower the pools/ceiling."
     }
   }
 }
@@ -246,10 +269,40 @@ resource "google_cloud_run_v2_job" "vuln_backfill" {
         image   = "${var.region}-docker.pkg.dev/${var.project_id}/walrus/walrus-api:${var.image_tag}"
         command = ["node", "dist/commands/vuln-backfill-job.js"]
         args    = ["--job-id", "overridden-by-launcher"]
+
+        # Pinned rather than left at Cloud Run's defaults (WAL-97 AC4). This was the only workload
+        # with no resources block at all, which meant nothing stated what it was entitled to --
+        # and until WAL-97 it accumulated a whole CPE pair's CVEs, so its appetite was unbounded
+        # on a container size nobody had chosen.
+        #
+        # Memory: it now streams a page at a time (2,000 CVEs), so the resident set is one parsed
+        # page plus Node, not the pair's whole result. A CVE record with configurations and
+        # references runs to a few KB and JSON parsing inflates that several times over, so a page
+        # is tens of MB; 1Gi is generous against that and leaves room for a page of unusual size
+        # without a re-plan. Unlike the sync job there is no Buffer-heavy path here -- no
+        # transforms, no upload chunks -- so nearly all of this is available to the JS heap.
+        #
+        # CPU: the work is IO-bound and rate-limited by NVD (45 req/30s with a key, 4 without), so
+        # this is bounded by the upstream budget rather than by cores. One vCPU is ample, and jobs
+        # bill only while executing.
+        resources {
+          limits = {
+            cpu    = "1"
+            memory = "1Gi"
+          }
+        }
         # One execution at a time; counts once in the budget. See variables.tf.
         env {
           name  = "DB_POOL_MAX"
           value = tostring(var.job_db_pool_max)
+        }
+        # This job has no Buffer-heavy path -- no transforms, no upload chunks -- so nearly the
+        # whole container is available to the heap: 1024 MiB less ~80 for Node itself, less slack
+        # for an unusually large NVD page, -> 768. Since WAL-97 it streams a page at a time, so
+        # this bounds one page of parsed CVEs rather than a whole CPE pair's results.
+        env {
+          name  = "NODE_OPTIONS"
+          value = "--max-old-space-size=768"
         }
         env {
           name = "DATABASE_URL"
@@ -376,6 +429,19 @@ resource "google_cloud_run_v2_job" "sync" {
         env {
           name  = "GCS_UPLOAD_CHUNK_BYTES"
           value = "33554432"
+        }
+        # Old-space ceiling, from the same budget the resources block above reasons about:
+        #
+        #   2048 MiB container
+        #   - 1024  link cache, 2 x 512 (TRANSFORM_CONCURRENCY = 2)
+        #   -  256  upload chunks, 32 MiB x DOWNLOAD_CONCURRENCY 8
+        #   -   80  Node itself
+        #   =  688 available to old space -> 640, rounded down for headroom
+        #
+        # Raising TRANSFORM_CONCURRENCY or GCS_UPLOAD_CHUNK_BYTES eats this directly.
+        env {
+          name  = "NODE_OPTIONS"
+          value = "--max-old-space-size=640"
         }
         # One execution at a time, so this counts once in the budget rather than per instance.
         env {

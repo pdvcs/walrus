@@ -31,7 +31,8 @@ describe("Cloud SQL connection budget", () => {
     expect(cloudRun).toContain("max_instance_count = var.cloud_run_max_instances");
     expect(read("src/db/client.ts")).toContain("max: config.DB_POOL_MAX");
     for (const v of [
-      "db_usable_connections",
+      "db_max_connections",
+      "db_reserved_connections",
       "service_db_pool_max",
       "job_db_pool_max",
       "cloud_run_max_instances",
@@ -54,20 +55,45 @@ describe("Cloud SQL connection budget", () => {
     expect(refs.filter((r) => /^"\d+"$/.test(r))).toHaveLength(0);
   });
 
-  it("keeps the declared defaults inside the declared budget", () => {
+  it("keeps the declared defaults inside what Postgres is configured to allow", () => {
     const worstCase =
       tfVarDefault(variables, "service_db_pool_max") *
         tfVarDefault(variables, "cloud_run_max_instances") +
       tfVarDefault(variables, "job_db_pool_max") * 2;
-    expect(worstCase).toBeLessThanOrEqual(tfVarDefault(variables, "db_usable_connections"));
+    const usable =
+      tfVarDefault(variables, "db_max_connections") -
+      tfVarDefault(variables, "db_reserved_connections");
+    expect(worstCase).toBeLessThanOrEqual(usable);
+  });
+
+  it("leaves no workload on Cloud Run's default resources", () => {
+    // WAL-97 AC4: walrus-vuln-backfill was the one workload with no resources block, so nothing
+    // stated what it was entitled to — and a heap ceiling cannot be derived from a container size
+    // nobody has chosen.
+    const workloads = cloudRun.match(/resource "google_cloud_run_v2_(service|job)"/g);
+    expect(workloads).toHaveLength(3);
+    const pins = cloudRun.match(
+      /resources \{\s*limits = \{\s*cpu\s*=\s*"\d+"\s*memory\s*=\s*"\d+Gi"/g,
+    );
+    expect(pins).toHaveLength(3);
+  });
+
+  it("pins max_connections on the instance rather than dividing by a tier default", () => {
+    const sql = read("infra/terraform/sql.tf");
+    expect(sql).toContain('name  = "max_connections"');
+    expect(sql).toContain("value = tostring(var.db_max_connections)");
+    // Derived, so the budget cannot disagree with what the instance actually allows.
+    expect(cloudRun).toContain(
+      "db_usable_connections = var.db_max_connections - var.db_reserved_connections",
+    );
   });
 
   it("enforces the invariant at plan time, not merely in this suite", () => {
     // A `check` block would only warn; a precondition refuses the plan. Verified live: raising
     // cloud_run_max_instances alone exits 1, while raising the tier and all four together plans.
-    expect(cloudRun).toMatch(/precondition\s*\{[\s\S]*?var\.db_usable_connections/);
+    expect(cloudRun).toMatch(/precondition\s*\{[\s\S]*?local\.db_usable_connections/);
     expect(cloudRun).toMatch(
-      /condition\s+=\s+\(\(var\.service_db_pool_max \* var\.cloud_run_max_instances\) \+ \(var\.job_db_pool_max \* 2\)\) <= var\.db_usable_connections/,
+      /condition\s+=\s+\(\(var\.service_db_pool_max \* var\.cloud_run_max_instances\) \+ \(var\.job_db_pool_max \* 2\)\) <= local\.db_usable_connections/,
     );
   });
 });

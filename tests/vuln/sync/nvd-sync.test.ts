@@ -257,22 +257,44 @@ describe("nvd-sync ingestion", () => {
     expect(b).toBe(a);
   });
 
+  /**
+   * Stands in for `NvdClient.cvePages`, which `backfillNvd` consumes instead of the accumulating
+   * `cvesForCpe` since WAL-97. One call per (CPE pair, publication window), and the pair now travels
+   * inside the params object as `virtualMatchString` rather than as a separate first argument.
+   */
+  const pagesOf = (vulnerabilities: NvdCveItem[] = []) =>
+    vi.fn(async function* () {
+      yield {
+        resultsPerPage: vulnerabilities.length,
+        startIndex: 0,
+        totalResults: vulnerabilities.length,
+        vulnerabilities,
+      };
+    });
+
+  const matchStringsOf = (m: ReturnType<typeof pagesOf>) =>
+    m.mock.calls.map((c) => (c[0] as { virtualMatchString: string }).virtualMatchString);
+
   it("uses paired bounded publication windows for a dated backfill", async () => {
-    const cvesForCpe = vi.fn().mockResolvedValue([]);
-    const nvd = { cvesForCpe } as unknown as NvdClient;
+    const cvePages = pagesOf();
+    const nvd = { cvePages } as unknown as NvdClient;
 
     await backfillNvd(pool, nvd, {
       since: "2024-01-01",
       now: new Date("2024-07-01T12:00:00.000Z"),
     });
 
-    expect(cvesForCpe).toHaveBeenCalledTimes(2);
-    for (const [, params] of cvesForCpe.mock.calls) {
+    expect(cvePages).toHaveBeenCalledTimes(2);
+    for (const [params] of cvePages.mock.calls) {
       expect(params).toHaveProperty("pubStartDate");
       expect(params).toHaveProperty("pubEndDate");
     }
-    expect(cvesForCpe.mock.calls[0][1].pubStartDate).toBe("2024-01-01T00:00:00.000Z");
-    expect(cvesForCpe.mock.calls[1][1].pubEndDate).toBe("2024-07-01T12:00:00.000Z");
+    expect((cvePages.mock.calls[0][0] as Record<string, string>).pubStartDate).toBe(
+      "2024-01-01T00:00:00.000Z",
+    );
+    expect((cvePages.mock.calls[1][0] as Record<string, string>).pubEndDate).toBe(
+      "2024-07-01T12:00:00.000Z",
+    );
   });
 
   describe("targeted backfill (--package)", () => {
@@ -308,28 +330,28 @@ describe("nvd-sync ingestion", () => {
     });
 
     it("walks only the named package's CPE pairs", async () => {
-      const cvesForCpe = vi.fn().mockResolvedValue([]);
-      const nvd = { cvesForCpe } as unknown as NvdClient;
+      const cvePages = pagesOf();
+      const nvd = { cvePages } as unknown as NvdClient;
 
       await backfillNvd(pool, nvd, { packageName: SCOPED });
 
-      expect(cvesForCpe).toHaveBeenCalledTimes(1);
-      expect(cvesForCpe.mock.calls[0][0]).toBe("cpe:2.3:a:acme:widget");
+      expect(cvePages).toHaveBeenCalledTimes(1);
+      expect(matchStringsOf(cvePages)[0]).toBe("cpe:2.3:a:acme:widget");
     });
 
     it("walks every pair when no package is given", async () => {
-      const cvesForCpe = vi.fn().mockResolvedValue([]);
-      const nvd = { cvesForCpe } as unknown as NvdClient;
+      const cvePages = pagesOf();
+      const nvd = { cvePages } as unknown as NvdClient;
 
       await backfillNvd(pool, nvd, {});
 
-      const matchStrings = cvesForCpe.mock.calls.map((c) => c[0]);
+      const matchStrings = matchStringsOf(cvePages);
       expect(matchStrings).toContain("cpe:2.3:a:acme:widget");
       expect(matchStrings.length).toBeGreaterThan(1);
     });
 
     it("does NOT advance the nvd-cve cursor (a one-package walk proves nothing global)", async () => {
-      const nvd = { cvesForCpe: vi.fn().mockResolvedValue([]) } as unknown as NvdClient;
+      const nvd = { cvePages: pagesOf() } as unknown as NvdClient;
       const before = await getSyncCursor(pool, "nvd-cve");
 
       await backfillNvd(pool, nvd, { packageName: SCOPED });
@@ -338,7 +360,7 @@ describe("nvd-sync ingestion", () => {
     });
 
     it("still advances the cursor for a full backfill", async () => {
-      const nvd = { cvesForCpe: vi.fn().mockResolvedValue([]) } as unknown as NvdClient;
+      const nvd = { cvePages: pagesOf() } as unknown as NvdClient;
       const now = new Date("2025-06-01T00:00:00.000Z");
 
       await backfillNvd(pool, nvd, { now });
@@ -347,8 +369,13 @@ describe("nvd-sync ingestion", () => {
     });
 
     it("leaves the cursor untouched when a targeted backfill fails", async () => {
+      // First `next()` rejects — an upstream failure on the first page.
       const nvd = {
-        cvesForCpe: vi.fn().mockRejectedValue(new Error("upstream boom")),
+        cvePages: vi.fn(() => ({
+          [Symbol.asyncIterator]: () => ({
+            next: () => Promise.reject(new Error("upstream boom")),
+          }),
+        })),
       } as unknown as NvdClient;
       const before = await getSyncCursor(pool, "nvd-cve");
 
@@ -361,7 +388,7 @@ describe("nvd-sync ingestion", () => {
       // PKG2 shares PKG's pair. Backfilling PKG alone must still record PKG2's
       // rows — the CVE genuinely affects it.
       await seedPackage(pool, PKG2);
-      const nvd = { cvesForCpe: vi.fn().mockResolvedValue(items) } as unknown as NvdClient;
+      const nvd = { cvePages: pagesOf(items) } as unknown as NvdClient;
 
       await backfillNvd(pool, nvd, { packageName: PKG });
 

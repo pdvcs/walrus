@@ -30,7 +30,7 @@ const configSchema = z.object({
   // GCS_UPLOAD_CHUNK_BYTES x DOWNLOAD_CONCURRENCY.
   //
   // The default is deliberately the one that is safe *unpinned*: the API service can also run
-  // an on-demand sync and declares no memory limit, so 8 MiB x 8 = 64 MiB fits the Cloud Run
+  // an on-demand sync, so 8 MiB x 8 = 64 MiB fits the Cloud Run
   // 512Mi default. The sync job overrides it upward in Terraform, where the 2Gi it pins pays
   // for larger chunks. GCS requires a multiple of 256 KiB.
   GCS_UPLOAD_CHUNK_BYTES: z.coerce
