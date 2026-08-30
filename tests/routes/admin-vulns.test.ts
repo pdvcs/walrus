@@ -14,6 +14,7 @@ import { createAdminVulnsRouter } from "../../src/routes/admin-vulns.js";
 import { createApp } from "../../src/main.js";
 import type { VulnQueryResult } from "../../src/services/vuln-query.js";
 import { VulnSyncAlreadyRunningError } from "../../src/vuln/sync/lock.js";
+import { testOperatorAuth } from "../helpers/authn.js";
 
 const TEST_DB_URL =
   process.env.DATABASE_URL ?? "postgresql://walrus:walrus@localhost:5432/walrus_test";
@@ -347,7 +348,6 @@ describe("admin vuln explorer + sync (isolated)", () => {
       "suppression-panel",
       "suppression-title",
       "suppression-scope",
-      "suppression-operator",
       "suppression-reason",
       "suppression-expiry",
       "suppression-expiry-wrap",
@@ -399,12 +399,10 @@ describe("admin vuln explorer + sync (isolated)", () => {
 
     await open.dispatch("click");
     const apply = elements.get("suppression-apply")!;
-    const operator = elements.get("suppression-operator")!;
     const reason = elements.get("suppression-reason")!;
     expect(elements.get("suppression-panel")?.hidden).toBe(false);
     expect(apply.disabled).toBe(true);
 
-    operator.value = "operator@example.com";
     reason.value = "Confirmed false positive";
     await elements.get("suppression-preview")!.dispatch("click");
     expect(fetchMock.mock.calls[0][0]).toBe("/admin/v1/vuln-suppressions/preview");
@@ -412,7 +410,6 @@ describe("admin vuln explorer + sync (isolated)", () => {
       cve_id: "CVE-2023-0001",
       package_name: "openjdk",
       reason: "Confirmed false positive",
-      created_by: "operator@example.com",
     });
     expect(apply.disabled).toBe(false);
 
@@ -984,8 +981,11 @@ describe("per-version CVE badges on package detail page", () => {
   });
 
   it("shows a coloured CVE badge on the affected cached version, none on the fixed one", async () => {
-    const app = createApp();
-    const res = await request(app).get("/admin/v1/packages/openjdk");
+    const auth = testOperatorAuth();
+    const app = createApp({ operatorAuth: auth.runtime });
+    const res = await request(app)
+      .get("/admin/v1/packages/openjdk")
+      .set("authorization", `Bearer ${auth.bearer}`);
     expect(res.status).toBe(200);
     // Affected version links into the pre-filled explorer with a critical badge.
     expect(res.text).toMatch(/badge-vuln-crit/);

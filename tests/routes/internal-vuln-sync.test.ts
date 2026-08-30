@@ -4,15 +4,10 @@ import request from "supertest";
 import { createInternalRouter } from "../../src/routes/internal.js";
 import { VulnSyncAlreadyRunningError } from "../../src/vuln/sync/lock.js";
 import type { VulnSyncImpls } from "../../src/vuln/sync/index.js";
-import type { VulnBackfillJobRow } from "../../src/db/queries/vuln-backfill-jobs.js";
 
 function appWith(
   vulnSync: VulnSyncImpls,
   vulnHints?: () => Promise<string[]>,
-  backfill?: {
-    start: (since?: string) => Promise<{ job: VulnBackfillJobRow; alreadyRunning?: boolean }>;
-    get: (id: string) => Promise<VulnBackfillJobRow | null>;
-  },
   logAdminAction?: (details: Record<string, unknown>) => Promise<void>,
 ) {
   const app = express();
@@ -27,8 +22,6 @@ function appWith(
       vulnSync,
       vulnHints,
       logAdminAction,
-      startVulnBackfill: backfill?.start,
-      getVulnBackfill: backfill?.get,
     }),
   );
   return app;
@@ -117,60 +110,11 @@ describe("POST /internal/vuln-sync/:source", () => {
   });
 });
 
-const backfillJob = (status: VulnBackfillJobRow["status"] = "queued"): VulnBackfillJobRow => ({
-  id: "42",
-  status,
-  since_date: "2020-01-01",
-  cpe_pairs_total: 3,
-  cpe_pairs_done: 1,
-  error_message: null,
-  execution_name: "operations/abc",
-  started_at: null,
-  finished_at: null,
-  created_at: new Date("2026-07-11T12:00:00Z"),
-});
-
-describe("NVD backfill HTTP jobs", () => {
-  it("returns 202 with a durable job reference", async () => {
-    const start = async () => ({ job: backfillJob() });
-    const app = appWith({}, undefined, { start, get: async () => null });
-    const res = await request(app).post("/internal/vuln-backfill").send({ since: "2020-01-01" });
-    expect(res.status).toBe(202);
-    expect(res.body).toMatchObject({
-      job: { id: "42", status: "queued" },
-      status_url: "/internal/vuln-backfill/42",
-    });
-  });
-
-  it("returns 409 when a backfill is active", async () => {
-    const start = async () => ({ job: backfillJob("running"), alreadyRunning: true });
-    const res = await request(appWith({}, undefined, { start, get: async () => null }))
-      .post("/internal/vuln-backfill")
-      .send({});
-    expect(res.status).toBe(409);
-    expect(res.body.code).toBe("already_running");
-  });
-
-  it("rejects invalid since dates", async () => {
-    const start = async () => ({ job: backfillJob() });
-    const res = await request(appWith({}, undefined, { start, get: async () => null }))
-      .post("/internal/vuln-backfill")
-      .send({ since: "2026-02-30" });
-    expect(res.status).toBe(400);
-  });
-
-  it("returns job lifecycle status", async () => {
-    const get = async () => backfillJob("succeeded");
-    const res = await request(
-      appWith({}, undefined, { start: async () => ({ job: backfillJob() }), get }),
-    ).get("/internal/vuln-backfill/42");
-    expect(res.status).toBe(200);
-    expect(res.body.job).toMatchObject({
-      id: "42",
-      status: "succeeded",
-      cpe_pairs_done: 1,
-      cpe_pairs_total: 3,
-    });
+describe("retired internal backfill endpoints", () => {
+  it("leaves operator-initiated backfill to /admin/v1", async () => {
+    const app = appWith({});
+    await request(app).post("/internal/vuln-backfill").expect(404);
+    await request(app).get("/internal/vuln-backfill/42").expect(404);
   });
 });
 
@@ -284,7 +228,6 @@ describe("POST /internal/vuln-sync/:source auditing", () => {
     const app = appWith(
       { kev: async () => ({ flagged: 2 }) },
       undefined,
-      undefined,
       async (d) => void audited.push(d),
     );
 
@@ -307,7 +250,6 @@ describe("POST /internal/vuln-sync/:source auditing", () => {
           throw new Error("nvd upstream down");
         },
       },
-      undefined,
       undefined,
       async (d) => void audited.push(d),
     );
@@ -341,7 +283,6 @@ describe("POST /internal/vuln-sync/:source auditing", () => {
         }),
       },
       undefined,
-      undefined,
       async (d) => void audited.push(d),
     );
 
@@ -356,7 +297,6 @@ describe("POST /internal/vuln-sync/:source auditing", () => {
     const audited: Record<string, unknown>[] = [];
     const app = appWith(
       { nvd: async () => ({ cves: 1 }) },
-      undefined,
       undefined,
       async (d) => void audited.push(d),
     );

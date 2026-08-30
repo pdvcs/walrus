@@ -7,8 +7,6 @@ import {
   VulnSyncImpls,
 } from "../vuln/sync/index.js";
 import { VulnSyncAlreadyRunningError } from "../vuln/sync/lock.js";
-import { buildPublicationWindows } from "../vuln/sync/nvd-sync.js";
-import type { VulnBackfillJobRow } from "../db/queries/vuln-backfill-jobs.js";
 
 export interface InternalRouteDeps {
   runSync: (
@@ -29,7 +27,7 @@ export interface InternalRouteDeps {
    * same way it records an operator clicking "Sync now", or an unattended gate change
    * leaves no evidence of when it happened.
    */
-  logAdminAction?: (details: Record<string, unknown>) => Promise<void>;
+  logAdminAction?: (details: Record<string, unknown>, subject?: string) => Promise<void>;
   /**
    * Re-evaluate the critical-CVE gate after ingestion and record what changed. Runs for
    * every source, not just `cvss`: an `nvd` sync ingesting a fresh critical CVE blocks a
@@ -39,11 +37,6 @@ export interface InternalRouteDeps {
     newlyBlocked: Array<{ package_name: string; version: string; cve_id: string | null }>;
     newlyAvailable: Array<{ package_name: string; version: string }>;
   }>;
-  startVulnBackfill?: (
-    since?: string,
-    packageName?: string,
-  ) => Promise<{ job?: VulnBackfillJobRow; alreadyRunning?: boolean }>;
-  getVulnBackfill?: (id: string) => Promise<VulnBackfillJobRow | null>;
   /**
    * Sweep for packages whose CPE set has never been backfilled and start one. Scheduled, so
    * a newly tracked package acquires its CVE history without anyone remembering to ask.
@@ -125,12 +118,15 @@ export function createInternalRouter(deps: InternalRouteDeps): Router {
           }
           throw err;
         }
-        await deps.logAdminAction?.({
-          action: "vuln-sync-preview",
-          source,
-          proposals: result.proposals.length,
-          newly_blocked: result.newly_blocked.reduce((n, d) => n + d.newly_blocked.length, 0),
-        });
+        await deps.logAdminAction?.(
+          {
+            action: "vuln-sync-preview",
+            source,
+            proposals: result.proposals.length,
+            newly_blocked: result.newly_blocked.reduce((n, d) => n + d.newly_blocked.length, 0),
+          },
+          req.machinePrincipal,
+        );
         res.status(200).json({ source, dry_run: true, preview: result });
         return;
       }
@@ -144,17 +140,20 @@ export function createInternalRouter(deps: InternalRouteDeps): Router {
         ? await deps.recordAvailability?.(source).catch(() => undefined)
         : undefined;
 
-      await deps.logAdminAction?.({
-        action: "vuln-sync",
-        source,
-        outcomes,
-        ...(availability
-          ? {
-              newly_blocked: availability.newlyBlocked.length,
-              newly_available: availability.newlyAvailable.length,
-            }
-          : {}),
-      });
+      await deps.logAdminAction?.(
+        {
+          action: "vuln-sync",
+          source,
+          outcomes,
+          ...(availability
+            ? {
+                newly_blocked: availability.newlyBlocked.length,
+                newly_available: availability.newlyAvailable.length,
+              }
+            : {}),
+        },
+        req.machinePrincipal,
+      );
       const allOk = outcomes.every((o) => o.ok);
       const alreadyRunning = source !== "all" && outcomes[0]?.code === "already_running";
       const hints = deps.vulnHints ? await deps.vulnHints() : [];
@@ -162,48 +161,6 @@ export function createInternalRouter(deps: InternalRouteDeps): Router {
         source,
         outcomes,
         ...(hints.length > 0 ? { hints } : {}),
-      });
-    } catch (err) {
-      next(err);
-    }
-  });
-
-  router.post("/vuln-backfill", async (req, res, next) => {
-    try {
-      if (!deps.startVulnBackfill)
-        return void res.status(503).json({ error: "Backfill launcher unavailable" });
-      const body = (req.body ?? {}) as { since?: unknown; package?: unknown };
-      const since = typeof body.since === "string" ? body.since : undefined;
-      if (body.since !== undefined && !since)
-        return void res.status(400).json({ error: "since must be a YYYY-MM-DD string" });
-      const packageName = typeof body.package === "string" ? body.package : undefined;
-      if (body.package !== undefined && !packageName)
-        return void res.status(400).json({ error: "package must be a string" });
-      try {
-        if (since) buildPublicationWindows(since);
-      } catch (error) {
-        return void res
-          .status(400)
-          .json({ error: error instanceof Error ? error.message : String(error) });
-      }
-      let result;
-      try {
-        result = await deps.startVulnBackfill(since, packageName);
-      } catch (error) {
-        // An unbackfillable package scope is a client error, not a 500.
-        const message = error instanceof Error ? error.message : String(error);
-        if (message.includes("No CPE pairs")) return void res.status(400).json({ error: message });
-        throw error;
-      }
-      if (result.alreadyRunning)
-        return void res.status(409).json({
-          code: "already_running",
-          ...(result.job ? { job: serializeJob(result.job) } : {}),
-        });
-      if (!result.job) throw new Error("Backfill launcher did not return a job");
-      res.status(202).json({
-        job: serializeJob(result.job),
-        status_url: `/internal/vuln-backfill/${result.job.id}`,
       });
     } catch (err) {
       next(err);
@@ -231,26 +188,5 @@ export function createInternalRouter(deps: InternalRouteDeps): Router {
     }
   });
 
-  router.get("/vuln-backfill/:id", async (req, res, next) => {
-    try {
-      if (!deps.getVulnBackfill)
-        return void res.status(503).json({ error: "Backfill status unavailable" });
-      const job = await deps.getVulnBackfill(req.params.id);
-      if (!job) return void res.status(404).json({ error: "Backfill job not found" });
-      res.json({ job: serializeJob(job) });
-    } catch (err) {
-      next(err);
-    }
-  });
-
   return router;
-}
-
-function serializeJob(job: VulnBackfillJobRow) {
-  return {
-    ...job,
-    started_at: job.started_at?.toISOString() ?? null,
-    finished_at: job.finished_at?.toISOString() ?? null,
-    created_at: job.created_at.toISOString(),
-  };
 }

@@ -1,0 +1,2 @@
+# Everyone who may reach /admin/v1. Changing this file is a reviewed policy change.
+admins = ["admin"]

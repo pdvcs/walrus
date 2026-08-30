@@ -137,6 +137,52 @@ The OpenAPI spec is generated at startup from Zod schemas — it is never hand-e
 
 These show how to exercise the full pipeline from discovery through to download. Run these against a local dev server (`npm run dev`).
 
+### Operator login and API tokens
+
+Set a local password of at least 16 bytes in gitignored `.env.secrets`:
+
+```dotenv
+WALRUS_ADMIN_PASSWORD=<your-local-password>
+```
+
+Browse to `http://localhost:8080/`, choose **Log in as admin**, and use `admin` with that password.
+Successful browser login opens `/admin/v1/`. The admin navigation exposes **API token**, which
+mints a new bearer credential and displays it once, and **Log out**, which clears the browser
+cookie. Browser sessions use an HttpOnly cookie scoped to `/admin/v1`. For curl, prompt without
+putting the password in shell history, request a non-renewing bearer credential, and then unset it:
+
+```bash
+read -rsp 'Walrus admin password: ' WALRUS_LOGIN_PASSWORD; echo
+export WALRUS_ADMIN_TOKEN="$(curl -fsS http://localhost:8080/admin/v1/login \
+  -H 'Content-Type: application/json' \
+  --data-binary "$(jq -nc --arg password "$WALRUS_LOGIN_PASSWORD" \
+    '{username:"admin", password:$password}')" | jq -r .token)"
+unset WALRUS_LOGIN_PASSWORD
+alias walrus-admin-curl='curl -H "Authorization: Bearer ${WALRUS_ADMIN_TOKEN}"'
+```
+
+Production has no auth-disable switch. It requires `WALRUS_ADMIN_PASSWORD`, a session secret of at
+least 32 bytes, a non-empty `config/admins.toml`, and the internal OIDC audience/principal settings.
+Session-key rotation accepts `WALRUS_SESSION_SECRET_PREVIOUS`; raise `WALRUS_SESSION_EPOCH` for a
+global logout. Browser cookies are HttpOnly, SameSite=Lax, Secure in production, and scoped to
+`/admin/v1`; they renew after half the two-hour TTL but never beyond the eight-hour login cap.
+Bearer tokens never renew. Logout only clears the browser cookie because sessions are stateless;
+remove the subject from the roster on redeploy or raise the epoch when revocation cannot wait for
+expiry.
+
+Adopters can set `WALRUS_AUTHN_PROVIDER=/app/ext/directory-authn.js` to load one external provider.
+The module exports an `AuthnProvider` (`apiVersion: 1`); its optional Zod `configSchema` receives the
+whole environment and `init()` runs during boot. A provider returning `unavailable` never falls
+back to the password provider. Deliver the compiled module and reviewed roster in a downstream
+image:
+
+```dockerfile
+FROM ghcr.io/example/walrus:0.3.0
+COPY ext /app/ext
+COPY config/admins.toml /app/config/admins.toml
+ENV WALRUS_AUTHN_PROVIDER=/app/ext/directory-authn.js
+```
+
 ### 1. Trigger a sync and watch it run
 
 Start a sync for a single package:
@@ -245,7 +291,8 @@ For a new production deployment:
 2. Start the full-history NVD backfill:
 
    ```bash
-   curl -fsS -X POST "$WALRUS_URL/internal/vuln-backfill" \
+   curl -fsS -X POST "$WALRUS_URL/admin/v1/vuln-backfill" \
+     -H "Authorization: Bearer $WALRUS_ADMIN_TOKEN" \
      -H 'Content-Type: application/json' \
      -d '{}' | tee /tmp/walrus-backfill.json | jq .
    ```
@@ -257,7 +304,8 @@ For a new production deployment:
 
    ```bash
    STATUS_URL=$(jq -r '.status_url' /tmp/walrus-backfill.json)
-   curl -fsS "$WALRUS_URL$STATUS_URL" | jq '.job | {
+   curl -fsS "$WALRUS_URL$STATUS_URL" \
+     -H "Authorization: Bearer $WALRUS_ADMIN_TOKEN" | jq '.job | {
      status, cpe_pairs_done, cpe_pairs_total, started_at, finished_at, error_message
    }'
    ```
@@ -296,18 +344,18 @@ API clients use the same handlers:
 ```bash
 # Preview (no write)
 curl -sS -X POST "$WALRUS_URL/admin/v1/vuln-suppressions/preview" \
-  -H 'Content-Type: application/json' \
-  -d '{"cve_id":"CVE-2099-0001","package_name":"openjdk","reason":"Confirmed mis-attribution","created_by":"operator@example.com"}' | jq .
+  -H 'Content-Type: application/json' -H "Authorization: Bearer $WALRUS_ADMIN_TOKEN" \
+  -d '{"cve_id":"CVE-2099-0001","package_name":"openjdk","reason":"Confirmed mis-attribution"}' | jq .
 
 # Apply the approved package-scoped assertion
 curl -sS -X POST "$WALRUS_URL/admin/v1/vuln-suppressions" \
-  -H 'Content-Type: application/json' \
-  -d '{"cve_id":"CVE-2099-0001","package_name":"openjdk","reason":"Confirmed mis-attribution","created_by":"operator@example.com"}' | jq .
+  -H 'Content-Type: application/json' -H "Authorization: Bearer $WALRUS_ADMIN_TOKEN" \
+  -d '{"cve_id":"CVE-2099-0001","package_name":"openjdk","reason":"Confirmed mis-attribution"}' | jq .
 
 # Preview revocation, then apply it with the same body
 curl -sS -X POST "$WALRUS_URL/admin/v1/vuln-suppressions/42/revoke/preview" \
-  -H 'Content-Type: application/json' \
-  -d '{"reason":"Upstream attribution corrected","revoked_by":"operator@example.com"}' | jq .
+  -H 'Content-Type: application/json' -H "Authorization: Bearer $WALRUS_ADMIN_TOKEN" \
+  -d '{"reason":"Upstream attribution corrected"}' | jq .
 
 # Inspect the create/revoke audit trail; optionally filter by cve_id
 curl -sS "$WALRUS_URL/admin/v1/vuln-suppressions/audit?limit=50" | jq .

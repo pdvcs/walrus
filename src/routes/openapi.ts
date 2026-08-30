@@ -17,6 +17,7 @@ import {
   VulnProductResponseSchema,
   CveDetailResponseSchema,
   PackageVulnsResponseSchema,
+  LandingPageResponseSchema,
 } from "./schemas.js";
 
 const registry = new OpenAPIRegistry();
@@ -39,6 +40,20 @@ const platformQueryParams = z.object({
 });
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/",
+  summary: "Walrus landing page",
+  operationId: "landingPage",
+  tags: ["Utility"],
+  responses: {
+    200: {
+      description: "Public landing page with version and service entry points",
+      content: { "text/html": { schema: LandingPageResponseSchema } },
+    },
+  },
+});
 
 registry.registerPath({
   method: "get",

@@ -38,6 +38,24 @@ resource "google_secret_manager_secret_iam_member" "walrus_api_secret" {
   member    = "serviceAccount:${google_service_account.walrus_api.email}"
 }
 
+resource "google_secret_manager_secret_iam_member" "walrus_api_session_secret" {
+  secret_id = google_secret_manager_secret.session_secret.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.walrus_api.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "walrus_api_previous_session_secret" {
+  secret_id = google_secret_manager_secret.session_secret_previous.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.walrus_api.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "walrus_api_admin_password" {
+  secret_id = google_secret_manager_secret.admin_password.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.walrus_api.email}"
+}
+
 # walrus-scheduler: Cloud Run Invoker
 resource "google_cloud_run_v2_service_iam_member" "walrus_scheduler_invoker" {
   project  = var.project_id

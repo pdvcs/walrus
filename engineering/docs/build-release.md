@@ -136,8 +136,26 @@ makes the backfill tolerable:
 ```bash
 # .env.secrets
 WALRUS_DEV_DB_PASSWORD=…
+WALRUS_ADMIN_PASSWORD=<at-least-16-byte-local-password>
 NVD_API_KEY=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx   # request one at https://nvd.nist.gov/developers/request-an-api-key
 ```
+
+Operator routes are always authenticated. For local curl examples, obtain a bearer token from
+JSON login and retain it only in the current shell:
+
+```bash
+read -rsp 'Walrus admin password: ' WALRUS_LOGIN_PASSWORD; echo
+export WALRUS_ADMIN_TOKEN="$(curl -fsS "$WALRUS_URL/admin/v1/login" \
+  -H 'Content-Type: application/json' \
+  --data-binary "$(jq -nc --arg password "$WALRUS_LOGIN_PASSWORD" \
+    '{username:"admin", password:$password}')" | jq -r .token)"
+unset WALRUS_LOGIN_PASSWORD
+```
+
+Production injects `WALRUS_ADMIN_PASSWORD`, `WALRUS_SESSION_SECRET`, and the previous rotation key
+from Secret Manager. The reviewed `config/admins.toml` is the authorization source. Never put
+passwords or session keys in Terraform variables/state; `infra/scripts/deploy.sh` adds secret
+versions before applying the Cloud Run references.
 
 Keyless operation works but is ~10× slower; the backfill will still complete.
 
@@ -147,8 +165,8 @@ Populate historical CVEs for every configured CPE pair. Run once after first dep
 adding new packages/CPEs):
 
 ```bash
-curl -X POST "$WALRUS_URL/internal/vuln-backfill" -H 'Content-Type: application/json' -d '{}'
-curl -X POST "$WALRUS_URL/internal/vuln-backfill" -H 'Content-Type: application/json' -d '{"since":"2015-01-01"}'
+curl -X POST "$WALRUS_URL/admin/v1/vuln-backfill" -H "Authorization: Bearer $WALRUS_ADMIN_TOKEN" -H 'Content-Type: application/json' -d '{}'
+curl -X POST "$WALRUS_URL/admin/v1/vuln-backfill" -H "Authorization: Bearer $WALRUS_ADMIN_TOKEN" -H 'Content-Type: application/json' -d '{"since":"2015-01-01"}'
 ```
 
 The dated form sends paired `pubStartDate`/`pubEndDate` parameters in adjacent windows no longer
@@ -213,12 +231,12 @@ rather than on any change they made. `/api/v1/packages/:name/vulns` shows which 
 responsible, and `/admin/v1/vulns` → CVSS enrichment (or `dry_run` on the API) previews what a
 run would block before it runs.
 
-Every `/internal/vuln-sync/:source` trigger — success or failure — is written to `admin_actions`
-with `performed_by = 'internal'`, so an unattended gate change is distinguishable from an
-operator's click, which leaves `performed_by` null:
+Every `/internal/vuln-sync/:source` invocation is written to `admin_actions` with the verified
+scheduler service-account subject, so an unattended gate change is distinguishable from an
+operator's click, which records the authenticated operator subject:
 
 ```sql
-SELECT created_at, coalesce(performed_by, 'admin UI') AS by, details
+SELECT created_at, performed_by AS by, details
 FROM admin_actions WHERE action_type = 'vuln-sync' ORDER BY id DESC LIMIT 20;
 ```
 
@@ -311,7 +329,8 @@ package trigger a fresh backfill.
 To force one package immediately rather than waiting for the sweep:
 
 ```bash
-curl -X POST "$WALRUS_URL/internal/vuln-backfill" \
+curl -X POST "$WALRUS_URL/admin/v1/vuln-backfill" \
+  -H "Authorization: Bearer $WALRUS_ADMIN_TOKEN" \
   -H 'Content-Type: application/json' -d '{"package":"<name>"}'
 ```
 

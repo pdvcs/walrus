@@ -77,6 +77,25 @@ const configSchema = z.object({
     .enum(["true", "false"])
     .default("true")
     .transform((v) => v === "true"),
+  WALRUS_AUTHN_PROVIDER: z.string().default("password"),
+  WALRUS_ADMIN_PASSWORD: z.string().optional(),
+  WALRUS_ADMINS_FILE: z.string().default("config/admins.toml"),
+  WALRUS_ADMIN_MATCH: z.enum(["fold", "exact"]).default("fold"),
+  WALRUS_SESSION_SECRET: z.string().optional(),
+  WALRUS_SESSION_SECRET_PREVIOUS: z.string().optional(),
+  WALRUS_SESSION_TTL_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(2 * 60 * 60),
+  WALRUS_SESSION_MAX_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(8 * 60 * 60),
+  WALRUS_SESSION_EPOCH: z.coerce.number().int().nonnegative().default(0),
+  WALRUS_INTERNAL_AUDIENCE: z.string().optional(),
+  WALRUS_INTERNAL_SERVICE_ACCOUNT: z.string().optional(),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;

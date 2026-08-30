@@ -14,6 +14,7 @@ import { getStrategy, DiscoveredVersion } from "../discovery/index.js";
 import { PackageConfigSchema, PackageConfig } from "../types/package-config.js";
 import { sortVersionsDesc } from "../common/version-utils.js";
 import { defaultCpeProbe, CpeVerifyResult } from "../vuln/cpe-verify.js";
+import { BASE_PAGE_STYLES, renderAdminNav, type AdminNavItem } from "./page-shell.js";
 
 interface VersionDetail {
   version: string;
@@ -865,6 +866,7 @@ function renderJobStatusPage(detail: JobDetail): string {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${title}</title>
   <style>
+    ${BASE_PAGE_STYLES}
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f5f5; color: #222; }
     .nav { display: flex; align-items: center; gap: 24px; background: #fff; border-bottom: 1px solid #e5e7eb; padding: 12px 24px; margin-bottom: 24px; }
@@ -1013,7 +1015,7 @@ function fmtMs(ms: number): string {
 
 export function renderSharedHtml(
   title: string,
-  activeNav: "packages" | "jobs" | "validate" | "vulns",
+  activeNav: AdminNavItem,
   body: string,
   scripts = "",
   rawTail = "",
@@ -1026,6 +1028,7 @@ export function renderSharedHtml(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${e(title)} — Walrus Admin</title>
   <style>
+    ${BASE_PAGE_STYLES}
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f5f5; color: #222; }
     .wrap { max-width: 1100px; margin: 0 auto; padding: 24px; }
@@ -1118,18 +1121,6 @@ ${scripts}
 </script>${rawTail}
 </body>
 </html>`;
-}
-
-function renderAdminNav(activeNav: "packages" | "jobs" | "validate" | "vulns"): string {
-  return `<nav class="nav">
-    <span class="brand">Walrus</span>
-    <a href="/admin/v1/"${activeNav === "packages" ? ' class="active"' : ""}>Packages</a>
-    <a href="/admin/v1/jobs"${activeNav === "jobs" ? ' class="active"' : ""}>Jobs</a>
-    <a href="/admin/v1/validate"${activeNav === "validate" ? ' class="active"' : ""}>Validate TOML</a>
-    <a href="/admin/v1/vulns"${activeNav === "vulns" ? ' class="active"' : ""}>Vulnerabilities</a>
-    <a href="/api">API Docs</a>
-    <a href="/app/status">Status</a>
-  </nav>`;
 }
 
 function computeRetentionPlan(

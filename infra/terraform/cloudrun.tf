@@ -63,10 +63,45 @@ resource "google_cloud_run_v2_service" "walrus" {
         value = google_cloud_run_v2_job.vuln_backfill.name
       }
       env {
+        name  = "WALRUS_INTERNAL_AUDIENCE"
+        value = var.internal_oidc_audience
+      }
+      env {
+        name  = "WALRUS_INTERNAL_SERVICE_ACCOUNT"
+        value = google_service_account.walrus_scheduler.email
+      }
+      env {
         name = "DATABASE_URL"
         value_source {
           secret_key_ref {
             secret  = google_secret_manager_secret.database_url.secret_id
+            version = "latest"
+          }
+        }
+      }
+      env {
+        name = "WALRUS_SESSION_SECRET"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.session_secret.secret_id
+            version = "latest"
+          }
+        }
+      }
+      env {
+        name = "WALRUS_SESSION_SECRET_PREVIOUS"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.session_secret_previous.secret_id
+            version = "latest"
+          }
+        }
+      }
+      env {
+        name = "WALRUS_ADMIN_PASSWORD"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.admin_password.secret_id
             version = "latest"
           }
         }

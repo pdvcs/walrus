@@ -15,6 +15,7 @@ COPY --from=builder /app/dist ./dist
 COPY src/db/migrations ./dist/db/migrations
 COPY src/routes/api-docs.md ./dist/routes/api-docs.md
 COPY packages ./packages
+COPY config ./config
 USER node
 EXPOSE 8080
 CMD ["node", "dist/main.js"]

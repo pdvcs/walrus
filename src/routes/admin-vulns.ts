@@ -27,7 +27,7 @@ export interface AdminVulnsRouteDeps {
   getDataFreshness: () => Promise<DataFreshness>;
   getSyncStatus: () => Promise<VulnSyncStatus>;
   vulnSyncImpls: VulnSyncImpls;
-  logAdminAction: (details: Record<string, unknown>) => Promise<void>;
+  logAdminAction: (details: Record<string, unknown>, subject?: string) => Promise<void>;
   /** Record gate transitions after an admin-triggered sync, exactly as /internal does. */
   recordAvailability?: (source: string) => Promise<{
     newlyBlocked: Array<{ package_name: string; version: string; cve_id: string | null }>;
@@ -136,12 +136,15 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
         }
         // Logged like any other admin action even though nothing was written — who
         // previewed a gate change, and when, is part of the audit trail.
-        await deps.logAdminAction({
-          action: "vuln-sync-preview",
-          source,
-          proposals: result.proposals.length,
-          newly_blocked: result.newly_blocked.reduce((n, d) => n + d.newly_blocked.length, 0),
-        });
+        await deps.logAdminAction(
+          {
+            action: "vuln-sync-preview",
+            source,
+            proposals: result.proposals.length,
+            newly_blocked: result.newly_blocked.reduce((n, d) => n + d.newly_blocked.length, 0),
+          },
+          req.auth?.subject,
+        );
         res.status(200).json({ source, dry_run: true, preview: result });
         return;
       }
@@ -150,17 +153,20 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
       const availability = outcomes.some((o: SourceOutcome) => o.ok)
         ? await deps.recordAvailability?.(source).catch(() => undefined)
         : undefined;
-      await deps.logAdminAction({
-        action: "vuln-sync",
-        source,
-        outcomes,
-        ...(availability
-          ? {
-              newly_blocked: availability.newlyBlocked.length,
-              newly_available: availability.newlyAvailable.length,
-            }
-          : {}),
-      });
+      await deps.logAdminAction(
+        {
+          action: "vuln-sync",
+          source,
+          outcomes,
+          ...(availability
+            ? {
+                newly_blocked: availability.newlyBlocked.length,
+                newly_available: availability.newlyAvailable.length,
+              }
+            : {}),
+        },
+        req.auth?.subject,
+      );
       const wantsHtml = req.headers.accept?.includes("text/html");
       const alreadyRunning = source !== "all" && outcomes[0]?.code === "already_running";
       if (wantsHtml) {
@@ -180,7 +186,7 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
 
   router.post("/vuln-suppressions/preview", async (req, res, next) => {
     try {
-      const parsed = parseSuppressionBody(req.body);
+      const parsed = parseSuppressionBody(req.body, req.auth?.subject);
       if (!parsed.ok) return void res.status(400).json({ error: parsed.error });
       const existenceError = await validateSuppressionScope(deps, parsed.input);
       if (existenceError) return void res.status(404).json({ error: existenceError });
@@ -208,7 +214,7 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
 
   router.post("/vuln-suppressions", async (req, res, next) => {
     try {
-      const parsed = parseSuppressionBody(req.body);
+      const parsed = parseSuppressionBody(req.body, req.auth?.subject);
       if (!parsed.ok) return void res.status(400).json({ error: parsed.error });
       const existenceError = await validateSuppressionScope(deps, parsed.input);
       if (existenceError) return void res.status(404).json({ error: existenceError });
@@ -234,7 +240,7 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
     try {
       const id = positiveInteger(req.params.id);
       if (id === null) return void res.status(400).json({ error: "Invalid suppression id" });
-      const parsed = parseRevocationBody(req.body);
+      const parsed = parseRevocationBody(req.body, req.auth?.subject);
       if (!parsed.ok) return void res.status(400).json({ error: parsed.error });
       const preview = await deps.previewSuppressionRevocation(id);
       if (!preview) return void res.status(404).json({ error: "Suppression not found" });
@@ -248,7 +254,7 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
     try {
       const id = positiveInteger(req.params.id);
       if (id === null) return void res.status(400).json({ error: "Invalid suppression id" });
-      const parsed = parseRevocationBody(req.body);
+      const parsed = parseRevocationBody(req.body, req.auth?.subject);
       if (!parsed.ok) return void res.status(400).json({ error: parsed.error });
       const suppression = await deps.revokeSuppression({ id, ...parsed.input });
       if (!suppression) return void res.status(404).json({ error: "Suppression not found" });
@@ -297,12 +303,15 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
           .status(409)
           .json({ code: "already_running", ...(result.job ? { job: result.job } : {}) });
       if (!result.job) throw new Error("Backfill launcher did not return a job");
-      await deps.logAdminAction({
-        action: "vuln-backfill",
-        since,
-        package: packageName,
-        job_id: result.job.id,
-      });
+      await deps.logAdminAction(
+        {
+          action: "vuln-backfill",
+          since,
+          package: packageName,
+          job_id: result.job.id,
+        },
+        req.auth?.subject,
+      );
       res
         .status(202)
         .json({ job: result.job, status_url: `/admin/v1/vuln-backfill/${result.job.id}` });
@@ -450,10 +459,9 @@ function renderExplorer(ctx: {
       <h2 id="suppression-title">CVE suppression</h2>
       <p id="suppression-scope" class="meta"></p>
       <div class="note note-warn">This changes what <code>/download</code> serves. Apply only after
-        the team's six-eyes review and formal approval. The operator and reason are written to the
+        the team's six-eyes review and formal approval. Your authenticated identity and reason are written to the
         database audit trail.</div>
       <div class="suppression-fields">
-        <label>Operator <input id="suppression-operator" autocomplete="username" required></label>
         <label>Reason <textarea id="suppression-reason" rows="3" required></textarea></label>
         <label id="suppression-expiry-wrap">Expires at (optional)
           <input id="suppression-expiry" type="datetime-local">
@@ -759,7 +767,6 @@ function renderExplorer(ctx: {
     const suppressionPanel = document.getElementById('suppression-panel');
     const suppressionTitle = document.getElementById('suppression-title');
     const suppressionScope = document.getElementById('suppression-scope');
-    const suppressionOperator = document.getElementById('suppression-operator');
     const suppressionReason = document.getElementById('suppression-reason');
     const suppressionExpiry = document.getElementById('suppression-expiry');
     const suppressionExpiryWrap = document.getElementById('suppression-expiry-wrap');
@@ -778,16 +785,14 @@ function renderExplorer(ctx: {
 
     function suppressionPayload() {
       const reason = suppressionReason.value.trim();
-      const operator = suppressionOperator.value.trim();
-      if (!reason || !operator) throw new Error('Operator and reason are required');
+      if (!reason) throw new Error('Reason is required');
       if (suppressionState.mode === 'revoke') {
-        return { reason: reason, revoked_by: operator };
+        return { reason: reason };
       }
       const payload = {
         cve_id: suppressionState.cve,
         package_name: suppressionState.packageName,
         reason: reason,
-        created_by: operator,
       };
       if (suppressionExpiry.value) payload.expires_at = new Date(suppressionExpiry.value).toISOString();
       return payload;
@@ -855,7 +860,7 @@ function renderExplorer(ctx: {
         suppressionPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       });
     });
-    [suppressionOperator, suppressionReason, suppressionExpiry].forEach(inputEl => {
+    [suppressionReason, suppressionExpiry].forEach(inputEl => {
       inputEl.addEventListener('input', lockSuppressionApply);
     });
     suppressionCancel.addEventListener('click', () => {
@@ -1118,13 +1123,14 @@ function requiredTrimmedString(
 
 function parseSuppressionBody(
   body: unknown,
+  authenticatedSubject?: string,
 ): { ok: true; input: CreateCveSuppressionInput } | { ok: false; error: string } {
   const value = (body ?? {}) as Record<string, unknown>;
   const cve = requiredTrimmedString(value.cve_id, "cve_id");
   if (!cve.ok) return cve;
   const reason = requiredTrimmedString(value.reason, "reason");
   if (!reason.ok) return reason;
-  const createdBy = requiredTrimmedString(value.created_by, "created_by");
+  const createdBy = requiredTrimmedString(authenticatedSubject ?? value.created_by, "created_by");
   if (!createdBy.ok) return createdBy;
 
   let packageName: string | null = null;
@@ -1166,11 +1172,12 @@ function parseSuppressionBody(
 
 function parseRevocationBody(
   body: unknown,
+  authenticatedSubject?: string,
 ): { ok: true; input: { reason: string; revoked_by: string } } | { ok: false; error: string } {
   const value = (body ?? {}) as Record<string, unknown>;
   const reason = requiredTrimmedString(value.reason, "reason");
   if (!reason.ok) return reason;
-  const revokedBy = requiredTrimmedString(value.revoked_by, "revoked_by");
+  const revokedBy = requiredTrimmedString(authenticatedSubject ?? value.revoked_by, "revoked_by");
   if (!revokedBy.ok) return revokedBy;
   return { ok: true, input: { reason: reason.value, revoked_by: revokedBy.value } };
 }

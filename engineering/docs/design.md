@@ -178,15 +178,22 @@ hops. In the future, this will allow us to add identity-awareness (authn and aut
 
 ### Admin API (`/admin/v1/`) — operator tooling
 
+- Public `/` landing page with running version, health/status/docs links, and the operator-login entry point
+- Form login through the configured authentication provider; signed browser cookies and API bearer tokens
+- Authorization against the code-reviewed `config/admins.toml` roster on every request
+- Shared admin navigation for one-time bearer-token minting and browser logout
 - Force sync (with optional `?dry_run=true`)
 - Redownload a specific artifact
 - Remove a version's artifacts
 - Enable/disable a package
 - View sync job history
 
-### Internal API (`/internal/sync`) — called by Cloud Scheduler
+### Internal API (`/internal/`) — called by Cloud Scheduler
 
-Triggers the sync worker on a 6-hour schedule. Not exposed to the public network.
+Machine routes verify the Google-signed OIDC bearer token, exact configured audience, expiry, and
+scheduler service-account email at the mount. The public Cloud Run invoker binding is therefore
+safe at the platform layer while application authorization remains path-aware. Package sync runs
+as a Cloud Run Job; retained HTTP hooks cover vulnerability ingestion and autonomous backfill.
 
 ---
 
@@ -250,8 +257,11 @@ one in-flight check. `/app/status` adds nullable `vuln_data_freshness` (last suc
 per-source latest-attempt status, and degradations. Golden tests ported from vulncheck prove
 behavioural parity.
 
-**Out of scope (v1):** application-layer authn/authz + rate limiting, and tracking tools walrus
-doesn't serve. Cloud Run ingress/IAM remains the admin access boundary.
+**Authentication boundary (ADR-009):** Walrus owns sessions, route guards, CSRF checks, audit, and
+the reviewed administrator roster. The adopter owns credential verification through one boot-time
+`AuthnProvider`; the built-in password provider is the development/strawman implementation. This
+keeps public API/download routes anonymous while protecting operator and machine tiers in one
+publicly invokable Cloud Run service.
 
 ---
 

@@ -340,6 +340,11 @@ no privileged consumer.
 
 Interactive UI available at [/admin/v1/](/admin/v1/)
 
+All operator endpoints except `/admin/v1/login` require either the HttpOnly login cookie or an
+`Authorization: Bearer <token>` minted by JSON login or `POST /admin/v1/tokens`. The authenticated
+subject must also appear in the deployed `config/admins.toml` roster. Human-readable GETs redirect
+to login; unauthenticated API calls return `401` and authenticated non-admins return `403`.
+
 Endpoints under `/admin/v1/` provide:
 
 - Package enable/disable
@@ -675,6 +680,11 @@ failing vulnerability ingestion, stuck or disabled autonomous backfills — as
 `{ "component", "reason" }` entries. Degradations do not change `isAvailable`; empty means
 self-healing is healthy. The same list is shown as a banner on the admin UI.
 
+### GET /
+
+Public HTML landing page showing the running Walrus package version and links to operator login,
+API documentation, deployment health, detailed application status, and the OpenAPI contract.
+
 ### GET /api
 
 This page. Returns raw Markdown by default; send `Accept: text/html` for rendered HTML.
@@ -685,9 +695,9 @@ OpenAPI 3.1.0 specification for this API. [View](/openapi.json)
 
 ### Start an NVD backfill (operator API)
 
-`POST /internal/vuln-backfill` accepts JSON `{ "since": "YYYY-MM-DD", "package": "<name>" }` (both
+`POST /admin/v1/vuln-backfill` accepts JSON `{ "since": "YYYY-MM-DD", "package": "<name>" }` (both
 optional) and returns `202 Accepted` with a durable job reference and status URL. Poll
-`GET /internal/vuln-backfill/:id` for lifecycle timestamps and CPE-pair progress. A currently
+`GET /admin/v1/vuln-backfill/:id` for lifecycle timestamps and CPE-pair progress. A currently
 queued/running backfill returns `409` with `code: "already_running"`.
 
 `package` restricts the walk to that package's CPE pairs — minutes instead of hours when you have

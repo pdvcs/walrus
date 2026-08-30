@@ -95,6 +95,17 @@ function badges(overrides: Partial<Record<string, unknown>> = {}) {
 }
 
 describe("admin routes", () => {
+  it("exposes API-token and logout controls in the shared admin navigation", async () => {
+    const response = await request(createTestApp(baseDeps())).get("/admin/v1/").expect(200);
+    expect(response.text).toContain(
+      '<form method="post" action="/admin/v1/tokens"><button class="nav-link" type="submit">API token</button></form>',
+    );
+    expect(response.text).toContain(
+      '<form method="post" action="/admin/v1/logout"><button class="nav-link" type="submit">Log out</button></form>',
+    );
+    expect(response.text).toContain('class="brand" href="/">Walrus</a>');
+  });
+
   it("starts a targeted historical backfill", async () => {
     const deps = baseDeps();
     deps.listConfiguredPackages = vi.fn().mockReturnValue(["python"]);

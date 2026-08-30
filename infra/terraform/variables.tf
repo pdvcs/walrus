@@ -37,6 +37,12 @@ variable "cloud_run_min_instances" {
   default     = 1
 }
 
+variable "internal_oidc_audience" {
+  description = "Exact OIDC audience shared by Cloud Scheduler and the /internal verifier"
+  type        = string
+  default     = "walrus-internal"
+}
+
 variable "sync_schedule" {
   description = "Cron schedule for Cloud Scheduler sync job (UTC)"
   type        = string

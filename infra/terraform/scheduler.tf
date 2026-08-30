@@ -101,7 +101,7 @@ resource "google_cloud_scheduler_job" "vuln_sync" {
 
     oidc_token {
       service_account_email = google_service_account.walrus_scheduler.email
-      audience              = google_cloud_run_v2_service.walrus.uri
+      audience              = var.internal_oidc_audience
     }
   }
 }
@@ -130,7 +130,7 @@ resource "google_cloud_scheduler_job" "vuln_backfill_auto" {
 
     oidc_token {
       service_account_email = google_service_account.walrus_scheduler.email
-      audience              = google_cloud_run_v2_service.walrus.uri
+      audience              = var.internal_oidc_audience
     }
   }
 }

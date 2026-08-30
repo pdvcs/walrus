@@ -307,6 +307,40 @@ New deps: `fuzzball`, `semver` (runtime); `fast-check` (dev). `pg_trgm` extensio
   banner reads that endpoint. Successful and failed database probe results are cached for 60
   seconds, with concurrent health requests sharing one in-flight probe.
 
+**Wave 15 — Operator and machine authentication**
+
+- **WAL-81 (Added):** A dependency-free HMAC-SHA256 session primitive supports distinct cookie
+  and bearer credentials, current/previous key rotation, epoch revocation, clock-skew tolerance,
+  short renewable browser expiry, and an immutable absolute session cap.
+- **WAL-82/WAL-83 (Added):** Authentication is resolved once at boot through a provider contract;
+  the built-in constant-time password provider fails unsafe production configuration, while a
+  strict reviewed TOML roster authorizes opaque provider subjects on every request.
+- **WAL-82 (Changed):** The built-in provider now requires a password of at least 16 bytes in every
+  environment. Local development reads it from gitignored `.env.secrets`; no working credential is
+  committed in `.env.local` or embedded in application code.
+- **WAL-87 (Added):** Adopters can load an authentication provider by module path with API-version,
+  provider-owned environment schema, and initialization checks that fail startup cleanly.
+- **WAL-84/WAL-85 (Added):** `/admin/v1` now has form and JSON login, kind-bound signed cookies
+  and bearer tokens, roster authorization, safe redirects, origin checks, bounded login backoff,
+  and authenticated-subject audit attribution. Suppression actors can no longer be caller-forged.
+- **WAL-86 (Added):** `/internal` verifies Google OIDC signature, issuer, expiry, exact audience,
+  and scheduler principal at one mount. Human backfill start/status routes now exist only under
+  `/admin/v1`; the autonomous machine sweep remains internal.
+- **WAL-88 (Changed):** Cloud Run receives admin/session secrets from Secret Manager and shares an
+  explicit OIDC audience with Scheduler. Deployment now applies secret references before rolling
+  out the boot-validating image; operator, provider-delivery, token, and rotation runbooks are
+  documented. Live Terraform/GCP validation remains a DevOps manual gate.
+- **WAL-89 (Security):** Security-tier tests now enumerate the routers actually mounted by the
+  application. Login success, invalid credentials, forbidden subjects, provider unavailability,
+  and thrown provider failures are audited without passwords; runtime boot, response timing,
+  independent username/IP throttling, cookie CSRF/logout, session format, and OIDC/JWKS failure
+  and cache behavior have expanded regression coverage. Auth and static infra checks now run in
+  the unit-test lane.
+- **WAL-90 (Added):** `/` is now a public Walrus landing page showing the running package version
+  and links to admin login, docs, health, status, and OpenAPI. Login and one-time bearer-token
+  pages share responsive Walrus page chrome, while every admin page now exposes API-token and
+  logout actions in its navigation. Logout returns to an explicit signed-out state.
+
 ## Version 0.1.0: Initial Release
 
 Initial Walrus release: a configuration-driven package ingress engine that discovers, caches, and

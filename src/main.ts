@@ -1,4 +1,5 @@
 import express from "express";
+import type { RequestHandler } from "express";
 import fs from "fs";
 import path from "path";
 import packageMetadata from "../package.json";
@@ -49,6 +50,8 @@ import { getDataFreshness, getVulnSyncStatus } from "./db/queries/vuln-sync-stat
 import { logUnresolvedQuery } from "./db/queries/unresolved-queries.js";
 import { createOpenApiRouter } from "./routes/openapi.js";
 import { createHealthRouter } from "./routes/health.js";
+import { renderLandingPage } from "./routes/page-shell.js";
+import { LandingPageResponseSchema } from "./routes/schemas.js";
 import {
   getPackage,
   listPackages,
@@ -95,6 +98,10 @@ import {
   previewCveSuppressionRevocation,
   revokeAuditedCveSuppression,
 } from "./services/cve-suppression-service.js";
+import { installOperatorAuth } from "./authn/operator.js";
+import { loadOperatorAuthRuntime, type OperatorAuthRuntime } from "./authn/runtime.js";
+import { loadMachineAuth } from "./authn/google-oidc.js";
+import { createAuthAuditSinks } from "./authn/audit.js";
 
 const storage = createStorageBackend();
 const vulnSyncImpls = createVulnSyncImpls(pool);
@@ -236,6 +243,8 @@ async function startVulnBackfill(since?: string, packageName?: string) {
 }
 
 export interface CreateAppOptions {
+  operatorAuth?: OperatorAuthRuntime;
+  internalAuth?: RequestHandler;
   health?: {
     startedAt?: Date;
     now?: () => Date;
@@ -243,25 +252,52 @@ export interface CreateAppOptions {
   };
 }
 
+export const SECURITY_TIER_MOUNTS = [
+  { tier: "operator", prefix: "/admin/v1" },
+  { tier: "machine", prefix: "/internal" },
+  { tier: "public", prefix: "/" },
+] as const;
+
+export type SecurityTier = (typeof SECURITY_TIER_MOUNTS)[number]["tier"];
+export interface SecurityTierMount {
+  tier: SecurityTier;
+  prefix: string;
+  router: express.Router;
+}
+
 export function createApp(options: CreateAppOptions = {}): express.Express {
   const app = express();
+  // Cloud Run terminates TLS and supplies the original scheme/client address through one
+  // trusted proxy hop. Origin checks and login throttling must see those external values.
+  app.set("trust proxy", 1);
   app.set("json spaces", 2);
   app.use(express.json());
   // The admin UI posts plain HTML forms. Without this, every form field is silently dropped and
   // the handler sees an empty body — which turned "Backfill this package" into an unscoped
   // backfill of all 11 packages, since a missing `package` means "everything" (WAL-71).
   app.use(express.urlencoded({ extended: false }));
-  app.use("/static", express.static(path.join(process.cwd(), "dist/public")));
+  const publicRouter = express.Router();
+  publicRouter.use("/static", express.static(path.join(process.cwd(), "dist/public")));
 
-  app.get("/", (_req, res) => {
+  const operatorRouter = express.Router();
+  if (options.operatorAuth) {
+    installOperatorAuth(operatorRouter, options.operatorAuth);
+  } else {
+    operatorRouter.use((_req, res) =>
+      res.status(503).json({ error: "Operator authentication unavailable" }),
+    );
+  }
+  publicRouter.get("/", (_req, res) => {
+    res
+      .type("html")
+      .send(LandingPageResponseSchema.parse(renderLandingPage(packageMetadata.version)));
+  });
+
+  publicRouter.get("/admin", (_req, res) => {
     res.redirect("/admin/v1/");
   });
 
-  app.get("/admin", (_req, res) => {
-    res.redirect("/admin/v1/");
-  });
-
-  app.use(
+  publicRouter.use(
     createHealthRouter({
       metadata: { gitUrl: packageMetadata.gitUrl, version: packageMetadata.version },
       startedAt: options.health?.startedAt ?? applicationStartedAt,
@@ -282,8 +318,8 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     }),
   );
 
-  app.use("/api", createApiDocsRouter());
-  app.use("/openapi.json", createOpenApiRouter());
+  publicRouter.use("/api", createApiDocsRouter());
+  publicRouter.use("/openapi.json", createOpenApiRouter());
 
   const vulnQueryDeps: VulnQueryDeps = {
     resolvePackage: (query) => resolvePackage(pool, query),
@@ -292,7 +328,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     logUnresolved: (query, top) => logUnresolvedQuery(pool, query, top),
   };
 
-  app.use(
+  publicRouter.use(
     "/api/v1/vulns",
     createVulnsRouter({
       ...vulnQueryDeps,
@@ -301,15 +337,19 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     }),
   );
 
-  app.use(
-    "/admin/v1",
+  operatorRouter.use(
     createAdminVulnsRouter({
       queryVulns: (product, version) => queryVulns(vulnQueryDeps, { product, version }),
       getDataFreshness: () => getDataFreshness(pool),
       getSyncStatus: () => getVulnSyncStatus(pool),
       getHints: () => getVulnHints(pool, { autoBackfillEnabled: config.VULN_AUTO_BACKFILL }),
       vulnSyncImpls,
-      logAdminAction: (details) => insertAdminAction(pool, { action_type: "vuln-sync", details }),
+      logAdminAction: (details, subject) =>
+        insertAdminAction(pool, {
+          action_type: "vuln-sync",
+          performed_by: subject,
+          details,
+        }),
       recordAvailability: (source) =>
         recordAvailabilityTransitions(pool, { source, trigger: "admin" }),
       startVulnBackfill,
@@ -326,7 +366,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     }),
   );
 
-  app.use(
+  publicRouter.use(
     "/api/v1/cves",
     createCvesRouter({
       getCve: (cveId) => getCveById(pool, cveId),
@@ -335,7 +375,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     }),
   );
 
-  app.use(
+  publicRouter.use(
     "/api/v1/packages",
     createPackageVulnsRouter({
       packageExists: async (name) => (await getPackage(pool, name)) !== null,
@@ -352,7 +392,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     }),
   );
 
-  app.use(
+  publicRouter.use(
     "/api/v1/packages",
     createPackagesRouter({
       listEnabledPackages: () => listPackages(pool, true),
@@ -376,7 +416,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     }),
   );
 
-  app.use(
+  publicRouter.use(
     "/download",
     createDownloadRouter({
       getVersion: (packageName, version) => getVersion(pool, packageName, version),
@@ -387,8 +427,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     }),
   );
 
-  app.use(
-    "/admin/v1",
+  operatorRouter.use(
     createAdminRouter({
       listConfiguredPackages: () => Array.from(syncServices.keys()),
       getConfiguredPackageMeta: () =>
@@ -533,8 +572,12 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     }),
   );
 
-  app.use(
-    "/internal",
+  const internalRouter = express.Router();
+  internalRouter.use(
+    options.internalAuth ??
+      ((_req, res) => res.status(503).json({ error: "Machine authentication unavailable" })),
+  );
+  internalRouter.use(
     createInternalRouter({
       runSync: (packageName, opts) => runSync(packageName, opts),
       runSyncAll: (opts) => runSyncAll(opts),
@@ -543,16 +586,14 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       // performed_by distinguishes these from the admin UI's rows: /internal is
       // machine-triggered (Cloud Scheduler), so the trail can tell an unattended
       // gate change from one an operator made.
-      logAdminAction: (details) =>
+      logAdminAction: (details, subject) =>
         insertAdminAction(pool, {
           action_type: "vuln-sync",
-          performed_by: "internal",
+          performed_by: subject,
           details,
         }),
       recordAvailability: (source) =>
         recordAvailabilityTransitions(pool, { source, trigger: "internal" }),
-      startVulnBackfill,
-      getVulnBackfill: (id) => getVulnBackfillJob(pool, id),
       autoBackfill: async () => {
         if (!config.VULN_AUTO_BACKFILL) {
           return { enabled: false, pending: 0, started: [], deferred: [], failed: [] };
@@ -562,6 +603,14 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       },
     }),
   );
+
+  const securityTierMounts: SecurityTierMount[] = [
+    { ...SECURITY_TIER_MOUNTS[0], router: operatorRouter },
+    { ...SECURITY_TIER_MOUNTS[1], router: internalRouter },
+    { ...SECURITY_TIER_MOUNTS[2], router: publicRouter },
+  ];
+  app.locals.securityTierMounts = securityTierMounts;
+  for (const mount of securityTierMounts) app.use(mount.prefix, mount.router);
 
   app.use(
     (err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
@@ -574,23 +623,29 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
   return app;
 }
 
-const app = createApp();
-
-if (require.main === module) {
-  runMigrations()
-    .then(() => repairDerivedSortKeys())
-    .then(() => recoverInterruptedState())
-    .then(() => reconcileAllPackageVulns(pool, configs))
-    .then(() => {
-      log.info("Startup recovery complete");
-      app.listen(config.PORT, () => {
-        log.info({ port: config.PORT }, "Walrus started");
-      });
-    })
-    .catch((err) => {
-      log.error({ err }, "Startup recovery failed");
-      process.exit(1);
-    });
+async function start(): Promise<void> {
+  const authAudit = createAuthAuditSinks(pool);
+  const operatorAuth = await loadOperatorAuthRuntime(config, {
+    auditLogin: authAudit.auditLogin,
+    auditAction: authAudit.auditAction,
+  });
+  const internalAuth = loadMachineAuth(config, authAudit.auditMachine);
+  await runMigrations();
+  await repairDerivedSortKeys();
+  await recoverInterruptedState();
+  await reconcileAllPackageVulns(pool, configs);
+  const app = createApp({ operatorAuth, internalAuth });
+  log.info("Startup recovery complete");
+  app.listen(config.PORT, () => {
+    log.info({ port: config.PORT }, "Walrus started");
+  });
 }
 
-export default app;
+if (require.main === module) {
+  void start().catch((err) => {
+    log.error({ err }, "Startup recovery failed");
+    process.exit(1);
+  });
+}
+
+export default createApp;
