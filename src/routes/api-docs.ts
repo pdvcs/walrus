@@ -188,7 +188,7 @@ function renderApiDocsHtml(markdown: string): string {
     <span class="brand">Walrus</span>
     <a href="/api" style="color:#111;font-weight:700">API Docs</a>
     <a href="/admin/v1/">Admin UI</a>
-    <a href="/health">Health</a>
+    <a href="/app/status">Status</a>
   </nav>
   <div class="content">
     ${body}

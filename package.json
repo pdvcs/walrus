@@ -69,5 +69,6 @@
   },
   "engines": {
     "node": ">= 24.0.0"
-  }
+  },
+  "gitUrl": "https://github.com/pdvcs/walrus"
 }

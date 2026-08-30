@@ -243,8 +243,12 @@ availability history.
 `openapi.ts`, `Schema.parse()` before send. The `/packages/:name/vulns` endpoint is the
 headline walrus-native feature (join CVEs against cached `versions`); it powers the per-version
 CVE badges in the admin UI. Every response carries a standing disclaimer and `data_freshness`.
-`/health` gains nullable `vuln_data_freshness` (last successful runs) and per-source latest-attempt
-status. Golden tests ported from vulncheck prove behavioural parity.
+`/health` (also `/app/health`) is the deployment availability contract: package metadata,
+startup/current timestamps, a 300-second grace-period flag, and an `isAvailable` value backed by
+a PostgreSQL probe. Probe results are cached for 60 seconds and concurrent requests coalesce onto
+one in-flight check. `/app/status` adds nullable `vuln_data_freshness` (last successful runs),
+per-source latest-attempt status, and degradations. Golden tests ported from vulncheck prove
+behavioural parity.
 
 **Out of scope (v1):** application-layer authn/authz + rate limiting, and tracking tools walrus
 doesn't serve. Cloud Run ingress/IAM remains the admin access boundary.

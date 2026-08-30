@@ -1,6 +1,7 @@
 import express from "express";
 import fs from "fs";
 import path from "path";
+import packageMetadata from "../package.json";
 import { config } from "./config/index.js";
 import { log } from "./common/log.js";
 import { pool, runMigrations } from "./db/client.js";
@@ -47,7 +48,7 @@ import { getVulnProductMetadata, searchAliases } from "./db/queries/package-alia
 import { getDataFreshness, getVulnSyncStatus } from "./db/queries/vuln-sync-state.js";
 import { logUnresolvedQuery } from "./db/queries/unresolved-queries.js";
 import { createOpenApiRouter } from "./routes/openapi.js";
-import { HealthResponseSchema } from "./routes/schemas.js";
+import { createHealthRouter } from "./routes/health.js";
 import {
   getPackage,
   listPackages,
@@ -111,6 +112,7 @@ if (packageRegistry.errors.length > 0) {
 const configs = packageRegistry.configs.map((entry) => entry.config);
 const syncServices = new Map<string, SyncService>();
 const sharedDownloadService = new DownloadService(pool, storage, { maxRetries: 2 });
+const applicationStartedAt = new Date();
 
 for (const packageConfig of configs) {
   const packageDownloadService = new DownloadService(pool, storage, { maxRetries: 2 });
@@ -233,7 +235,15 @@ async function startVulnBackfill(since?: string, packageName?: string) {
   }
 }
 
-export function createApp(): express.Express {
+export interface CreateAppOptions {
+  health?: {
+    startedAt?: Date;
+    now?: () => Date;
+    checkDatabase?: () => Promise<void>;
+  };
+}
+
+export function createApp(options: CreateAppOptions = {}): express.Express {
   const app = express();
   app.set("json spaces", 2);
   app.use(express.json());
@@ -251,28 +261,26 @@ export function createApp(): express.Express {
     res.redirect("/admin/v1/");
   });
 
-  app.get("/health", async (_req, res, next) => {
-    try {
-      const [vuln_data_freshness, vuln_sync_status, degradations] = await Promise.all([
-        getDataFreshness(pool).catch(() => null),
-        getVulnSyncStatus(pool).catch(() => null),
-        // status stays "ok" when degradations exist — it is reserved for major
-        // events (PO decision 2026-08-26); degradation is reported alongside.
-        getDegradations(pool, { autoBackfillEnabled: config.VULN_AUTO_BACKFILL }).catch(() => []),
-      ]);
-      res.json(
-        HealthResponseSchema.parse({
-          status: "ok",
-          service: "walrus",
-          vuln_data_freshness,
-          vuln_sync_status,
-          degradations,
+  app.use(
+    createHealthRouter({
+      metadata: { gitUrl: packageMetadata.gitUrl, version: packageMetadata.version },
+      startedAt: options.health?.startedAt ?? applicationStartedAt,
+      now: options.health?.now,
+      checkDatabase:
+        options.health?.checkDatabase ??
+        (async () => {
+          await pool.query("SELECT 1");
         }),
-      );
-    } catch (err) {
-      next(err);
-    }
-  });
+      getStatusDetails: async () => {
+        const [vuln_data_freshness, vuln_sync_status, degradations] = await Promise.all([
+          getDataFreshness(pool).catch(() => null),
+          getVulnSyncStatus(pool).catch(() => null),
+          getDegradations(pool, { autoBackfillEnabled: config.VULN_AUTO_BACKFILL }).catch(() => []),
+        ]);
+        return { vuln_data_freshness, vuln_sync_status, degradations };
+      },
+    }),
+  );
 
   app.use("/api", createApiDocsRouter());
   app.use("/openapi.json", createOpenApiRouter());

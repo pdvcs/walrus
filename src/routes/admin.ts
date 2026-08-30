@@ -1096,10 +1096,10 @@ ${scripts}
 // health-degradation-ui:start
 // Degradation banner (PO decision 2026-08-26): walrus's vulnerability ingestion runs
 // unattended, so the admin homepage is where an operator learns it has stopped working.
-// Fed by /health's degradations array; /health keeps status "ok" for these.
+// Fed by /app/status's degradations array; degradations do not change isAvailable.
 (async () => {
   try {
-    const r = await fetch('/health');
+    const r = await fetch('/app/status');
     if (!r.ok) return;
     const d = await r.json();
     const degradations = d.degradations || [];
@@ -1128,7 +1128,7 @@ function renderAdminNav(activeNav: "packages" | "jobs" | "validate" | "vulns"): 
     <a href="/admin/v1/validate"${activeNav === "validate" ? ' class="active"' : ""}>Validate TOML</a>
     <a href="/admin/v1/vulns"${activeNav === "vulns" ? ' class="active"' : ""}>Vulnerabilities</a>
     <a href="/api">API Docs</a>
-    <a href="/health">Health</a>
+    <a href="/app/status">Status</a>
   </nav>`;
 }
 

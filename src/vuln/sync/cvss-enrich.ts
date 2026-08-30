@@ -60,7 +60,7 @@ export interface CvssEnrichResult extends Record<string, unknown> {
  * than aborting the walk — one bad id should not strand the rest.
  *
  * Real runs record their lifecycle in vuln_sync_state (start marker → success,
- * or failure on throw) so staleness degradations and /health can see this
+ * or failure on throw) so staleness degradations and /app/status can see this
  * source like any other; it is the one scheduled trigger that can newly block
  * downloads. A dry run writes nothing anywhere — that is its contract.
  */

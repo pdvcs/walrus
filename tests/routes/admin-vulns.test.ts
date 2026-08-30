@@ -442,7 +442,7 @@ describe("admin vuln explorer + sync (isolated)", () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
       json: async () => ({
-        status: "ok",
+        isAvailable: true,
         degradations: [
           {
             component: "cve-suppressions",
@@ -470,7 +470,7 @@ describe("admin vuln explorer + sync (isolated)", () => {
     });
     await execution;
 
-    expect(fetchMock).toHaveBeenCalledWith("/health");
+    expect(fetchMock).toHaveBeenCalledWith("/app/status");
     expect(banner.className).toBe("degraded-banner");
     expect(banner.innerHTML).toContain("System degraded");
     expect(banner.innerHTML).toContain("cve-suppressions");

@@ -13,10 +13,10 @@ import { countActiveCveSuppressions } from "../db/queries/cve-suppressions.js";
  * Walrus's vulnerability ingestion is autonomous (ADR-003), which means it can also stop
  * working autonomously — a deleted scheduler job, IAM drift, an upstream outage — with no
  * failing request to alert anyone. This module answers "is any part of the self-healing
- * machinery not doing its job?" so that /health and the admin homepage can show it.
+ * machinery not doing its job?" so that /app/status and the admin homepage can show it.
  *
- * Degradations deliberately do NOT flip /health's `status` away from "ok": status is
- * reserved for major events (the process cannot serve), while a degradation means walrus is
+ * Degradations deliberately do not make the application unavailable: availability is reserved
+ * for failures that stop the application serving at all, while a degradation means walrus is
  * serving but some data is going stale or some gap is not being closed. Alerting and email
  * notification are planned on top of this; until then the admin homepage banner is the
  * surface an operator sees.

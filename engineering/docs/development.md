@@ -109,8 +109,16 @@ Starts on `http://localhost:8080` with `tsx watch` (hot-reload on file changes).
 
 ```bash
 curl http://localhost:8080/health
-# {"status":"ok","service":"walrus"}
+# {"isAvailable":true,"gitUrl":"https://github.com/pdvcs/walrus","ts":"...","started":"...","inGracePeriod":true,"version":"0.2.0"}
+
+curl http://localhost:8080/app/status
+# The health fields plus vulnerability freshness, sync status, and degradations.
 ```
+
+`/app/health` is an alias of `/health`. PostgreSQL failures make the application unavailable
+after the 300-second startup grace period; operational degradations remain available separately
+under `/app/status` and do not fail the deployment health check. PostgreSQL probe results,
+including failures, are cached for 60 seconds across all three paths.
 
 ### API documentation and OpenAPI spec
 

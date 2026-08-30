@@ -6,6 +6,7 @@ import {
   CoolingOffErrorSchema,
   ErrorSchema,
   HealthResponseSchema,
+  StatusResponseSchema,
   LatestArtifactResponseSchema,
   ListGroupsResponseSchema,
   ListPackagesResponseSchema,
@@ -351,13 +352,53 @@ registry.registerPath({
 registry.registerPath({
   method: "get",
   path: "/health",
-  summary: "Health check",
+  summary: "Deployment availability check",
   operationId: "health",
   tags: ["Utility"],
   responses: {
     200: {
-      description: "Service is healthy",
+      description: "Application is available, including during its startup grace period",
       content: { "application/json": { schema: HealthResponseSchema } },
+    },
+    503: {
+      description: "Application is wholly unavailable after its startup grace period",
+      content: { "application/json": { schema: HealthResponseSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/app/health",
+  summary: "Deployment availability check alias",
+  operationId: "appHealth",
+  tags: ["Utility"],
+  responses: {
+    200: {
+      description: "Application is available, including during its startup grace period",
+      content: { "application/json": { schema: HealthResponseSchema } },
+    },
+    503: {
+      description: "Application is wholly unavailable after its startup grace period",
+      content: { "application/json": { schema: HealthResponseSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/app/status",
+  summary: "Detailed application status",
+  operationId: "appStatus",
+  tags: ["Utility"],
+  responses: {
+    200: {
+      description: "Availability plus operational degradation details",
+      content: { "application/json": { schema: StatusResponseSchema } },
+    },
+    503: {
+      description: "Application is wholly unavailable after its startup grace period",
+      content: { "application/json": { schema: StatusResponseSchema } },
     },
   },
 });

@@ -259,19 +259,19 @@ pair at the keyless 4–5 requests/30-second rate, multiplied by pagination and 
 windows, can exceed an hour. Full backfills therefore always use the asynchronous Cloud Run Job;
 the job's 24-hour timeout is the overall watchdog and its database advisory lock prevents overlap.
 
-Freshness timestamps represent the **last successful** source run. `/health` and the admin panel
-also expose the latest attempt outcome and failure time, so a failed refresh cannot make stale data
-appear current.
+Freshness timestamps represent the **last successful** source run. `/app/status` and the admin
+panel also expose the latest attempt outcome and failure time, so a failed refresh cannot make
+stale data appear current.
 
 The download gate blocks a version on **any** CVSS base score — v3, v4, or v2 — at or above 9.0,
 or a score-less CRITICAL severity (`meetsCriticalGate`, ADR-005). KEV (exploited in the wild) is
 flagged everywhere but does not block on its own — PO decision, may be revisited.
 
-**Degradation reporting.** `/health` also carries a `degradations` array: per-source staleness
+**Degradation reporting.** `/app/status` carries a `degradations` array: per-source staleness
 (NVD success older than 12h, KEV 48h, OSV 8 days), sources that are currently failing or have
-never succeeded, and stuck or disabled autonomous backfills. `status` stays `"ok"` for these —
-it is reserved for major events — so external monitors should watch `degradations` length, not
-status. The same list renders as a warning banner across the admin UI, which is currently the
+never succeeded, and stuck or disabled autonomous backfills. These do not change `isAvailable`,
+which is reserved for failures that make the application wholly unavailable. External operational
+monitors should watch `degradations` length. The same list renders as a warning banner across the admin UI, which is currently the
 surface an operator sees it on; alerting and email notification are planned on top
 (TODO — see ADR-002 Option C).
 
@@ -325,7 +325,7 @@ and suppression ID in `admin_actions`. Revocation is a separate audited action.
 
 Suppression never deletes vulnerability evidence. The CVE remains in public responses marked
 suppressed with its reason, while only the download gate ignores it. An optional expiry restores
-gating automatically. Active suppressions are counted in `/health.degradations` and the explorer
+gating automatically. Active suppressions are counted in `/app/status.degradations` and the explorer
 status strip so the list is regularly revisited.
 
 ```bash

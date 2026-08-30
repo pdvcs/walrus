@@ -349,7 +349,7 @@ export const PackageVulnsResponseSchema = z
   })
   .openapi("PackageVulnsResponse");
 
-// ── GET /health ───────────────────────────────────────────────────────────────
+// ── GET /health, /app/health, /app/status ────────────────────────────────────
 
 export const DegradationSchema = z
   .object({
@@ -360,23 +360,32 @@ export const DegradationSchema = z
 
 export const HealthResponseSchema = z
   .object({
-    status: z.string().openapi({
-      example: "ok",
+    isAvailable: z.boolean().openapi({
+      example: true,
       description:
-        "Reserved for major events: it stays `ok` while the service can serve, even when " +
-        "`degradations` is non-empty. Poll `degradations` for partial failure.",
+        "Whether the application is wholly available. Dependency degradations do not change " +
+        "this value, and it remains true during the startup grace period.",
     }),
-    service: z.string().openapi({ example: "walrus" }),
-    vuln_data_freshness: DataFreshnessSchema.nullable(),
-    vuln_sync_status: VulnSyncStatusSchema.nullable(),
-    degradations: z.array(DegradationSchema).openapi({
-      description:
-        "Parts of the system currently not doing their job unattended — stale or failing " +
-        "vulnerability ingestion, stuck or disabled autonomous backfills. Empty means " +
-        "self-healing is healthy. Shown as a banner on the admin UI.",
+    gitUrl: z.string().url(),
+    ts: z.string().datetime().openapi({ description: "Time this response was generated." }),
+    started: z.string().datetime().openapi({ description: "Application startup time." }),
+    inGracePeriod: z.boolean().openapi({
+      description: "Whether the 300-second startup availability grace period is active.",
     }),
+    version: z.string().openapi({ example: "0.2.0" }),
   })
   .openapi("HealthResponse");
+
+export const StatusResponseSchema = HealthResponseSchema.extend({
+  vuln_data_freshness: DataFreshnessSchema.nullable(),
+  vuln_sync_status: VulnSyncStatusSchema.nullable(),
+  degradations: z.array(DegradationSchema).openapi({
+    description:
+      "Parts of the system currently not doing their job unattended — stale or failing " +
+      "vulnerability ingestion, stuck or disabled autonomous backfills. Empty means " +
+      "self-healing is healthy. Shown as a banner on the admin UI.",
+  }),
+}).openapi("StatusResponse");
 
 // ── GET /api/v1/packages/:name/availability ──────────────────────────────────
 

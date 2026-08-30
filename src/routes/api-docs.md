@@ -627,8 +627,33 @@ curl -XPOST .../internal/vuln-sync/cvss -H 'content-type: application/json' \
 
 ```json
 {
-  "status": "ok",
-  "service": "walrus",
+  "isAvailable": true,
+  "gitUrl": "https://github.com/pdvcs/walrus",
+  "ts": "2026-08-29T15:14:03.662Z",
+  "started": "2026-08-29T15:10:00.000Z",
+  "inGracePeriod": true,
+  "version": "0.2.0"
+}
+```
+
+The deployment availability check probes PostgreSQL. For 300 seconds after application startup it
+returns HTTP 200 with `isAvailable: true` even if the database is not ready. After that grace
+period, a database failure returns HTTP 503 with `isAvailable: false`. Successful and failed probe
+results are cached for 60 seconds, and concurrent requests share one probe. The same check is also
+available at `GET /app/health`.
+
+### GET /app/status
+
+Returns the health fields above plus detailed operational status:
+
+```json
+{
+  "isAvailable": true,
+  "gitUrl": "https://github.com/pdvcs/walrus",
+  "ts": "2026-08-29T15:14:03.662Z",
+  "started": "2026-08-29T15:10:00.000Z",
+  "inGracePeriod": true,
+  "version": "0.2.0",
   "vuln_data_freshness": {
     "nvd_last_sync": null,
     "kev_last_sync": null,
@@ -645,11 +670,10 @@ curl -XPOST .../internal/vuln-sync/cvss -H 'content-type: application/json' \
 }
 ```
 
-`status` is reserved for major events and stays `"ok"` while the service can serve.
 `degradations` lists parts of unattended operation that currently need attention — stale or
 failing vulnerability ingestion, stuck or disabled autonomous backfills — as
-`{ "component", "reason" }` entries. Empty means self-healing is healthy. The same list is
-shown as a banner on the admin UI.
+`{ "component", "reason" }` entries. Degradations do not change `isAvailable`; empty means
+self-healing is healthy. The same list is shown as a banner on the admin UI.
 
 ### GET /api
 

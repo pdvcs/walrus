@@ -297,6 +297,16 @@ New deps: `fuzzball`, `semver` (runtime); `fast-check` (dev). `pg_trgm` extensio
   package-scoped backfill button run an unscoped 11-package backfill and return 303 as though it
   had worked.
 
+**Wave 14 — Deployment health contract**
+
+- **WAL-80 (Changed):** `/health` is now a minimal deployment availability check, also available
+  at `/app/health`. It reports package version/repository metadata, current and startup timestamps,
+  and PostgreSQL-backed availability. Database startup is protected by a 300-second grace period;
+  after it expires an unavailable database returns `isAvailable: false` with HTTP 503. Detailed
+  vulnerability freshness, sync outcomes, and degradations moved to `/app/status`, and the admin
+  banner reads that endpoint. Successful and failed database probe results are cached for 60
+  seconds, with concurrent health requests sharing one in-flight probe.
+
 ## Version 0.1.0: Initial Release
 
 Initial Walrus release: a configuration-driven package ingress engine that discovers, caches, and

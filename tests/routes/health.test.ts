@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import { pool, runMigrations } from "../../src/db/client.js";
 import { createApp } from "../../src/main.js";
@@ -8,42 +8,197 @@ import { createCveSuppression } from "../../src/db/queries/cve-suppressions.js";
 
 const HEALTH_PACKAGE = "health-suppression-package";
 const HEALTH_CVE = "CVE-2099-7070";
+const STARTED = new Date("2026-08-29T15:10:00.000Z");
+const DURING_GRACE = new Date("2026-08-29T15:14:03.662Z");
+const AFTER_GRACE = new Date("2026-08-29T15:15:01.000Z");
 
-describe("GET /health", () => {
+describe("application health and status", () => {
   beforeAll(async () => {
     await runMigrations();
   });
 
-  it("includes vuln_data_freshness with per-source nullable timestamps and passes its schema", async () => {
-    const app = createApp();
+  it("serves minimal package and startup metadata from both health aliases", async () => {
+    const checkDatabase = vi.fn().mockResolvedValue(undefined);
+    const app = createApp({
+      health: { startedAt: STARTED, now: () => DURING_GRACE, checkDatabase },
+    });
+    const [health, alias] = await Promise.all([
+      request(app).get("/health"),
+      request(app).get("/app/health"),
+    ]);
+
+    expect(health.status).toBe(200);
+    expect(alias.status).toBe(200);
+    expect(health.body).toEqual(alias.body);
+    expect(health.body).toEqual({
+      isAvailable: true,
+      gitUrl: "https://github.com/pdvcs/walrus",
+      ts: "2026-08-29T15:14:03.662Z",
+      started: "2026-08-29T15:10:00.000Z",
+      inGracePeriod: true,
+      version: "0.2.0",
+    });
+    expect(health.body).not.toHaveProperty("status");
+    expect(health.body).not.toHaveProperty("service");
+    expect(checkDatabase).toHaveBeenCalledOnce();
+  });
+
+  it("caches a successful database probe for 60 seconds across health aliases", async () => {
+    let current = AFTER_GRACE;
+    const checkDatabase = vi.fn().mockResolvedValue(undefined);
+    const app = createApp({
+      health: { startedAt: STARTED, now: () => current, checkDatabase },
+    });
+
+    expect((await request(app).get("/health")).body.isAvailable).toBe(true);
+    current = new Date(AFTER_GRACE.getTime() + 59_999);
+    expect((await request(app).get("/app/health")).body.isAvailable).toBe(true);
+    expect(checkDatabase).toHaveBeenCalledOnce();
+
+    current = new Date(AFTER_GRACE.getTime() + 60_000);
+    expect((await request(app).get("/health")).body.isAvailable).toBe(true);
+    expect(checkDatabase).toHaveBeenCalledTimes(2);
+  });
+
+  it("caches a failed database probe and retries after 60 seconds", async () => {
+    let current = AFTER_GRACE;
+    const checkDatabase = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("database unavailable"))
+      .mockResolvedValue(undefined);
+    const app = createApp({
+      health: { startedAt: STARTED, now: () => current, checkDatabase },
+    });
+
+    expect((await request(app).get("/health")).status).toBe(503);
+    current = new Date(AFTER_GRACE.getTime() + 30_000);
+    expect((await request(app).get("/app/health")).status).toBe(503);
+    expect(checkDatabase).toHaveBeenCalledOnce();
+
+    current = new Date(AFTER_GRACE.getTime() + 60_000);
+    expect((await request(app).get("/health")).status).toBe(200);
+    expect(checkDatabase).toHaveBeenCalledTimes(2);
+  });
+
+  it("coalesces concurrent health requests into one database probe", async () => {
+    let resolveProbe: (() => void) | undefined;
+    const checkDatabase = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveProbe = resolve;
+        }),
+    );
+    const app = createApp({
+      health: { startedAt: STARTED, now: () => AFTER_GRACE, checkDatabase },
+    });
+
+    const responsesPromise = Promise.all([
+      request(app).get("/health"),
+      request(app).get("/app/health"),
+    ]);
+    await vi.waitFor(() => expect(checkDatabase).toHaveBeenCalledOnce());
+    resolveProbe?.();
+    const responses = await responsesPromise;
+
+    expect(responses.map((response) => response.status)).toEqual([200, 200]);
+    expect(checkDatabase).toHaveBeenCalledOnce();
+  });
+
+  it("stays available during startup grace when the database is unavailable", async () => {
+    const app = createApp({
+      health: {
+        startedAt: STARTED,
+        now: () => DURING_GRACE,
+        checkDatabase: () => Promise.reject(new Error("database unavailable")),
+      },
+    });
+
     const res = await request(app).get("/health");
     expect(res.status).toBe(200);
-    expect(res.body.status).toBe("ok");
-    expect(res.body.service).toBe("walrus");
+    expect(res.body.isAvailable).toBe(true);
+    expect(res.body.inGracePeriod).toBe(true);
+  });
+
+  it("returns 503 after grace when the database is unavailable", async () => {
+    const app = createApp({
+      health: {
+        startedAt: STARTED,
+        now: () => AFTER_GRACE,
+        checkDatabase: () => Promise.reject(new Error("database unavailable")),
+      },
+    });
+
+    const res = await request(app).get("/health");
+    expect(res.status).toBe(503);
+    expect(res.body.isAvailable).toBe(false);
+    expect(res.body.inGracePeriod).toBe(false);
+  });
+
+  it("is available after grace when the database probe succeeds", async () => {
+    const app = createApp({
+      health: { startedAt: STARTED, now: () => AFTER_GRACE, checkDatabase: async () => {} },
+    });
+
+    const res = await request(app).get("/health");
+    expect(res.status).toBe(200);
+    expect(res.body.isAvailable).toBe(true);
+    expect(res.body.inGracePeriod).toBe(false);
+  });
+
+  it("publishes both health paths and detailed status in OpenAPI", async () => {
+    const spec = (await request(createApp()).get("/openapi.json")).body;
+
+    expect(spec.paths["/health"].get.responses).toHaveProperty("503");
+    expect(spec.paths["/app/health"].get.responses).toHaveProperty("503");
+    expect(spec.paths["/app/status"].get.responses).toHaveProperty("503");
+    expect(spec.components.schemas.HealthResponse.required).toEqual([
+      "isAvailable",
+      "gitUrl",
+      "ts",
+      "started",
+      "inGracePeriod",
+      "version",
+    ]);
+    expect(spec.components.schemas.StatusResponse.allOf[1].required).toContain("degradations");
+  });
+
+  it("moves vulnerability freshness, sync status, and degradations to /app/status", async () => {
+    const app = createApp({
+      health: { startedAt: STARTED, now: () => AFTER_GRACE, checkDatabase: async () => {} },
+    });
+    const res = await request(app).get("/app/status");
+
+    expect(res.status).toBe(200);
+    expect(res.body.isAvailable).toBe(true);
+    expect(res.body.inGracePeriod).toBe(false);
     expect(res.body).toHaveProperty("vuln_data_freshness");
-    // Each source key exists (value may be null before a first sync).
-    const f = res.body.vuln_data_freshness;
-    expect(f).toHaveProperty("nvd_last_sync");
-    expect(f).toHaveProperty("kev_last_sync");
-    expect(f).toHaveProperty("osv_last_sync");
-    expect(f).toHaveProperty("cvss_last_sync");
+    const freshness = res.body.vuln_data_freshness;
+    expect(freshness).toHaveProperty("nvd_last_sync");
+    expect(freshness).toHaveProperty("kev_last_sync");
+    expect(freshness).toHaveProperty("osv_last_sync");
+    expect(freshness).toHaveProperty("cvss_last_sync");
     expect(res.body).toHaveProperty("vuln_sync_status");
     expect(res.body.vuln_sync_status).toHaveProperty("nvd.last_ok");
     expect(res.body.vuln_sync_status).toHaveProperty("kev.last_failure");
     expect(res.body.vuln_sync_status).toHaveProperty("osv.last_attempt");
     expect(res.body.vuln_sync_status).toHaveProperty("cvss.last_attempt");
+    expect(Array.isArray(res.body.degradations)).toBe(true);
+    expect(res.body).not.toHaveProperty("status");
+    expect(res.body).not.toHaveProperty("service");
   });
 
-  it("reports degradations without leaving status ok (status is for major events)", async () => {
-    const app = createApp();
-    const res = await request(app).get("/health");
+  it("reports degradations without changing availability", async () => {
+    const app = createApp({
+      health: { startedAt: STARTED, now: () => AFTER_GRACE, checkDatabase: async () => {} },
+    });
+    const res = await request(app).get("/app/status");
+
     expect(res.status).toBe(200);
-    // Degradations are additive information; status stays "ok" regardless of them.
-    expect(res.body.status).toBe("ok");
+    expect(res.body.isAvailable).toBe(true);
     expect(Array.isArray(res.body.degradations)).toBe(true);
-    for (const d of res.body.degradations) {
-      expect(d).toHaveProperty("component");
-      expect(d).toHaveProperty("reason");
+    for (const degradation of res.body.degradations) {
+      expect(degradation).toHaveProperty("component");
+      expect(degradation).toHaveProperty("reason");
     }
   });
 
@@ -76,9 +231,9 @@ describe("GET /health", () => {
         created_by: "operator@example.com",
         expires_at: new Date(Date.now() + 60_000),
       });
-      const active = await request(createApp()).get("/health");
+      const active = await request(createApp()).get("/app/status");
       expect(active.status).toBe(200);
-      expect(active.body.status).toBe("ok");
+      expect(active.body.isAvailable).toBe(true);
       expect(active.body.degradations).toContainEqual({
         component: "cve-suppressions",
         reason:
@@ -89,7 +244,7 @@ describe("GET /health", () => {
         "UPDATE cve_suppressions SET expires_at = now() - interval '1 second' WHERE id = $1",
         [suppression.id],
       );
-      const expired = await request(createApp()).get("/health");
+      const expired = await request(createApp()).get("/app/status");
       expect(
         expired.body.degradations.some(
           (item: { component: string }) => item.component === "cve-suppressions",

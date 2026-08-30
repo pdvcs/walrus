@@ -188,7 +188,7 @@ describe("cvss enrichment", () => {
   });
 
   // WAL-50: the one scheduled trigger that can newly block downloads must be visible to
-  // /health and staleness degradations, like nvd/kev/osv are. A dry run must write nothing.
+  // /app/status and staleness degradations, like nvd/kev/osv are. A dry run must write nothing.
   it("records sync-state for a real run, leaves nothing for a dry run", async () => {
     await seedCandidate();
 
