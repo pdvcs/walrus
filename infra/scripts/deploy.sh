@@ -74,7 +74,11 @@ if ! gcloud storage buckets describe "gs://${TERRAFORM_STATE_BUCKET}" --project=
   gcloud storage buckets create "gs://${TERRAFORM_STATE_BUCKET}" \
     --project="${PROJECT_ID}" \
     --location="${REGION}" \
-    --uniform-bucket-level-access \
+    --uniform-bucket-level-access
+  # `gcloud storage buckets create` has no versioning flag; enable it immediately
+  # afterwards so the remote Terraform state is recoverable from a bad write.
+  gcloud storage buckets update "gs://${TERRAFORM_STATE_BUCKET}" \
+    --project="${PROJECT_ID}" \
     --versioning
 fi
 

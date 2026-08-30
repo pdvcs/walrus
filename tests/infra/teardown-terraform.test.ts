@@ -49,7 +49,7 @@ describe("teardown deployment wiring", () => {
   it("versions the Terraform state bucket it creates", () => {
     // The state is the only record of the deployment; a truncated write is otherwise final.
     expect(read("infra/scripts/deploy.sh")).toMatch(
-      /buckets create "gs:\/\/\$\{TERRAFORM_STATE_BUCKET\}"[\s\S]*?--versioning/,
+      /buckets create "gs:\/\/\$\{TERRAFORM_STATE_BUCKET\}"[\s\S]*?buckets update "gs:\/\/\$\{TERRAFORM_STATE_BUCKET\}"[\s\S]*?--versioning/,
     );
   });
 });
