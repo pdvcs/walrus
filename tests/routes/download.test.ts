@@ -59,6 +59,33 @@ function makeCoolingOffArtifact(coolingOffUntil: Date) {
   };
 }
 
+/**
+ * A concretely-matching critical affects row for version 0.10.10 — the shape the gate refuses on.
+ * Scores are strings because that is how pg hands back NUMERIC.
+ */
+function criticalAffects(overrides: Record<string, unknown> = {}) {
+  return {
+    cve_id: "CVE-2026-0001",
+    version_start: null,
+    version_start_excl: false,
+    version_end: null,
+    version_end_excl: false,
+    exact_version: "0.10.10",
+    fixed_in: null,
+    source: "nvd",
+    version_na: false,
+    severity: "CRITICAL",
+    severity_source: "nvd-cvss-v3",
+    cvss_v3_score: "9.8",
+    cvss_v4_score: null,
+    cvss_v2_score: null,
+    description: null,
+    is_kev: false,
+    raw: null,
+    ...overrides,
+  };
+}
+
 function makeVersionRow() {
   return {
     id: 1,
@@ -149,33 +176,154 @@ describe("download routes", () => {
   it("returns 403 without reading storage when the version has a critical CVE", async () => {
     const deps = baseDeps();
     deps.getVersion = vi.fn().mockResolvedValue(makeVersionRow());
-    deps.listAffectsForPackage = vi.fn().mockResolvedValue([
-      {
-        cve_id: "CVE-CRIT",
-        version_start: null,
-        version_start_excl: false,
-        version_end: null,
-        version_end_excl: false,
-        exact_version: "0.10.10",
-        fixed_in: null,
-        source: "nvd",
-        severity: "CRITICAL",
-        cvss_v3_score: "9.8",
-        description: null,
-        is_kev: false,
-        raw: null,
-      },
-    ]);
+    deps.listAffectsForPackage = vi.fn().mockResolvedValue([criticalAffects()]);
     const app = createTestApp(deps);
 
     const response = await request(app).get("/download/uv/0.10.10/linux/x86-64");
 
     expect(response.status).toBe(403);
-    expect(response.body).toEqual({
-      error: "Version blocked due to a critical vulnerability",
-    });
     expect(deps.getArtifact).not.toHaveBeenCalled();
     expect(deps.streamFromStorage).not.toHaveBeenCalled();
+  });
+
+  // WAL-79. The old body was the fixed string "Version blocked due to a critical vulnerability":
+  // a developer whose build just failed learned that something was wrong and had no thread to
+  // pull. The explanation was already computed one call below the response and thrown away.
+  describe("the 403 explains itself (WAL-79)", () => {
+    async function get403(rows: unknown[]) {
+      const deps = baseDeps();
+      deps.getVersion = vi.fn().mockResolvedValue(makeVersionRow());
+      deps.listAffectsForPackage = vi.fn().mockResolvedValue(rows);
+      return request(createTestApp(deps)).get("/download/uv/0.10.10/linux/x86-64");
+    }
+
+    /** Everything the gate lets through reaches an artifact that really streams. */
+    function servingDeps(rows: unknown[]): DownloadRouteDeps {
+      return {
+        ...baseDeps(),
+        getVersion: vi.fn().mockResolvedValue(makeVersionRow()),
+        listAffectsForPackage: vi.fn().mockResolvedValue(rows),
+        getArtifact: vi.fn().mockResolvedValue(makeAvailableArtifact()),
+        streamFromStorage: vi.fn().mockReturnValue(Readable.from(Buffer.from("bytes"))),
+      };
+    }
+
+    it("names the CVE, the comparison that matched, and where to go instead", async () => {
+      const response = await get403([criticalAffects({ fixed_in: "0.10.11" })]);
+
+      expect(response.status).toBe(403);
+      expect(response.body).toEqual({
+        // The one-line form has to stand alone: a build tool that prints one field prints this.
+        error: "Version 0.10.10 is blocked by CVE-2026-0001 (CVSS 9.8) — fixed in 0.10.11",
+        blocked_by: {
+          cve_id: "CVE-2026-0001",
+          matched_because: "0.10.10 == 0.10.10",
+          severity: "CRITICAL",
+          severity_source: "nvd-cvss-v3",
+          cvss_v3_score: 9.8,
+          cvss_v4_score: null,
+          cvss_v2_score: null,
+          is_kev: false,
+          fixed_in: "0.10.11",
+        },
+      });
+    });
+
+    it("omits the remedy from the message when the advisory names no fixed version", async () => {
+      const response = await get403([criticalAffects()]);
+
+      expect(response.body.error).toBe("Version 0.10.10 is blocked by CVE-2026-0001 (CVSS 9.8)");
+      expect(response.body.blocked_by.fixed_in).toBeNull();
+    });
+
+    // The gate is any-of across CVSS versions (ADR-005), so a body naming only v3 would
+    // misdescribe a v4-caused refusal — the same mistake availability history already corrected.
+    it("reports every score, not just v3", async () => {
+      const response = await get403([
+        criticalAffects({
+          cvss_v3_score: null,
+          cvss_v4_score: "9.9",
+          cvss_v2_score: "10.0",
+          severity_source: "nvd-cvss-v4",
+        }),
+      ]);
+
+      expect(response.body.error).toContain("CVSS 9.9");
+      expect(response.body.blocked_by).toMatchObject({
+        severity_source: "nvd-cvss-v4",
+        cvss_v3_score: null,
+        cvss_v4_score: 9.9,
+        cvss_v2_score: 10,
+      });
+    });
+
+    // AC6: two callers holding the same rows in a different order get the same answer.
+    it("names the worst CVE, whatever order the rows arrive in", async () => {
+      const rows = [
+        criticalAffects({ cve_id: "CVE-2026-0002", cvss_v3_score: "9.1" }),
+        criticalAffects({ cve_id: "CVE-2026-0009", cvss_v3_score: "9.9" }),
+        criticalAffects({ cve_id: "CVE-2026-0005", cvss_v3_score: "9.4" }),
+      ];
+      const forward = await get403(rows);
+      const reversed = await get403([...rows].reverse());
+
+      expect(forward.body.blocked_by.cve_id).toBe("CVE-2026-0009");
+      expect(reversed.body).toEqual(forward.body);
+    });
+
+    // AC7. A suppression is an operator's assertion that the CVE does not apply here (WAL-70);
+    // the version is not blocked, so the 403 that would have named the CVE never happens.
+    it("serves the artifact when the only critical CVE is suppressed — no 403 to name it in", async () => {
+      const deps = servingDeps([
+        criticalAffects({
+          suppressed: true,
+          suppression_id: 3,
+          suppression_reason: "not shipped in this build",
+        }),
+      ]);
+
+      const response = await request(createTestApp(deps)).get("/download/uv/0.10.10/linux/x86-64");
+
+      expect(response.status).toBe(200);
+      expect((response.body as Buffer).toString()).toBe("bytes");
+    });
+
+    // A nullable field's schema rejects `undefined`, so a row that merely omits a key must not
+    // cost the whole explanation — it would fall back on rows that are perfectly describable.
+    it("still explains the block when the row omits an optional key entirely", async () => {
+      const sparse: Record<string, unknown> = criticalAffects();
+      delete sparse.fixed_in;
+      delete sparse.severity_source;
+      const response = await get403([sparse]);
+
+      expect(response.body.blocked_by).toMatchObject({
+        cve_id: "CVE-2026-0001",
+        matched_because: "0.10.10 == 0.10.10",
+        fixed_in: null,
+        severity_source: null,
+      });
+    });
+
+    // Explaining a refusal must not be able to prevent one. Response schemas are parsed so a
+    // mismatch surfaces as a 500 in dev and tests — deliberate everywhere except here, where a
+    // 500 would tell a client to retry a version walrus withheld on purpose.
+    it("still refuses with a generic message when the detail cannot be described", async () => {
+      // A row whose cve_id drifted to a non-string: still blocks, cannot be described.
+      const response = await get403([criticalAffects({ cve_id: 12345 })]);
+
+      expect(response.status).toBe(403);
+      expect(response.body).toEqual({ error: "Version blocked due to a critical vulnerability" });
+      expect(response.body.blocked_by).toBeUndefined();
+    });
+
+    // A non-critical CVE is listed, never gated — the gate's threshold is unchanged by WAL-79.
+    it("serves a version whose only CVE is below the critical threshold", async () => {
+      const deps = servingDeps([criticalAffects({ severity: "HIGH", cvss_v3_score: "8.9" })]);
+
+      const response = await request(createTestApp(deps)).get("/download/uv/0.10.10/linux/x86-64");
+
+      expect(response.status).toBe(200);
+    });
   });
 
   describe("cooling off period", () => {

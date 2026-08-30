@@ -86,15 +86,21 @@ def describe_http_error(err: urllib.error.HTTPError) -> str:
     """Turn walrus's JSON error bodies into something worth printing.
 
     The status codes carry meaning here and are worth handling rather than retrying blindly:
-    403 is the critical-CVE gate refusing a version, 423 is a release still inside its
-    cooling-off embargo (with `Retry-After`), and 400 `range_required` means the artifact is
-    too large to fetch in one request.
+    403 is the critical-CVE gate refusing a version — its body names the advisory and the
+    comparison that matched — 423 is a release still inside its cooling-off embargo (with
+    `Retry-After`), and 400 `range_required` means the artifact is too large to fetch in one
+    request.
     """
     body = error_body(err)
     detail = body.get("error") or err.reason
 
     if err.code == 403:
-        return f"blocked: {detail} (walrus refuses versions with a critical CVE)"
+        # The gate names the advisory and the comparison that matched it, so there is something
+        # to check rather than just a refusal. `fixed_in`, when the advisory has one, is already
+        # in the message.
+        blocked = body.get("blocked_by") or {}
+        why = blocked.get("matched_because")
+        return f"blocked: {detail}" + (f" [matched: {why}]" if why else "")
     if err.code == 423:
         retry_after = err.headers.get("Retry-After")
         available = body.get("available_at")

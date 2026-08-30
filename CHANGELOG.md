@@ -341,6 +341,19 @@ New deps: `fuzzball`, `semver` (runtime); `fast-check` (dev). `pg_trgm` extensio
   pages share responsive Walrus page chrome, while every admin page now exposes API-token and
   logout actions in its navigation. Logout returns to an explicit signed-out state.
 
+**Wave 16 — Explaining the gate**
+
+- **WAL-79 (Changed):** A `403` from the critical-CVE gate now names the advisory that blocked
+  the download instead of returning a fixed string. The body carries the CVE id, the version
+  comparison that matched it — including whether the served version was normalised before the
+  comparison — every CVSS score, the KEV flag, and `fixed_in`, so a failed build says which
+  version to move to. The explanation is the one the gate computed while deciding, not a second
+  evaluation; where several critical CVEs match, the highest-scoring one is reported, and the
+  same one on every request. A suppressed CVE does not block, and so is never named. `blocked_by`
+  is omitted, and the refusal still sent, if the detail cannot be assembled: describing a block is
+  never allowed to prevent one, and a `500` would tell a client to retry a version walrus withheld
+  on purpose.
+
 ## Version 0.1.0: Initial Release
 
 Initial Walrus release: a configuration-driven package ingress engine that discovers, caches, and

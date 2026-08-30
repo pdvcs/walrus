@@ -3,6 +3,7 @@ import { z } from "zod";
 import { Router } from "express";
 import {
   AvailabilityHistoryResponseSchema,
+  BlockedVersionErrorSchema,
   CoolingOffErrorSchema,
   ErrorSchema,
   HealthResponseSchema,
@@ -199,8 +200,10 @@ registry.registerPath({
       content: { "application/json": { schema: ErrorSchema } },
     },
     403: {
-      description: "Version is blocked due to a known critical vulnerability",
-      content: { "application/json": { schema: ErrorSchema } },
+      description:
+        "Version is blocked by the critical-CVE gate. The body names the advisory, the version " +
+        "comparison that matched it, and the fixed version to move to when the advisory names one.",
+      content: { "application/json": { schema: BlockedVersionErrorSchema } },
     },
     423: {
       description: "Artifact is within the cooling-off period and not yet released",

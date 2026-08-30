@@ -227,13 +227,53 @@ reassembly, not per chunk.**
 - `200` — binary stream
 - `206` — partial content, in response to a `Range` request
 - `400` — artifact is over the ranged-transfer threshold and the request was not ranged (see below)
-- `403` — version is blocked due to a known critical vulnerability
+- `403` — version is blocked by the critical-CVE gate; the body names the advisory (see below)
 - `404` — artifact not found or not available; also when the package is disabled or removed (its TOML no longer exists)
 - `416` + `Content-Range: bytes */<size>` — the requested range lies outside the artifact
 - `423` + `Retry-After` — artifact is within the cooling-off period; body includes `available_at`
 
 Every one of these gates applies identically to a ranged request. There is no path that serves
 part of an artifact that a full `GET` would have refused.
+
+**A `403` says which CVE, and why**
+
+A refusal that names nothing leaves a developer with a failed build and no thread to pull: they
+cannot tell which advisory, whether it is plausibly a false positive worth raising, or which
+version to move to instead. So the gate reports the CVE it blocked on.
+
+```json
+{
+  "error": "Version 2.55.0.5 is blocked by CVE-2026-1234 (CVSS 9.8) — fixed in 2.56.0",
+  "blocked_by": {
+    "cve_id": "CVE-2026-1234",
+    "matched_because": "2.55.0 == 2.55.0 (2.55.0.5 evaluated as 2.55.0)",
+    "severity": "CRITICAL",
+    "severity_source": "nvd-cvss-v3",
+    "cvss_v3_score": 9.8,
+    "cvss_v4_score": null,
+    "cvss_v2_score": null,
+    "is_kev": false,
+    "fixed_in": "2.56.0"
+  }
+}
+```
+
+`error` stands alone — a build tool that surfaces one field surfaces that one, so it names the
+CVE and, when the advisory has one, the fixed version. `matched_because` is the comparison walrus
+actually made, and says so explicitly when the served version was normalised first (above, a
+four-component `2.55.0.5` compared as the upstream `2.55.0` it embeds). All three CVSS scores are
+reported because the gate thresholds any of them — naming only v3 would misdescribe a v4- or
+v2-caused refusal.
+
+Where several critical CVEs match, `blocked_by` is the highest-scoring one, and the same one on
+every request for the same data. The rest are listed by
+`GET /api/v1/packages/{name}/vulns`. A CVE under an active suppression does not block at all, so
+it never appears here.
+
+`blocked_by` is optional, and absent only when walrus cannot assemble the detail for a block it
+has already decided to make — the `403` and `error` still stand. Explaining a refusal is never
+allowed to prevent one, and a client must read a missing `blocked_by` as a block it has no
+detail for, never as a softer refusal.
 
 #### Range requests
 

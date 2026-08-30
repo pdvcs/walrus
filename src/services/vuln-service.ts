@@ -127,6 +127,18 @@ export interface VersionGroupSummary {
 
 export type VersionAvailabilityStatus = "available" | "blocked";
 
+/** A concrete critical match: the CVE row that gates the version, and why its range matched. */
+export interface BlockingCveMatch {
+  cve: AffectsWithCveRow;
+  /**
+   * The range comparison in the form `evaluateRange` states it (`0.10.10 == 0.10.10`,
+   * `2.55.0 < 2.56.0`, `all-versions`), annotated with the normalised version when ADR-008
+   * normalisation changed what was compared. Same vocabulary as `matched_because` on
+   * /packages/{name}/vulns, deliberately — it is the same fact.
+   */
+  matched_because: string;
+}
+
 /**
  * Classify whether a version may be served/recommended under the critical-CVE
  * gate shared by the groups and versions endpoints.
@@ -135,20 +147,24 @@ export function getVersionAvailabilityStatus(
   version: string,
   affects: AffectsWithCveRow[],
 ): VersionAvailabilityStatus {
-  return findBlockingCve(version, affects) === null ? "available" : "blocked";
+  return findBlockingCveMatch(version, affects) === null ? "available" : "blocked";
 }
 
 /**
- * The CVE row responsible for blocking this version, or null when it is servable.
+ * The CVE row responsible for blocking this version and why its range matched, or null when
+ * the version is servable.
  *
- * Availability history needs to record *why* a version became blocked, not just that it did.
- * Deriving that from a boolean predicate would mean re-running the match a second time and
- * risking the two drifting, so the predicate is expressed once here and
- * `getVersionAvailabilityStatus` is defined in terms of it.
+ * Availability history needs to record *why* a version became blocked, not just that it did, and
+ * so does the download gate's 403 (WAL-79) — a developer whose build just failed has no thread to
+ * pull from "blocked". Deriving that from a boolean predicate would mean re-running the match a
+ * second time and risking the two drifting, so the predicate is expressed once here and both
+ * `findBlockingCve` and `getVersionAvailabilityStatus` are defined in terms of it.
  *
- * Where several critical CVEs match, the first concrete match wins — the answer to "why is
- * this blocked?" only needs to be *a* true reason, and the rest stay visible via
- * /packages/{name}/vulns.
+ * Where several critical CVEs match, the worst one wins and the rest stay visible via
+ * /packages/{name}/vulns. "Worst" is defined by `isWorseBlock` below rather than by input order:
+ * the answer to "why is this blocked?" is now quoted back to a caller in an error body, and one
+ * that changed between two identical requests because the affects rows arrived in a different
+ * order would look like walrus contradicting itself.
  *
  * NA-versioned rows (`version_na`) never gate. A CPE carrying `-` in its version component
  * states that the version attribute does not apply to that entry, so it names nothing to
@@ -159,21 +175,77 @@ export function getVersionAvailabilityStatus(
  * one is a positive statement that no shipped version is enumerable. `*` with no bounds is
  * untouched and still gates — it genuinely does mean every version.
  */
-export function findBlockingCve(
+export function findBlockingCveMatch(
   version: string,
   affects: AffectsWithCveRow[],
-): AffectsWithCveRow | null {
+): BlockingCveMatch | null {
   // ADR-008: evaluate against the upstream version the served one embeds, where the package
   // declares how. Absent a rule this is the served version and nothing changes.
   const cveVersion = deriveCveVersion(version, patternFromAffects(affects));
+  let worst: BlockingCveMatch | null = null;
   for (const row of affects) {
     if (!isKnownCritical(row)) continue;
     if (row.suppressed) continue;
     if (row.version_na) continue;
     const result = evaluateRange(cveVersion.value, toRange(row));
-    if (result.matched && result.reason !== "range-uncomparable") return row;
+    if (!result.matched || result.reason === "range-uncomparable") continue;
+    // ADR-008 part 3: a block caused by normalisation has to say so, or a `2.55.0.5` refused by
+    // a range reading `2.55.0` reads as a defect rather than as the policy it is.
+    const candidate: BlockingCveMatch = {
+      cve: row,
+      matched_because: describeNormalisation(result.reason, cveVersion),
+    };
+    if (worst === null || isWorseBlock(candidate, worst)) worst = candidate;
   }
-  return null;
+  return worst;
+}
+
+/**
+ * The CVE row responsible for blocking this version, or null when it is servable.
+ *
+ * The row-only view of `findBlockingCveMatch`, for the callers that store or count the CVE and
+ * have nowhere to put the reason.
+ */
+export function findBlockingCve(
+  version: string,
+  affects: AffectsWithCveRow[],
+): AffectsWithCveRow | null {
+  return findBlockingCveMatch(version, affects)?.cve ?? null;
+}
+
+/**
+ * Total order over two matching critical CVEs, so "the blocking CVE" is a property of the data
+ * and not of the order it was loaded in.
+ *
+ * Severity first — of two true reasons to refuse a download, the higher-scoring one is the one
+ * worth naming. The score compared is the max across v3/v4/v2, because that is the quantity the
+ * gate itself thresholds (ADR-005, any-of): ranking on v3 alone would have a v4-only 9.9 lose to
+ * a v3 9.0. KEV breaks a score tie — it does not gate on its own (PO, 2026-08-26) but
+ * exploited-in-the-wild is the more urgent of two equally-scored advisories to put in front of
+ * someone. `cve_id` and then the matched range settle the rest: arbitrary, but fixed, and two
+ * rows of the same CVE can differ in `fixed_in`, which the caller is told to act on.
+ */
+function isWorseBlock(candidate: BlockingCveMatch, incumbent: BlockingCveMatch): boolean {
+  const byScore = maxCvssScore(candidate.cve) - maxCvssScore(incumbent.cve);
+  if (byScore !== 0) return byScore > 0;
+  if (candidate.cve.is_kev !== incumbent.cve.is_kev) return candidate.cve.is_kev;
+  return tieBreakKey(candidate) < tieBreakKey(incumbent);
+}
+
+/** The score the gate actually thresholds: the highest of v3/v4/v2, or -1 when none is scored. */
+function maxCvssScore(row: AffectsWithCveRow): number {
+  let max = -1;
+  for (const score of [row.cvss_v3_score, row.cvss_v4_score, row.cvss_v2_score]) {
+    if (score === null || score === undefined) continue;
+    const value = Number(score);
+    if (!Number.isNaN(value) && value > max) max = value;
+  }
+  return max;
+}
+
+function tieBreakKey(match: BlockingCveMatch): string {
+  const row = match.cve;
+  return [row.cve_id, match.matched_because, row.fixed_in ?? "", row.source].join("\u0000");
 }
 
 /**

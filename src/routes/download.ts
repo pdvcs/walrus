@@ -1,8 +1,11 @@
 import { pipeline } from "stream/promises";
 import { Readable } from "stream";
 import { Response, Router } from "express";
+import { log } from "../common/log.js";
 import { AffectsWithCveRow } from "../db/queries/cves.js";
-import { getVersionAvailabilityStatus } from "../services/vuln-service.js";
+import { BlockingCveMatch, findBlockingCveMatch } from "../services/vuln-service.js";
+import { z } from "zod";
+import { BlockedVersionErrorSchema } from "./schemas.js";
 import {
   decideWholeObjectTransfer,
   defaultTransferLimits,
@@ -54,8 +57,9 @@ export function createDownloadRouter(deps: DownloadRouteDeps): Router {
       }
 
       const affects = await deps.listAffectsForPackage(packageName);
-      if (getVersionAvailabilityStatus(versionRow.version, affects) === "blocked") {
-        res.status(403).json({ error: "Version blocked due to a critical vulnerability" });
+      const blocking = findBlockingCveMatch(versionRow.version, affects);
+      if (blocking !== null) {
+        res.status(403).json(blockedVersionBody(versionRow.version, blocking));
         return;
       }
 
@@ -153,6 +157,86 @@ export function createDownloadRouter(deps: DownloadRouteDeps): Router {
   });
 
   return router;
+}
+
+/**
+ * The gate's refusal, explained (WAL-79).
+ *
+ * The reason is not recomputed here: `findBlockingCveMatch` produced it while deciding, and
+ * re-running the match to recover a string would let the explanation drift from the decision it
+ * explains. Everything below is a projection of that one result.
+ *
+ * `error` is written to stand alone. A build fails in CI, someone reads one line of JSON out of a
+ * log, and that line has to be enough to act on — so it names the CVE and, when the advisory says
+ * so, the version to move to. The rest of the story is in `blocked_by`.
+ */
+function blockedVersionBody(version: string, blocking: BlockingCveMatch): BlockedVersionError {
+  const cve = blocking.cve;
+  try {
+    const score = firstScore(cve);
+    const qualifier =
+      score !== null ? `CVSS ${score}` : (cve.severity?.toLowerCase() ?? "critical");
+    const remedy = cve.fixed_in ? ` — fixed in ${cve.fixed_in}` : "";
+    return BlockedVersionErrorSchema.parse({
+      error: `Version ${version} is blocked by ${cve.cve_id} (${qualifier})${remedy}`,
+      blocked_by: {
+        cve_id: cve.cve_id,
+        // Every matching branch of `evaluateRange` produces a non-empty reason, so this default
+        // is unreachable today. It is here because the field is a string the response promises
+        // and the gate must not depend on that promise holding.
+        matched_because: blocking.matched_because || "matched a known critical CVE range",
+        // `?? null` rather than a bare read: a nullable field's schema rejects `undefined`, so a
+        // row that simply omits a key would otherwise cost the whole explanation.
+        severity: cve.severity ?? null,
+        severity_source: cve.severity_source ?? null,
+        cvss_v3_score: toScore(cve.cvss_v3_score),
+        cvss_v4_score: toScore(cve.cvss_v4_score),
+        cvss_v2_score: toScore(cve.cvss_v2_score),
+        is_kev: cve.is_kev === true,
+        fixed_in: cve.fixed_in ?? null,
+      },
+    });
+  } catch (err) {
+    // The decision to refuse was already made and is not revisited here; only its description
+    // failed. Everywhere else a schema mismatch should surface as a 500 in dev and tests
+    // (that is the point of parsing responses), but not on this one: a 500 tells a client
+    // walrus is broken and the request is worth retrying, about a version walrus withheld on
+    // purpose. Loud in the logs, unchanged on the wire.
+    log.error(
+      { err, version, cve_id: cve.cve_id },
+      "Could not describe a critical-CVE block; refusing with the generic message",
+    );
+    return { error: GENERIC_BLOCK_MESSAGE };
+  }
+}
+
+type BlockedVersionError = z.infer<typeof BlockedVersionErrorSchema>;
+
+/**
+ * The pre-WAL-79 body, kept as the floor rather than deleted. `blockedVersionBody` returns the
+ * schema's own type, so a future required field this fallback cannot supply is a compile error
+ * there rather than a 500 in production.
+ */
+const GENERIC_BLOCK_MESSAGE = "Version blocked due to a critical vulnerability";
+
+/** Scores arrive as strings from pg NUMERIC columns; the schema and the message want numbers. */
+function toScore(value: number | string | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  const score = Number(value);
+  return Number.isNaN(score) ? null : score;
+}
+
+/**
+ * The score to quote in the one-line message: v3 by preference because it is what most readers
+ * recognise, then v4, then v2. Which version it came from is in `severity_source`, and all three
+ * are in the body — this is only choosing what fits on a line.
+ */
+function firstScore(cve: BlockingCveMatch["cve"]): number | null {
+  for (const raw of [cve.cvss_v3_score, cve.cvss_v4_score, cve.cvss_v2_score]) {
+    const score = toScore(raw);
+    if (score !== null) return score;
+  }
+  return null;
 }
 
 /**

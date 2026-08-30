@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   crossReferenceVersions,
   findBlockingCve,
+  findBlockingCveMatch,
   getVersionAvailabilityStatus,
   summarizeGroupsWithVulnGate,
   VERSION_NA,
@@ -314,6 +315,93 @@ describe("getVersionAvailabilityStatus", () => {
         expires_at: null,
       },
     });
+  });
+});
+
+// WAL-79: the gate computes an explanation while deciding; the download route quotes it back in
+// the 403. These tests pin the explanation itself — that it exists, that it says the right thing,
+// and that it is the same explanation twice for the same data.
+describe("findBlockingCveMatch", () => {
+  const CRIT = {
+    cve_id: "CVE-CRIT",
+    cvss_v3_score: "9.8",
+    severity: "CRITICAL",
+    exact_version: "1.24.13",
+    version_end: null,
+  };
+
+  it("returns the comparison that matched alongside the row", () => {
+    const match = findBlockingCveMatch("1.24.13", [affects(CRIT)]);
+    expect(match?.cve.cve_id).toBe("CVE-CRIT");
+    expect(match?.matched_because).toBe("1.24.13 == 1.24.13");
+  });
+
+  it("says so when normalisation changed what was compared (ADR-008)", () => {
+    const rows = [
+      affects({
+        cve_id: "CVE-CRIT",
+        cvss_v3_score: "9.8",
+        exact_version: "2.55.0",
+        version_end: null,
+        cve_version_extract: "^(\\d+\\.\\d+\\.\\d+)",
+      }),
+    ];
+    // The whole point of the field: a 2.55.0.5 refused by a range naming 2.55.0 has to read as
+    // policy rather than as a bug.
+    expect(findBlockingCveMatch("2.55.0.5", rows)?.matched_because).toBe(
+      "2.55.0 == 2.55.0 (2.55.0.5 evaluated as 2.55.0)",
+    );
+  });
+
+  it("returns null for a servable version and for a suppressed critical", () => {
+    expect(findBlockingCveMatch("1.24.12", [affects(CRIT)])).toBeNull();
+    expect(findBlockingCveMatch("1.24.13", [affects({ ...CRIT, suppressed: true })])).toBeNull();
+  });
+
+  // AC6: the affects loader's ORDER BY is not the gate's contract. Two callers holding the same
+  // rows in a different order must be told the same thing, or walrus appears to change its mind.
+  it("names the same CVE whatever order the rows arrive in", () => {
+    const rows = [
+      affects({ ...CRIT, cve_id: "CVE-2026-0002", cvss_v3_score: "9.1" }),
+      affects({ ...CRIT, cve_id: "CVE-2026-0001", cvss_v3_score: "9.9" }),
+      affects({ ...CRIT, cve_id: "CVE-2026-0003", cvss_v3_score: "9.4" }),
+    ];
+    for (const order of [rows, [...rows].reverse(), [rows[2], rows[0], rows[1]]]) {
+      expect(findBlockingCveMatch("1.24.13", order)?.cve.cve_id).toBe("CVE-2026-0001");
+    }
+  });
+
+  // Ranking on v3 alone would hand the block to the 9.0 and misreport the more severe advisory,
+  // when the gate itself thresholds any-of across CVSS versions (ADR-005).
+  it("ranks on the highest score across CVSS versions, not on v3", () => {
+    const rows = [
+      affects({ ...CRIT, cve_id: "CVE-V3", cvss_v3_score: "9.0" }),
+      affects({
+        ...CRIT,
+        cve_id: "CVE-V4",
+        cvss_v3_score: null,
+        cvss_v4_score: "9.9",
+        severity_source: "nvd-cvss-v4",
+      }),
+    ];
+    expect(findBlockingCveMatch("1.24.13", rows)?.cve.cve_id).toBe("CVE-V4");
+  });
+
+  it("breaks an equal-score tie towards the exploited-in-the-wild advisory", () => {
+    const rows = [
+      affects({ ...CRIT, cve_id: "CVE-2026-0001" }),
+      affects({ ...CRIT, cve_id: "CVE-2026-0002", is_kev: true }),
+    ];
+    expect(findBlockingCveMatch("1.24.13", rows)?.cve.cve_id).toBe("CVE-2026-0002");
+  });
+
+  it("keeps findBlockingCve as the row-only view of the same decision", () => {
+    const rows = [
+      affects({ ...CRIT, cve_id: "CVE-2026-0002", cvss_v3_score: "9.1" }),
+      affects({ ...CRIT, cve_id: "CVE-2026-0001", cvss_v3_score: "9.9" }),
+    ];
+    expect(findBlockingCve("1.24.13", rows)).toBe(findBlockingCveMatch("1.24.13", rows)?.cve);
+    expect(findBlockingCve("1.24.12", rows)).toBeNull();
   });
 });
 

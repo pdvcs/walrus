@@ -448,3 +448,59 @@ export const CoolingOffErrorSchema = z
     available_at: z.string().datetime(),
   })
   .openapi("CoolingOffError");
+
+/**
+ * The gate's 403 (WAL-79). `error` alone has to be useful, because a build tool that surfaces
+ * one field surfaces that one — so it names the CVE and, when known, where to move to. The
+ * structured half carries what a human needs to judge the block: the advisory to read, the
+ * comparison walrus made, and every score, since the gate is any-of across CVSS versions
+ * (ADR-005) and naming only v3 would misdescribe a v4- or v2-caused refusal.
+ *
+ * Naming the CVE is deliberate. It is public NVD data, walrus is an internal mirror, and a
+ * developer who can read `CVE-2026-1234` can read the advisory and judge for themselves whether
+ * it applies — which is the whole bargain ADR-008 strikes when it chooses to over-block.
+ *
+ * `blocked_by` is optional because explaining a refusal must never be able to prevent one. If the
+ * detail cannot be assembled, the 403 still goes out carrying `error` alone; downgrading it to a
+ * 500 would tell a client "walrus is broken, retry" about a version walrus deliberately withheld.
+ */
+export const BlockedVersionErrorSchema = z
+  .object({
+    error: z.string(),
+    blocked_by: z
+      .object({
+        cve_id: z.string(),
+        matched_because: z.string().openapi({
+          description:
+            "The version comparison that matched, e.g. `0.10.10 == 0.10.10` or `2.55.0 < 2.56.0`. " +
+            "Says so explicitly when the served version was normalised before comparison.",
+          example: "0.10.10 == 0.10.10",
+        }),
+        severity: z.string().nullable(),
+        severity_source: z.string().nullable().openapi({
+          description:
+            "Which CVSS version produced `severity`: nvd-cvss-v3 | nvd-cvss-v4 | nvd-cvss-v2.",
+        }),
+        cvss_v3_score: z.number().nullable(),
+        cvss_v4_score: z.number().nullable(),
+        cvss_v2_score: z.number().nullable(),
+        is_kev: z.boolean().openapi({
+          description:
+            "Known exploited in the wild (CISA KEV). Reported, but not itself a reason for the block.",
+        }),
+        fixed_in: z.string().nullable().openapi({
+          description:
+            "The version the advisory says fixes this, when it names one. Where to go next.",
+        }),
+      })
+      .optional()
+      .openapi({
+        description:
+          "The CVE that caused the refusal. Where several critical CVEs match, this is the " +
+          "highest-scoring one; the rest are listed by GET /api/v1/packages/{name}/vulns. " +
+          "Absent only when walrus cannot describe the block it just made — the refusal itself " +
+          "is never conditional on being explainable, so treat a missing `blocked_by` as a " +
+          "block with an unavailable explanation, never as a softer refusal.",
+      }),
+  })
+  .openapi("BlockedVersionError");

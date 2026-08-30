@@ -77,7 +77,7 @@ The status codes carry meaning; retrying blindly is wrong for three of them.
 
 | Status                 | Meaning                                              | What to do                                                 |
 | ---------------------- | ---------------------------------------------------- | ---------------------------------------------------------- |
-| `403`                  | The version is blocked by walrus's critical-CVE gate | Do not retry — pick another version                        |
+| `403`                  | The version is blocked by walrus's critical-CVE gate | Do not retry — the body names the CVE and its `fixed_in`   |
 | `423`                  | The release is inside its cooling-off embargo        | Retry after `Retry-After`; the body carries `available_at` |
 | `400` `range_required` | Artifact is too large for an unranged GET            | Re-request with `Range`                                    |
 | `416`                  | Requested range lies outside the artifact            | The local `.part` is stale — delete and restart            |
