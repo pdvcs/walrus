@@ -448,18 +448,25 @@ describe("SyncService", () => {
     };
 
     const thresholdSort = "000000.000010.000009~";
-    // cooling_off_until is 1 day in the past — window has elapsed
-    const pastCoolingOff = new Date(Date.now() - 86_400_000);
+    // First discovered 4 days ago, so with cooling_off_days = 3 the embargo has elapsed. The
+    // artifact mock echoes back whatever embargo the service computed rather than asserting one
+    // of its own: hard-coding an elapsed `cooling_off_until` here is what let WAL-91 survive —
+    // the real upsert recomputed the value at this very call and pushed it into the future again.
+    const discoveredAt = new Date(Date.now() - 4 * 86_400_000);
 
     const deps = {
       discoverVersions: vi.fn().mockResolvedValue([discovered("0.10.10")]),
       upsertPackage: vi.fn().mockResolvedValue({}),
       createSyncJob: vi.fn().mockResolvedValue({ id: 600 }),
       updateSyncJob: vi.fn().mockResolvedValue({}),
-      insertVersion: vi.fn().mockResolvedValueOnce({ id: 1 }),
+      insertVersion: vi.fn().mockResolvedValueOnce({ id: 1, discovered_at: discoveredAt }),
       insertArtifact: vi
         .fn()
-        .mockResolvedValueOnce({ id: 50, status: "pending", cooling_off_until: pastCoolingOff }),
+        .mockImplementation(async (_pool: unknown, a: { cooling_off_until: Date | null }) => ({
+          id: 50,
+          status: "pending",
+          cooling_off_until: a.cooling_off_until,
+        })),
       updateArtifactStatus: vi.fn().mockResolvedValue({}),
       incrementJobCounters: vi.fn().mockResolvedValue(undefined),
       downloadArtifact: vi.fn().mockResolvedValue({ status: "available", attempts: 1 }),
@@ -482,6 +489,58 @@ describe("SyncService", () => {
     // 0.10.10 is above the threshold but the cooling off window has elapsed — should download
     expect(result.downloaded).toBe(1);
     expect(deps.downloadArtifact).toHaveBeenCalledTimes(1);
+    expect(deps.insertArtifact.mock.calls[0][1].cooling_off_until).toBeNull();
+  });
+
+  it("keeps the embargo anchored to first discovery, not to the sync clock", async () => {
+    const pkgWithCoolingOff: PackageConfig = {
+      ...pkg,
+      retention: { versions_per_group: 2, cooling_off_days: 3 },
+    };
+
+    // Discovered a day ago and still embargoed. Two syncs must agree on when the embargo ends;
+    // anchored to the clock, the second sync would push it a further day out (WAL-91).
+    const discoveredAt = new Date(Date.now() - 86_400_000);
+    const makeDeps = () => ({
+      discoverVersions: vi.fn().mockResolvedValue([discovered("0.10.10")]),
+      upsertPackage: vi.fn().mockResolvedValue({}),
+      createSyncJob: vi.fn().mockResolvedValue({ id: 601 }),
+      updateSyncJob: vi.fn().mockResolvedValue({}),
+      insertVersion: vi.fn().mockResolvedValue({ id: 1, discovered_at: discoveredAt }),
+      insertArtifact: vi
+        .fn()
+        .mockImplementation(async (_pool: unknown, a: { cooling_off_until: Date | null }) => ({
+          id: 51,
+          status: "pending",
+          cooling_off_until: a.cooling_off_until,
+        })),
+      updateArtifactStatus: vi.fn().mockResolvedValue({}),
+      incrementJobCounters: vi.fn().mockResolvedValue(undefined),
+      downloadArtifact: vi.fn().mockResolvedValue({ status: "available", attempts: 1 }),
+      enforceRetention: vi
+        .fn()
+        .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
+      getMaxAvailableVersionSort: vi.fn().mockResolvedValue("000000.000010.000009~"),
+    });
+
+    const embargoEnds: Date[] = [];
+    for (let i = 0; i < 2; i++) {
+      const deps = makeDeps();
+      const service = new SyncService(
+        lockablePool(),
+        pkgWithCoolingOff,
+        {} as DownloadService,
+        {} as RetentionService,
+        { deps },
+      );
+      const result = await service.run({ triggerType: "scheduled" });
+      expect(result.downloaded).toBe(0);
+      embargoEnds.push(deps.insertArtifact.mock.calls[0][1].cooling_off_until);
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    expect(embargoEnds[1].getTime()).toBe(embargoEnds[0].getTime());
+    expect(embargoEnds[0].getTime()).toBe(discoveredAt.getTime() + 3 * 86_400_000);
   });
 
   it("applies cooling off on bootstrap when releasedAt is available and recent", async () => {

@@ -383,10 +383,13 @@ export class SyncService {
       version_sort: generateSortKey(version.version),
     });
 
+    // versionRow.discovered_at, not the clock: this is the one call site whose result is persisted,
+    // and it is recomputed on every sync for as long as the artifact stays pending (WAL-91).
     const coolingOffUntil = computeCoolingOffUntil(
       version,
       this.packageConfig.retention,
       coolingOffThreshold,
+      versionRow.discovered_at,
     );
 
     for (const [platform, artifact] of version.artifacts) {

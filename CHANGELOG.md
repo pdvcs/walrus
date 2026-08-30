@@ -354,6 +354,19 @@ New deps: `fuzzball`, `semver` (runtime); `fast-check` (dev). `pg_trgm` extensio
   never allowed to prevent one, and a `500` would tell a client to retry a version walrus withheld
   on purpose.
 
+**Wave 17 — Embargo correctness**
+
+- **WAL-91 (Fixed):** A release embargo on a package whose upstream publishes no release date
+  never expired, leaving the newest version of `golang`, `azuljdk` and `vscode` permanently
+  undownloadable behind a `423` whose `available_at` was always about `cooling_off_days` away.
+  With no upstream date the embargo end was measured from the current time and rewritten on every
+  sync, so it advanced by one sync interval per run; the watermark that would have ended it only
+  moves when a version becomes available, which that same embargo prevented. The fallback is now
+  anchored to `versions.discovered_at` — the moment walrus first saw the version, stable across
+  syncs — so the embargo means three days after discovery and is reached on schedule. An upstream
+  release date still takes precedence where one exists, and artifacts already stuck are corrected
+  on the next sync rather than needing an operator, since the recomputed end is now in the past.
+
 ## Version 0.1.0: Initial Release
 
 Initial Walrus release: a configuration-driven package ingress engine that discovers, caches, and
