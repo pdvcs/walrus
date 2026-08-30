@@ -243,6 +243,28 @@ rather than on any change they made. `/api/v1/packages/:name/vulns` shows which 
 responsible, and `/admin/v1/vulns` → CVSS enrichment (or `dry_run` on the API) previews what a
 run would block before it runs.
 
+**The scheduled run is bounded** (WAL-48). Cloud Scheduler POSTs `{"limit": N}`, where `N` is
+`TF_VAR_vuln_sync_cvss_limit` (default 150). Enrichment makes one NVD request per candidate, so an
+unbounded run is cut off mid-walk on a large backlog; the default is sized for the keyless NVD
+rate (4 req/30s over the job's 1800s deadline is roughly 240 requests) because `NVD_API_KEY` is
+optional. An environment with a key can raise it an order of magnitude. `/vuln-sync/all` and the
+admin trigger are unaffected — this bounds the scheduled job only.
+
+So the backlog drains at up to `N` CVEs per run rather than all at once, and **a successful run no
+longer means the backlog is empty**. Judge it by the trend, not the run status:
+
+```sql
+-- The enrichment candidate set, matching listCveIdsMissingSeverity exactly.
+SELECT count(*) FROM cves WHERE severity IS NULL AND severity_source IS NULL;
+```
+
+Use that predicate, not "has no CVSS score": `severity_source IS NULL` is what excludes CVEs
+already checked and found to have no usable CVSS upstream. Counting score columns instead would
+include every Rejected or permanently-unscored CVE and show a backlog that never drains.
+
+Falling by roughly `N` per scheduled run means it is draining; flat or rising across several runs
+means the limit is too low for the rate CVEs arrive, or the walk is failing before it writes.
+
 Every `/internal/vuln-sync/:source` invocation is written to `admin_actions` with the verified
 scheduler service-account subject, so an unattended gate change is distinguishable from an
 operator's click, which records the authenticated operator subject:

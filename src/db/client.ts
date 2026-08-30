@@ -7,7 +7,13 @@ import { config } from "../config/index.js";
 // sizes fit comfortably within JS's safe integer range.
 types.setTypeParser(20, (val) => parseInt(val, 10));
 
-export const pool = new Pool({ connectionString: config.DATABASE_URL });
+// `max` is set deliberately, not left at pg's default of 10: see DB_POOL_MAX in config, and the
+// connection budget in infra/terraform/cloudrun.tf that divides Cloud SQL's max_connections
+// between the service's instances and the two Cloud Run Jobs.
+export const pool = new Pool({
+  connectionString: config.DATABASE_URL,
+  max: config.DB_POOL_MAX,
+});
 
 export async function runMigrations(): Promise<void> {
   const client = await pool.connect();

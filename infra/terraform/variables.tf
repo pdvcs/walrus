@@ -37,6 +37,47 @@ variable "cloud_run_min_instances" {
   default     = 1
 }
 
+# ── Cloud SQL connection budget ────────────────────────────────────────────────────────────────
+#
+# Four numbers that must move together, so they live together. The invariant is enforced by a
+# precondition on the Cloud Run service in cloudrun.tf, so a config that over-subscribes the
+# database fails at plan time rather than at 3am:
+#
+#   service_db_pool_max x cloud_run_max_instances  +  job_db_pool_max x 2  <=  db_usable_connections
+#
+# The defaults below size a **test** environment on the db-f1-micro default: 3 x 4 + 4 x 2 = 20.
+# UAT and production should raise the Cloud SQL tier first and then all four of these together --
+# raising the ceiling alone silently throttles the service, and raising it with the pools but not
+# the tier exhausts Postgres, where a scale-up becomes the outage instead of relieving it.
+# Sizing the real tiers is deliberately deferred; see plans/gcp-testing-tasks.md.
+
+variable "db_usable_connections" {
+  description = "Connections the Cloud SQL tier can actually serve, less Postgres' superuser reserve and Cloud SQL's own management sessions. db-f1-micro: max_connections defaults to ~25, so ~20."
+  type        = number
+  default     = 20
+}
+
+variable "service_db_pool_max" {
+  description = "Connections each walrus-api instance may hold (multiplied by cloud_run_max_instances)"
+  type        = number
+  default     = 3
+}
+
+variable "job_db_pool_max" {
+  description = "Connections each Cloud Run Job execution may hold (one execution at a time per job)"
+  type        = number
+  default     = 4
+}
+
+# Left unset, Cloud Run's default ceiling is 100 instances -- with pg's default pool of 10 that is
+# ~1,000 connections against a db-f1-micro's ~25, so a traffic spike would make Cloud Run scale up
+# and every new instance would then fail to reach Postgres.
+variable "cloud_run_max_instances" {
+  description = "Maximum Cloud Run instances; bounded by the connection budget above"
+  type        = number
+  default     = 4
+}
+
 variable "internal_oidc_audience" {
   description = "Exact OIDC audience shared by Cloud Scheduler and the /internal verifier"
   type        = string
@@ -76,6 +117,23 @@ variable "vuln_sync_cvss_schedule" {
   description = "Cron schedule for the CVSS enrichment repair pass (UTC)"
   type        = string
   default     = "10 9 * * *"
+}
+
+# How many un-scored CVEs one scheduled cvss run may walk (WAL-48). Bounded because enrichment
+# issues one NVD request per candidate and the run must finish inside the job's attempt deadline:
+#
+#   keyless   4 req / 30s = 0.133/s x 1800s deadline = ~240 requests, theoretical ceiling
+#   with key 45 req / 30s = 1.5/s   x 1800s deadline = ~2700
+#
+# The default is sized for the *keyless* case, deliberately under that 240: NVD_API_KEY is
+# optional (WAL-92), so a deployment without one must still finish rather than be cut off
+# mid-walk. The walk is resumable -- a deadline-exceeded run simply continues from the remaining
+# candidates next time -- so the cost of being conservative is latency in draining the backlog,
+# not lost work. An environment with a key can raise this an order of magnitude.
+variable "vuln_sync_cvss_limit" {
+  description = "Max CVEs one scheduled cvss enrichment run may walk (sized for keyless NVD; see comment)"
+  type        = number
+  default     = 150
 }
 
 # Runs after the nvd job's :20 so a newly seeded package is swept the same day.

@@ -16,8 +16,12 @@ resource "google_cloud_run_v2_service" "walrus" {
 
     timeout = "3600s"
 
+    # Bounded by the Cloud SQL connection budget, not by CPU headroom -- the database is the
+    # constraint. The four variables and the invariant they satisfy are documented together in
+    # variables.tf, and enforced by the precondition at the bottom of this resource.
     scaling {
       min_instance_count = var.cloud_run_min_instances
+      max_instance_count = var.cloud_run_max_instances
     }
 
     volumes {
@@ -55,6 +59,13 @@ resource "google_cloud_run_v2_service" "walrus" {
       env {
         name  = "TRANSFORM_CONCURRENCY"
         value = "1"
+      }
+      # Multiplied by the instance ceiling above. Downloads stream from GCS and hold no
+      # connection across the transfer, so this bounds concurrent metadata work, not concurrent
+      # downloads -- DOWNLOAD_CONCURRENCY may safely exceed it.
+      env {
+        name  = "DB_POOL_MAX"
+        value = tostring(var.service_db_pool_max)
       }
       env {
         name  = "STORAGE_BACKEND"
@@ -168,7 +179,35 @@ resource "google_cloud_run_v2_service" "walrus" {
   deletion_protection = false
 
   lifecycle {
-    ignore_changes = [template[0].containers[0].image]
+    # `image`: deploy.sh Phase 7 rolls new images out with `gcloud run services update`, because a
+    # Terraform-owned image would make every deploy a Terraform run.
+    #
+    # The rest are fields Terraform does not declare but the API or gcloud returns anyway, each of
+    # which made `terraform plan` permanently dirty after a deploy (WAL-96). That is corrosive
+    # rather than harmful: a plan that always shows a diff on the most important resource in the
+    # project trains reviewers to skim past it, which is exactly how the next real drift gets
+    # missed.
+    #   client / client_version    - stamped by `gcloud run services update`; re-added every deploy.
+    #   scaling                    - the *service-level* block, distinct from template.scaling
+    #                                below. The API returns it populated with zeros, so Terraform
+    #                                proposes removing zeros, which is a server-side no-op: the
+    #                                diff cannot be applied away, only ignored.
+    ignore_changes = [
+      template[0].containers[0].image,
+      client,
+      client_version,
+      scaling,
+    ]
+
+    # The connection budget, enforced rather than documented. `x 2` is the two Cloud Run Jobs
+    # below, each of which runs one execution at a time; add a third job and this must change.
+    # A `check` block would only warn -- this fails the plan, which is the point: the failure
+    # mode it guards against is a scale-up that exhausts Postgres and takes the service down
+    # instead of relieving it.
+    precondition {
+      condition     = ((var.service_db_pool_max * var.cloud_run_max_instances) + (var.job_db_pool_max * 2)) <= var.db_usable_connections
+      error_message = "Cloud SQL connection budget exceeded: service_db_pool_max x cloud_run_max_instances + job_db_pool_max x 2 must be <= db_usable_connections. Raise the Cloud SQL tier and db_usable_connections together, or lower the pools/ceiling."
+    }
   }
 }
 
@@ -207,6 +246,11 @@ resource "google_cloud_run_v2_job" "vuln_backfill" {
         image   = "${var.region}-docker.pkg.dev/${var.project_id}/walrus/walrus-api:${var.image_tag}"
         command = ["node", "dist/commands/vuln-backfill-job.js"]
         args    = ["--job-id", "overridden-by-launcher"]
+        # One execution at a time; counts once in the budget. See variables.tf.
+        env {
+          name  = "DB_POOL_MAX"
+          value = tostring(var.job_db_pool_max)
+        }
         env {
           name = "DATABASE_URL"
           value_source {
@@ -332,6 +376,11 @@ resource "google_cloud_run_v2_job" "sync" {
         env {
           name  = "GCS_UPLOAD_CHUNK_BYTES"
           value = "33554432"
+        }
+        # One execution at a time, so this counts once in the budget rather than per instance.
+        env {
+          name  = "DB_POOL_MAX"
+          value = tostring(var.job_db_pool_max)
         }
         env {
           name = "DATABASE_URL"

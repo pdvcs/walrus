@@ -43,9 +43,14 @@ resource "google_cloud_scheduler_job" "sync" {
 # ingestion fast, and this job triggers the source directly. The admin preview
 # (/admin/v1/vulns → CVSS enrichment) remains the tool for ad-hoc checks and for
 # seeing which versions a run would block.
+#
+# `body` is null for every source but cvss: it is the only one with a bounded-run option to
+# express (WAL-48). A null body means Cloud Scheduler POSTs nothing, which is what the other
+# three routes expect.
 locals {
   vuln_sync_jobs = {
     nvd = {
+      body     = null
       schedule = var.vuln_sync_nvd_schedule
       # Cloud Scheduler's default attempt deadline is 180s, well under an
       # incremental NVD walk. 1800s is the maximum it allows; the Cloud Run
@@ -57,17 +62,22 @@ locals {
       retries = 0
     }
     kev = {
+      body     = null
       schedule = var.vuln_sync_kev_schedule
       deadline = "600s"
       retries  = 1
     }
     osv = {
+      body     = null
       schedule = var.vuln_sync_osv_schedule
       deadline = "1800s"
       # Weekly, so a lost run leaves the cross-check stale for seven days.
       retries = 2
     }
     cvss = {
+      # WAL-48: bound the scheduled run so it finishes inside the deadline below. Without it the
+      # job walks the entire un-scored backlog and is cut off mid-walk on a large one.
+      body     = jsonencode({ limit = var.vuln_sync_cvss_limit })
       schedule = var.vuln_sync_cvss_schedule
       deadline = "1800s"
       # cvss takes the *nvd* lock, so a run overlapping incremental ingestion gets
@@ -98,6 +108,9 @@ resource "google_cloud_scheduler_job" "vuln_sync" {
   http_target {
     http_method = "POST"
     uri         = "${google_cloud_run_v2_service.walrus.uri}/internal/vuln-sync/${each.key}"
+    # Cloud Scheduler sends the body verbatim, so the route needs the content type to parse it.
+    headers = each.value.body == null ? {} : { "Content-Type" = "application/json" }
+    body    = each.value.body == null ? null : base64encode(each.value.body)
 
     oidc_token {
       service_account_email = google_service_account.walrus_scheduler.email

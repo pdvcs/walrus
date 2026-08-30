@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { incrementalNvdSync } from "../../../src/vuln/sync/nvd-sync.js";
+import { backfillNvd, incrementalNvdSync } from "../../../src/vuln/sync/nvd-sync.js";
 import type { NvdClient, NvdCveItem, NvdCvePage } from "../../../src/vuln/sync/nvd-client.js";
 
 /**
@@ -47,6 +47,9 @@ function fakePool() {
     // ingestion — otherwise the filter would empty each page and prove nothing.
     if (sql.includes("SELECT id FROM cves WHERE id = ANY")) {
       return { rows: ((params?.[0] as string[]) ?? []).map((id) => ({ id })), rowCount: 0 };
+    }
+    if (sql.includes("FROM package_cpes")) {
+      return { rows: [{ cpe_vendor: "acme", cpe_product: "gadget" }], rowCount: 1 };
     }
     return { rows: [], rowCount: 1 };
   });
@@ -110,5 +113,46 @@ describe("incremental NVD sync streams pages (WAL-95)", () => {
     const lastIngest = calls.lastIndexOf("COMMIT");
     const cursorWrite = calls.findIndex((sql) => sql.includes("INSERT INTO vuln_sync_state"));
     expect(cursorWrite).toBeGreaterThan(lastIngest);
+  });
+});
+
+/**
+ * WAL-97. `backfillNvd` had the same defect on the other path: `cvesForCpe` concatenated every
+ * page for a CPE pair before writing. A broad pair over a 119-day publication window is unbounded,
+ * and `walrus-vuln-backfill` runs with no resource pin at all, so the heap it could ask for was
+ * unbounded on a container taking Cloud Run's default memory.
+ */
+describe("backfill NVD sync streams pages (WAL-97)", () => {
+  it("ingests once per page instead of once per CPE pair", async () => {
+    const { pool, transactions } = fakePool();
+    const nvd = fakeNvd(PAGES);
+
+    await backfillNvd(pool, nvd, { now: new Date("2026-08-30T12:00:00Z") });
+
+    expect(transactions).toHaveLength(PAGES);
+    for (const writes of transactions) expect(writes).toBe(PAGE_SIZE);
+  });
+
+  it("never calls the accumulating cvesForCpe path", async () => {
+    const { pool } = fakePool();
+    const nvd = fakeNvd(PAGES) as unknown as { cvesForCpe: ReturnType<typeof vi.fn> };
+    (nvd as { cvesForCpe: ReturnType<typeof vi.fn> }).cvesForCpe = vi.fn();
+
+    await backfillNvd(pool, nvd as unknown as NvdClient, {
+      now: new Date("2026-08-30T12:00:00Z"),
+    });
+
+    expect(nvd.cvesForCpe).not.toHaveBeenCalled();
+  });
+
+  it("queries NVD by the pair's virtualMatchString", async () => {
+    const { pool } = fakePool();
+    const pages = vi.fn(async function* () {});
+    await backfillNvd(pool, { cvePages: pages } as unknown as NvdClient, {
+      now: new Date("2026-08-30T12:00:00Z"),
+    });
+    expect((pages.mock.calls[0][0] as { virtualMatchString: string }).virtualMatchString).toBe(
+      "cpe:2.3:a:acme:gadget",
+    );
   });
 });

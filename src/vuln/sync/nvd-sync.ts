@@ -312,10 +312,24 @@ export async function backfillNvd(
       const matchString = buildMatchString(pair.cpe_vendor, pair.cpe_product);
       log(`backfill: ${pair.cpe_vendor}:${pair.cpe_product} (${matchString})`);
       for (const window of windows) {
-        const items = await nvd.cvesForCpe(matchString, window);
-        const counts = await ingestCveItems(pool, items, lookup);
+        // Streamed a page at a time, never accumulated (WAL-97, same defect as WAL-95 on the
+        // incremental path). A broad CPE pair over a 119-day publication window returns an
+        // unbounded number of CVEs, and this job runs with no resource pin at all -- so the
+        // heap it may ask for is unbounded on a container taking Cloud Run's default memory.
+        // Unlike the incremental path there is no relevance filter here: a backfill ingests
+        // everything the CPE matched, which is the point of it.
+        const counts: IngestCounts = { cves: 0, affects: 0, skippedCpes: 0 };
+        let fetched = 0;
+        for await (const page of nvd.cvePages({ virtualMatchString: matchString, ...window })) {
+          fetched += page.vulnerabilities.length;
+          if (page.vulnerabilities.length === 0) continue;
+          const pageCounts = await ingestCveItems(pool, page.vulnerabilities, lookup);
+          counts.cves += pageCounts.cves;
+          counts.affects += pageCounts.affects;
+          counts.skippedCpes += pageCounts.skippedCpes;
+        }
         log(
-          `  ${items.length} CVEs → ${counts.affects} affects rows (${counts.skippedCpes} untracked CPEs skipped)`,
+          `  ${fetched} CVEs → ${counts.affects} affects rows (${counts.skippedCpes} untracked CPEs skipped)`,
         );
         totals.cves += counts.cves;
         totals.affects += counts.affects;

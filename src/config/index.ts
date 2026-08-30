@@ -66,6 +66,12 @@ const configSchema = z.object({
   DISCOVERY_HTTP_MAX_RETRIES: z.coerce.number().default(2),
   DISCOVERY_HTTP_RETRY_BASE_DELAY_MS: z.coerce.number().default(300),
   VULN_HTTP_TIMEOUT_MS: z.coerce.number().positive().default(30000),
+  // Connections this process may hold. Explicit because it is half of a budget: every workload
+  // multiplies it, and Cloud SQL's max_connections is the divisor. pg's own default is 10, which
+  // on a db-f1-micro (max_connections ~25) means three instances exhaust the database and a
+  // scale-up becomes the outage. Terraform sets this per workload -- see cloudrun.tf, which does
+  // the arithmetic. Raising it without re-reading that comment is the way to starve the fleet.
+  DB_POOL_MAX: z.coerce.number().int().positive().default(5),
   // Optional upstream credential for the NVD API 2.0 (raises the rate limit from
   // 5 to 50 req/30s). Unrelated to walrus authn/authz. Lives in .env.secrets.
   NVD_API_KEY: z.string().optional(),

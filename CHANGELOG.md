@@ -408,6 +408,25 @@ New deps: `fuzzball`, `semver` (runtime); `fast-check` (dev). `pg_trgm` extensio
   interrupted run is redone idempotently instead of discarded. First live run after the fix walked
   367,090 modified CVEs, wrote 15,915 affects rows, and left the serving instance up throughout.
 
+- **WAL-97 (Fixed):** The historical CVE backfill had the same defect as the incremental sync,
+  where it mattered more. `backfillNvd` concatenated every page of a CPE pair's results before
+  writing a row — with no relevance filter to shrink the set, per publication window per pair, in
+  a Cloud Run Job that has no resource pin at all. It now ingests per page. Not reached in live
+  testing only because no environment had run a historical backfill yet, which is exactly what
+  WAL-77 does.
+- **WAL-48 (Changed):** The scheduled CVSS enrichment run is bounded. Cloud Scheduler now POSTs a
+  `limit`, sized by a documented Terraform variable rather than walking the entire un-scored
+  backlog and being cut off mid-walk. The default is derived for the keyless NVD rate, since an
+  API key is optional. The runbook records that the backlog now drains at `limit` per run, so a
+  successful run no longer implies an empty backlog, and gives the query to watch the trend.
+- **WAL-96 (Fixed):** `terraform plan` is no longer permanently dirty after a deploy. The Cloud
+  Run service now ignores three fields it does not declare but the API and `gcloud run services
+update` return anyway — including a service-level `scaling` block the API reports as zeros,
+  whose diff cannot be applied away because removing zeros is a server-side no-op. A plan that
+  always shows a diff on the most important resource in the project is how the next real drift
+  goes unnoticed. The instance ceiling and the Postgres pool size are now declared together, with
+  the connection budget binding them enforced by a plan-time precondition.
+
 ## Version 0.1.0: Initial Release
 
 Initial Walrus release: a configuration-driven package ingress engine that discovers, caches, and

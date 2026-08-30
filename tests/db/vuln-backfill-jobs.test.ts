@@ -72,12 +72,16 @@ describe("targeted vuln backfill jobs", () => {
   });
 
   it("walks only the scoped package's pairs and reports a scoped cpe_pairs_total", async () => {
-    const cvesForCpe = vi.fn().mockResolvedValue([]);
+    // backfillNvd pages rather than accumulating (WAL-97), so the seam is cvePages: an async
+    // generator that yields nothing stands in for a CPE pair with no matching CVEs.
+    const cvePages = vi.fn(async function* () {});
     const job = await createVulnBackfillJob(pool, undefined, PKG_TWO_PAIRS);
 
-    await runVulnBackfillJob(pool, job.id, { cvesForCpe } as unknown as NvdClient);
+    await runVulnBackfillJob(pool, job.id, { cvePages } as unknown as NvdClient);
 
-    const matchStrings = cvesForCpe.mock.calls.map((c) => c[0] as string).sort();
+    const matchStrings = cvePages.mock.calls
+      .map((c) => (c[0] as { virtualMatchString: string }).virtualMatchString)
+      .sort();
     expect(matchStrings).toEqual(["cpe:2.3:a:acme:doohickey", "cpe:2.3:a:acme:gadget"]);
 
     const finished = await getVulnBackfillJob(pool, job.id);
@@ -87,8 +91,15 @@ describe("targeted vuln backfill jobs", () => {
   });
 
   it("records failure without losing the package scope", async () => {
+    // An async iterable whose first `next()` rejects — an upstream failure on the first page.
+    // Written out rather than as a generator, which would need an unreachable `yield` to satisfy
+    // require-yield.
     const nvd = {
-      cvesForCpe: vi.fn().mockRejectedValue(new Error("upstream boom")),
+      cvePages: vi.fn(() => ({
+        [Symbol.asyncIterator]: () => ({
+          next: () => Promise.reject(new Error("upstream boom")),
+        }),
+      })),
     } as unknown as NvdClient;
     const job = await createVulnBackfillJob(pool, undefined, PKG);
 
