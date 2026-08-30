@@ -73,14 +73,11 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
       const syncError = optionalString(req.query.sync_error);
       const backfillStarted = optionalString(req.query.backfill_started);
 
-      const [freshness, syncStatus, activeSuppressionCount, activeSuppressions] = await Promise.all(
-        [
-          deps.getDataFreshness(),
-          deps.getSyncStatus(),
-          deps.getActiveSuppressionCount(),
-          deps.listActiveSuppressions(),
-        ],
-      );
+      const [freshness, syncStatus, activeSuppressions] = await Promise.all([
+        deps.getDataFreshness(),
+        deps.getSyncStatus(),
+        deps.listActiveSuppressions(),
+      ]);
       const hints = deps.getHints ? await deps.getHints() : [];
       const result = product ? await deps.queryVulns(product, version) : null;
 
@@ -95,7 +92,6 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
           freshness,
           syncStatus,
           hints,
-          activeSuppressionCount,
           activeSuppressions,
           result,
         }),
@@ -192,6 +188,16 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
       if (existenceError) return void res.status(404).json({ error: existenceError });
       const preview = await deps.previewSuppression(parsed.input);
       res.json({ preview });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Count only: this is polled by the admin nav chip on every page, so it must stay a
+  // single cheap query. The rows themselves are rendered by the explorer page.
+  router.get("/vuln-suppressions/active-count", async (_req, res, next) => {
+    try {
+      res.json({ active_count: await deps.getActiveSuppressionCount() });
     } catch (error) {
       next(error);
     }
@@ -354,7 +360,6 @@ function renderExplorer(ctx: {
   freshness: DataFreshness;
   syncStatus: VulnSyncStatus;
   hints: string[];
-  activeSuppressionCount: number;
   activeSuppressions: CveSuppressionRow[];
   result: VulnQueryResult | null;
 }): string {
@@ -395,7 +400,6 @@ function renderExplorer(ctx: {
       <div class="status-row">
         <strong>Data sources</strong>
         <span class="src-chips">${sourceChips}</span>
-        <span class="suppression-count" title="Active operator assertions excluded from the critical-CVE gate">${ctx.activeSuppressionCount} active suppression${ctx.activeSuppressionCount === 1 ? "" : "s"}</span>
         <span class="strip-actions">
           <form method="post" action="/admin/v1/vuln-sync/nvd"><button class="btn btn-sm btn-secondary">Sync NVD</button></form>
           <form method="post" action="/admin/v1/vuln-sync/kev"><button class="btn btn-sm btn-secondary">Sync KEV</button></form>
@@ -478,7 +482,7 @@ function renderExplorer(ctx: {
   const activeSuppressionList =
     ctx.activeSuppressions.length === 0
       ? ""
-      : `<details class="active-suppressions">
+      : `<details class="active-suppressions" id="active-suppressions">
           <summary>Active CVE suppressions (${ctx.activeSuppressions.length})</summary>
           <p class="meta">Operational exceptions remain visible here until revoked or expired.</p>
           <table>
@@ -515,6 +519,19 @@ function renderExplorer(ctx: {
     ${enrichPanel}`;
 
   const scripts = `
+    // ── Deep link from the nav suppression chip ──
+    // The list is a collapsed <details>; arriving at #active-suppressions should land on
+    // it open, whether that is a fresh page load or a hash change from this same page.
+    function openSuppressionList() {
+      if (location.hash !== '#active-suppressions') return;
+      const el = document.getElementById('active-suppressions');
+      if (!el) return;
+      el.open = true;
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    openSuppressionList();
+    window.addEventListener('hashchange', openSuppressionList);
+
     // ── Relative timestamps for the source chips ──
     function relTime(iso) {
       const then = new Date(iso).getTime();
@@ -933,7 +950,6 @@ function renderExplorer(ctx: {
     .src-never { background:#f3f4f6; color:#6b7280; }
     .src-never .dot { background:#9ca3af; }
     .src-ts { color:inherit; opacity:0.75; font-size:0.75rem; }
-    .suppression-count { font-size:0.78rem; color:#7c2d12; background:#ffedd5; padding:3px 9px; border-radius:12px; }
     .strip-actions { display:flex; gap:8px; flex-wrap:wrap; margin-left:auto; }
     .enrich-wrap { margin-top:12px; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:10px 14px; }
     .enrich-wrap summary { cursor:pointer; font-size:0.85rem; font-weight:700; color:#111; }

@@ -15,6 +15,10 @@ export const BASE_PAGE_STYLES = `
   .nav form { display: inline; margin: 0; }
   .nav-link { appearance: none; border: 0; padding: 0; background: transparent; color: #6b7280; cursor: pointer; font: inherit; font-size: 0.9rem; }
   .nav-link:hover { color: #111; text-decoration: underline; }
+  .nav-status { display: inline-flex; align-items: center; gap: 10px; }
+  .nav .nav-chip { display: inline-flex; align-items: center; padding: 2px 9px; border-radius: 999px; background: #c2410c; color: #fff; font-size: 0.78rem; font-weight: 700; }
+  .nav .nav-chip:hover { background: #9a3412; color: #fff; text-decoration: none; }
+  .nav .nav-chip[hidden] { display: none; }
   .wrap { width: 100%; max-width: 1100px; margin: 0 auto; padding: 24px; }
   h1 { margin: 0 0 16px; font-size: 1.4rem; }
   h2 { margin: 0 0 8px; font-size: 1rem; }
@@ -36,6 +40,7 @@ export const BASE_PAGE_STYLES = `
   .alert { margin: 0 0 16px; padding: 10px 12px; border-radius: 6px; font-size: 0.85rem; }
   .alert-error { background: #fee2e2; color: #991b1b; }
   .alert-success { background: #dcfce7; color: #166534; }
+  .alert-info { background: #f3f4f6; color: #374151; }
   .hero { padding: 56px 0 36px; }
   .hero h1 { font-size: clamp(2.2rem, 7vw, 4rem); letter-spacing: -0.04em; margin-bottom: 8px; }
   .version { display: inline-block; margin-bottom: 20px; padding: 3px 9px; border-radius: 999px; background: #e5e7eb; color: #4b5563; font: 600 0.78rem ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -61,11 +66,38 @@ export function renderAdminNav(active?: AdminNavItem): string {
     <a href="/admin/v1/validate"${active === "validate" ? ' class="active"' : ""}>Validate TOML</a>
     <a href="/admin/v1/vulns"${active === "vulns" ? ' class="active"' : ""}>Vulnerabilities</a>
     <a href="/api">API Docs</a>
-    <a href="/app/status">Status</a>
+    <span class="nav-status">
+      <a href="/app/status">Status</a>
+      <a class="nav-chip" id="nav-suppressions" href="/admin/v1/vulns#active-suppressions" hidden></a>
+    </span>
     <span class="nav-spacer"></span>
     <form method="post" action="/admin/v1/tokens"><button class="nav-link" type="submit">API token</button></form>
     <form method="post" action="/admin/v1/logout"><button class="nav-link" type="submit">Log out</button></form>
-  </nav>`;
+  </nav>
+  <script>
+// nav-suppression-chip:start
+// An active suppression is an operator overriding the critical-CVE gate, so it stays
+// visible from every admin page rather than only from the explorer that created it.
+// Fetched client-side because the nav is rendered by pages that have no vuln deps;
+// hidden at zero, since "no exceptions in force" is the expected state, not news.
+(async () => {
+  const el = document.getElementById('nav-suppressions');
+  if (!el) return;
+  try {
+    const r = await fetch('/admin/v1/vuln-suppressions/active-count');
+    if (!r.ok) return;
+    const n = (await r.json()).active_count || 0;
+    if (n < 1) return;
+    el.textContent = '\u{1F515} ' + n;
+    el.title = n + ' active suppression' + (n === 1 ? '' : 's')
+      + (n === 1 ? ' — a CVE is' : ' — CVEs are')
+      + ' excluded from the critical-CVE gate by operator decision, so affected versions'
+      + ' download normally. Click to review or revoke.';
+    el.hidden = false;
+  } catch (e) { /* the chip must never break an admin page */ }
+})();
+// nav-suppression-chip:end
+  </script>`;
 }
 
 export function renderPublicNav(): string {

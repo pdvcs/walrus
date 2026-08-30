@@ -121,6 +121,34 @@ describe("operator authentication", () => {
     await request(target).post("/admin/v1/change").expect(401);
   });
 
+  it("sends a lapsed browser form post to the login page instead of a JSON 401", async () => {
+    const target = app(runtime());
+    // What the admin nav's forms actually send once the session key has rotated under them.
+    await request(target)
+      .post("/admin/v1/tokens")
+      .set("accept", "text/html")
+      .type("form")
+      .send({})
+      .expect(303)
+      .expect("location", "/admin/v1/login?expired=1");
+
+    const loggedOut = await request(target)
+      .post("/admin/v1/logout")
+      .set("accept", "text/html")
+      .type("form")
+      .send({})
+      .expect(303)
+      .expect("location", "/admin/v1/login?logged_out=1");
+    // Logging out is idempotent: the stale cookie goes even though no session was verified.
+    expect(loggedOut.headers["set-cookie"].join()).toContain("walrus_session=;");
+
+    // API clients are unaffected — no text/html, no form encoding.
+    await request(target)
+      .post("/admin/v1/logout")
+      .expect(401)
+      .expect({ error: "Authentication required" });
+  });
+
   it("rechecks the administrator roster on every request", async () => {
     const authRuntime = runtime();
     const token = mintSession("removed-admin", "bearer", authRuntime.sessions, now).token;

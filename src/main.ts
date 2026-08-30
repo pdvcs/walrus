@@ -90,6 +90,7 @@ import { CloudRunBackfillLauncher, LocalBackfillLauncher } from "./vuln/backfill
 import { isVulnSyncRunning } from "./vuln/sync/lock.js";
 import {
   countActiveCveSuppressions,
+  getActiveCveSuppressionSummary,
   listActiveCveSuppressions,
 } from "./db/queries/cve-suppressions.js";
 import {
@@ -308,12 +309,16 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
           await pool.query("SELECT 1");
         }),
       getStatusDetails: async () => {
-        const [vuln_data_freshness, vuln_sync_status, degradations] = await Promise.all([
-          getDataFreshness(pool).catch(() => null),
-          getVulnSyncStatus(pool).catch(() => null),
-          getDegradations(pool, { autoBackfillEnabled: config.VULN_AUTO_BACKFILL }).catch(() => []),
-        ]);
-        return { vuln_data_freshness, vuln_sync_status, degradations };
+        const [vuln_data_freshness, vuln_sync_status, cve_suppressions, degradations] =
+          await Promise.all([
+            getDataFreshness(pool).catch(() => null),
+            getVulnSyncStatus(pool).catch(() => null),
+            getActiveCveSuppressionSummary(pool).catch(() => null),
+            getDegradations(pool, { autoBackfillEnabled: config.VULN_AUTO_BACKFILL }).catch(
+              () => [],
+            ),
+          ]);
+        return { vuln_data_freshness, vuln_sync_status, cve_suppressions, degradations };
       },
     }),
   );

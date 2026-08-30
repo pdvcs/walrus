@@ -278,7 +278,7 @@ describe("admin vuln explorer + sync (isolated)", () => {
     expect(res.text).toContain("six-eyes review and formal approval");
   });
 
-  it("surfaces the active suppression count in the explorer status strip", async () => {
+  it("lists active suppressions under the anchor the nav chip links to", async () => {
     const res = await request(
       buildApp({
         getActiveSuppressionCount: async () => 1,
@@ -296,11 +296,19 @@ describe("admin vuln explorer + sync (isolated)", () => {
         ],
       }),
     ).get("/admin/v1/vulns");
-    expect(res.text).toContain("1 active suppression");
+    expect(res.text).toContain('id="active-suppressions"');
     expect(res.text).toContain("Active CVE suppressions (1)");
     expect(res.text).toContain("Confirmed mis-attribution");
     expect(res.text).toContain("operator@example.com");
     expect(res.text).toMatch(/data-mode="revoke" data-id="42"/);
+  });
+
+  it("serves the active suppression count the nav chip polls", async () => {
+    const res = await request(buildApp({ getActiveSuppressionCount: async () => 3 })).get(
+      "/admin/v1/vuln-suppressions/active-count",
+    );
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ active_count: 3 });
   });
 
   it("keeps Apply locked in the browser until the exact suppression payload is previewed", async () => {
@@ -426,7 +434,7 @@ describe("admin vuln explorer + sync (isolated)", () => {
     expect(reload).toHaveBeenCalledOnce();
   });
 
-  it("renders active suppression health degradation in the admin browser banner", async () => {
+  it("renders a health degradation in the admin browser banner", async () => {
     const response = await request(buildApp()).get("/admin/v1/vulns");
     const startMarker = "// health-degradation-ui:start";
     const endMarker = "// health-degradation-ui:end";
@@ -442,8 +450,8 @@ describe("admin vuln explorer + sync (isolated)", () => {
         isAvailable: true,
         degradations: [
           {
-            component: "cve-suppressions",
-            reason: "1 operator CVE suppression active; review regularly.",
+            component: "vuln-sync-nvd",
+            reason: "nvd ingestion last succeeded 30h ago (threshold 12h).",
           },
         ],
       }),
@@ -470,8 +478,8 @@ describe("admin vuln explorer + sync (isolated)", () => {
     expect(fetchMock).toHaveBeenCalledWith("/app/status");
     expect(banner.className).toBe("degraded-banner");
     expect(banner.innerHTML).toContain("System degraded");
-    expect(banner.innerHTML).toContain("cve-suppressions");
-    expect(banner.innerHTML).toContain("1 operator CVE suppression active");
+    expect(banner.innerHTML).toContain("vuln-sync-nvd");
+    expect(banner.innerHTML).toContain("nvd ingestion last succeeded 30h ago");
   });
 
   it("rejects blank audit fields before previewing or applying a suppression", async () => {

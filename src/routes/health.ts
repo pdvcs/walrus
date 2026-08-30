@@ -12,6 +12,7 @@ export interface ApplicationMetadata {
 export interface ApplicationStatusDetails {
   vuln_data_freshness: unknown;
   vuln_sync_status: unknown;
+  cve_suppressions: unknown;
   degradations: unknown[];
 }
 

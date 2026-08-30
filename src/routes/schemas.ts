@@ -377,9 +377,30 @@ export const HealthResponseSchema = z
   })
   .openapi("HealthResponse");
 
+export const CveSuppressionStatusSchema = z
+  .object({
+    active_count: z.number().int(),
+    next_expiry: z
+      .string()
+      .datetime()
+      .nullable()
+      .openapi({
+        description:
+          "Soonest expiry among active suppressions that have one; null when every active " +
+          "suppression stands until revoked.",
+      }),
+  })
+  .openapi("CveSuppressionStatus");
+
 export const StatusResponseSchema = HealthResponseSchema.extend({
   vuln_data_freshness: DataFreshnessSchema.nullable(),
   vuln_sync_status: VulnSyncStatusSchema.nullable(),
+  cve_suppressions: CveSuppressionStatusSchema.nullable().openapi({
+    description:
+      "Operator suppressions currently excluding a CVE from the critical-CVE gate. A " +
+      "suppression is a deliberate, audited decision rather than a fault, so it is " +
+      "reported here in its own right and never as a degradation. Null if unreadable.",
+  }),
   degradations: z.array(DegradationSchema).openapi({
     description:
       "Parts of the system currently not doing their job unattended — stale or failing " +

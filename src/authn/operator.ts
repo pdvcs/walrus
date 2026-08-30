@@ -17,7 +17,12 @@ export function installOperatorAuth(router: Router, runtime: OperatorAuthRuntime
   const timing = runtime.loginTiming ?? { now: Date.now, sleep: delay };
 
   router.get("/login", (req, res) => {
-    const notice = req.query.logged_out === "1" ? "You have been signed out." : undefined;
+    const notice =
+      req.query.logged_out === "1"
+        ? "You have been signed out."
+        : req.query.expired === "1"
+          ? "Your session has ended. Sign in again to continue."
+          : undefined;
     res
       .type("html")
       .send(renderLoginPage(safeReturnPath(stringValue(req.query.return_to)), undefined, notice));
@@ -169,7 +174,7 @@ export function createOperatorGuard(runtime: OperatorAuthRuntime): RequestHandle
     const token = bearer ?? cookie;
     const expectedKind = bearer ? "bearer" : "cookie";
     if (!token) {
-      sendUnauthenticated(req, res);
+      sendUnauthenticated(req, res, runtime);
       return;
     }
 
@@ -178,7 +183,7 @@ export function createOperatorGuard(runtime: OperatorAuthRuntime): RequestHandle
       expectedKind,
     });
     if (!verified.ok) {
-      sendUnauthenticated(req, res);
+      sendUnauthenticated(req, res, runtime);
       return;
     }
     if (!runtime.roster.has(verified.payload.sub)) {
@@ -242,14 +247,37 @@ function createOperatorAudit(runtime: OperatorAuthRuntime): RequestHandler {
   };
 }
 
-function sendUnauthenticated(req: Request, res: Response): void {
-  if (req.method === "GET" && req.headers.accept?.includes("text/html")) {
+function sendUnauthenticated(req: Request, res: Response, runtime: OperatorAuthRuntime): void {
+  const wantsHtml = req.headers.accept?.includes("text/html") ?? false;
+  if (req.method === "GET" && wantsHtml) {
     const returnTo = safeReturnPath(req.originalUrl);
     const query = returnTo ? `?return_to=${encodeURIComponent(returnTo)}` : "";
     res.redirect(303, `/admin/v1/login${query}`);
     return;
   }
+
+  // A browser form navigation whose session has lapsed — clicking Log out or API token after
+  // the server restarted with a fresh session key, typically in dev. Rendering the JSON 401
+  // as a bare document is a dead end, so send the operator to the login page instead. The
+  // POST cannot be replayed after signing in, so no return_to. Client-side fetch() calls do
+  // not ask for text/html and still get the JSON 401 their callers handle.
+  if (wantsHtml || isFormRequest(req)) {
+    if (isLogoutRequest(req)) {
+      // Logging out is idempotent and needs no session: clear the stale cookie and report
+      // the outcome the operator asked for rather than an authentication error.
+      clearSessionCookie(res, runtime);
+      res.redirect(303, "/admin/v1/login?logged_out=1");
+      return;
+    }
+    res.redirect(303, "/admin/v1/login?expired=1");
+    return;
+  }
+
   res.status(401).json({ error: "Authentication required" });
+}
+
+function isLogoutRequest(req: Request): boolean {
+  return req.method === "POST" && req.originalUrl.split("?")[0].endsWith("/logout");
 }
 
 function sendLoginFailure(req: Request, res: Response, status: number, message: string): void {
@@ -313,7 +341,7 @@ function renderLoginPage(returnTo?: string, error?: string, notice?: string): st
       <h1>Operator login</h1>
       <p class="meta">Sign in with the administrator credentials configured for this Walrus instance.</p>
       ${error ? `<p class="alert alert-error" role="alert">${escapeHtml(error)}</p>` : ""}
-      ${notice ? `<p class="alert alert-success" role="status">${escapeHtml(notice)}</p>` : ""}
+      ${notice ? `<p class="alert alert-info" role="status">${escapeHtml(notice)}</p>` : ""}
       <form method="post" action="/admin/v1/login">
         <div class="field"><label for="username">Username</label><input id="username" name="username" autocomplete="username" required autofocus></div>
         <div class="field"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required></div>

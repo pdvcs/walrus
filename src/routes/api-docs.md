@@ -394,6 +394,15 @@ Endpoints under `/admin/v1/` provide:
 - Sync job history
 - CVE suppression preview/create/revoke and its audit trail
 
+### GET /admin/v1/vuln-suppressions/active-count
+
+Returns `{"active_count": N}` — suppressions that are neither revoked nor expired. The admin nav
+polls this to badge every page while any exception to the critical-CVE gate is in force.
+
+```bash
+curl "$WALRUS_URL/admin/v1/vuln-suppressions/active-count"
+```
+
 ### GET /admin/v1/vuln-suppressions/audit
 
 Returns suppression creation and revocation audit entries newest-first. This is the supported
@@ -711,6 +720,7 @@ Returns the health fields above plus detailed operational status:
     "osv": { "last_attempt": null, "last_success": null, "last_failure": null, "last_ok": null },
     "cvss": { "last_attempt": null, "last_success": null, "last_failure": null, "last_ok": null }
   },
+  "cve_suppressions": { "active_count": 0, "next_expiry": null },
   "degradations": []
 }
 ```
@@ -719,6 +729,12 @@ Returns the health fields above plus detailed operational status:
 failing vulnerability ingestion, stuck or disabled autonomous backfills — as
 `{ "component", "reason" }` entries. Degradations do not change `isAvailable`; empty means
 self-healing is healthy. The same list is shown as a banner on the admin UI.
+
+`cve_suppressions` reports operator suppressions currently excluding a CVE from the critical-CVE
+gate: `active_count`, and `next_expiry` (the soonest expiry among those that have one, null when
+every active suppression stands until revoked). A suppression is a deliberate, audited decision
+rather than a fault, so it is reported in its own right and is never a degradation. The admin nav
+badges every page while `active_count` is non-zero.
 
 ### GET /
 

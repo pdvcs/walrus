@@ -202,7 +202,7 @@ describe("application health and status", () => {
     }
   });
 
-  it("reports active suppression counts and removes the degradation after expiry", async () => {
+  it("reports active suppressions as their own status object, never as a degradation", async () => {
     await upsertPackage(pool, {
       name: HEALTH_PACKAGE,
       display_name: HEALTH_PACKAGE,
@@ -234,22 +234,21 @@ describe("application health and status", () => {
       const active = await request(createApp()).get("/app/status");
       expect(active.status).toBe(200);
       expect(active.body.isAvailable).toBe(true);
-      expect(active.body.degradations).toContainEqual({
-        component: "cve-suppressions",
-        reason:
-          "1 operator CVE suppression active; review the list regularly for a missing general rule or an assertion that can be retired.",
-      });
+      expect(active.body.cve_suppressions.active_count).toBe(1);
+      expect(active.body.cve_suppressions.next_expiry).toBe(suppression.expires_at?.toISOString());
+      // A suppression is an audited decision, not machinery failing.
+      expect(
+        active.body.degradations.some(
+          (item: { component: string }) => item.component === "cve-suppressions",
+        ),
+      ).toBe(false);
 
       await pool.query(
         "UPDATE cve_suppressions SET expires_at = now() - interval '1 second' WHERE id = $1",
         [suppression.id],
       );
       const expired = await request(createApp()).get("/app/status");
-      expect(
-        expired.body.degradations.some(
-          (item: { component: string }) => item.component === "cve-suppressions",
-        ),
-      ).toBe(false);
+      expect(expired.body.cve_suppressions).toEqual({ active_count: 0, next_expiry: null });
     } finally {
       await pool.query("DELETE FROM cves WHERE id = $1", [HEALTH_CVE]);
       await pool.query("DELETE FROM packages WHERE name = $1", [HEALTH_PACKAGE]);

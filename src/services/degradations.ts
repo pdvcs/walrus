@@ -5,7 +5,6 @@ import {
   VulnSyncStatus,
 } from "../db/queries/vuln-sync-state.js";
 import { getVulnHints } from "./vuln-hints.js";
-import { countActiveCveSuppressions } from "../db/queries/cve-suppressions.js";
 
 /**
  * Degradation reporting (PO decision 2026-08-26).
@@ -20,6 +19,12 @@ import { countActiveCveSuppressions } from "../db/queries/cve-suppressions.js";
  * serving but some data is going stale or some gap is not being closed. Alerting and email
  * notification are planned on top of this; until then the admin homepage banner is the
  * surface an operator sees.
+ *
+ * An active CVE suppression is deliberately *not* a degradation: it is an audited operator
+ * decision, not machinery failing, and reporting it here left a permanent "system degraded"
+ * banner standing for an intended state — which teaches operators to ignore the banner that
+ * reports real ingestion failure. /app/status reports it as its own `cve_suppressions` object
+ * and the admin nav badges it.
  */
 
 export interface Degradation {
@@ -162,14 +167,6 @@ export async function getDegradations(
   const hints = await getVulnHints(pool, { autoBackfillEnabled: opts.autoBackfillEnabled });
   for (const hint of hints) {
     degradations.push({ component: "vuln-backfill", reason: hint });
-  }
-
-  const activeSuppressions = await countActiveCveSuppressions(pool);
-  if (activeSuppressions > 0) {
-    degradations.push({
-      component: "cve-suppressions",
-      reason: `${activeSuppressions} operator CVE suppression${activeSuppressions === 1 ? "" : "s"} active; review the list regularly for a missing general rule or an assertion that can be retired.`,
-    });
   }
 
   return degradations;
