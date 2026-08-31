@@ -205,10 +205,11 @@ resource "google_monitoring_alert_policy" "vuln_sync_degraded" {
 
   notification_channels = [google_monitoring_notification_channel.walrus_email.name]
 
+  # No `notification_rate_limit` here, unlike the log-based policies: the API rejects it with
+  # "only log-based alert policies may specify a notification rate limit", and this one is a
+  # metric threshold. Re-throttling is unnecessary anyway — the condition already aggregates over
+  # a four-hour window, so it cannot fire per-event.
   alert_strategy {
-    notification_rate_limit {
-      period = "3600s"
-    }
     auto_close = "86400s"
   }
 }

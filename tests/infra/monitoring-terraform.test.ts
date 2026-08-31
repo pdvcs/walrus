@@ -64,6 +64,20 @@ describe("monitoring deployment wiring", () => {
     expect(monitoring).toContain("jsonPayload.blocked>0");
   });
 
+  it("keeps notification_rate_limit off the metric-threshold policy", () => {
+    // The API refuses it: "only log-based alert policies may specify a notification rate limit".
+    // It is accepted by `terraform validate` and fails at apply, which is the worst place to find
+    // out — it aborted a deploy mid-run and left the service and the Jobs on different images.
+    const policy = monitoring.slice(
+      monitoring.indexOf('resource "google_monitoring_alert_policy" "vuln_sync_degraded"'),
+    );
+    const body = policy.slice(0, policy.indexOf("\n}\n"));
+    expect(body).toContain("condition_threshold");
+    // The block form, not the bare word: the comment above the fix names it in prose, and
+    // matching that would fail on the very explanation of why it is absent.
+    expect(body).not.toMatch(/notification_rate_limit\s*\{/);
+  });
+
   it("tells an operator what to do, not just what happened (AC6)", () => {
     const policies = monitoring.match(/resource "google_monitoring_alert_policy"/g) ?? [];
     const documented = monitoring.match(/documentation\s*\{/g) ?? [];
