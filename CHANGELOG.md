@@ -483,6 +483,19 @@ update` return anyway — including a service-level `scaling` block the API repo
   guard against splicing two builds together rotated on any re-download, on exactly the artifacts
   large enough to need resuming.
 
+- **WAL-103 (Fixed):** GitHub discovery ran unauthenticated on GCP, so a scheduled sync failed
+  outright when the 60 req/hour per-IP limit — measured against a Cloud Run egress address shared
+  with other tenants — ran out; four of thirteen packages 403'd and the job exited non-zero.
+  `GITHUB_TOKEN` was already read by the discovery client and simply never wired into the
+  deployment. Now supplied from Secret Manager the way `NVD_API_KEY` is, mounted on `walrus-sync`
+  alone since that is the only workload running discovery. A response carrying
+  `x-ratelimit-remaining: 0` is now named in the log with its reset time and never retried,
+  including a 429 that the old code would have retried within seconds against a window measured
+  in minutes. Implementing that exposed a live defect: `fetchWithRetry` threw inside its own
+  `try`, so its `catch` re-wrapped the error and discarded `status` — leaving `json-api.ts`'s
+  "a 404 feed means no releases yet" branch unreachable. Already-classified errors are now
+  rethrown untouched.
+
 - **WAL-102 (Fixed, second defect):** The same discovery-time write had a second branch. Where
   discovery supplies a checksum _value_ rather than a URL, it did not null the stored digest — it
   replaced it with **upstream's**. On an untransformed artifact those are the same number and

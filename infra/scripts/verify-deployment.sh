@@ -380,8 +380,11 @@ TF_PLAN_LOG="$(mktemp)"
 if [ -z "${TERRAFORM_STATE_BUCKET:-}" ]; then
   warn "WAL-96" "skipped: source ~/.config/walrus/deploy.env first"
 else
-  # The same three variables deploy.sh computes. Without them plan cannot resolve, and its exit
-  # code would be indistinguishable from real drift.
+  # The same variables deploy.sh computes. Without them plan cannot resolve, and its exit code
+  # would be indistinguishable from real drift — which is exactly what happened when
+  # github_token_configured was added and this list was not updated: a clean deployment reported
+  # drift because the plan defaulted the flag to false and wanted to unmount the token. Any new
+  # deploy-time variable has to be mirrored here.
   export TF_VAR_image_tag="${TF_VAR_image_tag:-$(gcloud run services describe walrus-api \
     --region="$REGION" --project="$PROJECT" \
     --format='value(spec.template.spec.containers[0].image)' 2>/dev/null | sed 's/.*://')}"
@@ -389,6 +392,13 @@ else
     export TF_VAR_nvd_api_key_configured="${TF_VAR_nvd_api_key_configured:-true}"
   else
     export TF_VAR_nvd_api_key_configured="${TF_VAR_nvd_api_key_configured:-false}"
+  fi
+  # Derived from what is actually mounted, not from the local environment: this script may run
+  # somewhere that has no token even though the deployment has one.
+  if [ "$GH_STATE" = "SECRET" ]; then
+    export TF_VAR_github_token_configured="${TF_VAR_github_token_configured:-true}"
+  else
+    export TF_VAR_github_token_configured="${TF_VAR_github_token_configured:-false}"
   fi
   export TF_VAR_alert_notification_email="${TF_VAR_alert_notification_email:-$(gcloud projects get-iam-policy "$PROJECT" \
     --flatten='bindings[].members' --filter='bindings.role=roles/owner AND bindings.members:user:' \
