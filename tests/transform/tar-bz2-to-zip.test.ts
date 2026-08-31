@@ -59,11 +59,12 @@ function readZipEntries(bytes: Buffer): Map<string, Buffer> {
 }
 
 /**
- * Peak of `external + arrayBuffers`, sampled on a timer. Buffers are allocated off the V8
- * heap, so `heapUsed` cannot see the archive content this transform is asserted not to
- * retain — 200 MiB of live Buffers moves heapUsed by roughly nothing. Sampling on a timer
- * rather than reading once at the end also catches a transient peak that has been released
- * by the time the pipeline settles.
+ * Peak of `arrayBuffers`, sampled on a timer. Buffers are allocated off the V8 heap, so
+ * `heapUsed` cannot see the archive content this transform is asserted not to retain — 200
+ * MiB of live Buffers moves heapUsed by roughly nothing. `arrayBuffers` is already included
+ * in Node's `external` counter, so adding the two would double-count Buffer memory. Sampling
+ * on a timer rather than reading once at the end also catches a transient peak that has been
+ * released by the time the pipeline settles.
  */
 class BufferMemorySampler {
   private readonly base: number;
@@ -79,8 +80,7 @@ class BufferMemorySampler {
   }
 
   private static current(): number {
-    const usage = process.memoryUsage();
-    return usage.external + usage.arrayBuffers;
+    return process.memoryUsage().arrayBuffers;
   }
 
   /** Final sample, stop, and report. */
@@ -457,8 +457,8 @@ describe("tar-bz2-to-zip transform", () => {
         expect(sourceConsumedAtFirstOutput).toBeGreaterThan(0);
         expect(sourceConsumedAtFirstOutput).toBeLessThan(inputSize);
         // And peak retained memory must be nowhere near either side's size. Sampled as
-        // external + arrayBuffers, NOT heapUsed: Node Buffers live off the V8 heap, so a
-        // heapUsed assertion here would pass while gigabytes of archive sat in memory.
+        // arrayBuffers, NOT heapUsed: Node Buffers live off the V8 heap, so a heapUsed
+        // assertion here would pass while gigabytes of archive sat in memory.
         expect(sampler.peakBytes()).toBeLessThan(128 * 1024 * 1024);
       } finally {
         fs.rmSync(dir, { recursive: true, force: true });
