@@ -493,6 +493,11 @@ update` return anyway — including a service-level `scaling` block the API repo
   provenance split means those must differ — and the invariant is asserted by
   `verify-deployment.sh`. Found by the first run of `examples/windows-endpoint-test.ps1`.
 
+- **WAL-60 / WAL-68:** `examples/windows-endpoint-test.ps1` — executed on Windows 10 19045 with
+  pwsh 7.6.5 as well as on Linux; all Windows-only checks pass and the 1.6 GB artifact reassembles
+  to its published digest in 107s. The host is a developer machine, so WAL-60's managed-estate
+  premise is still open.
+
 - **WAL-60 / WAL-68:** `examples/windows-endpoint-test.ps1` — managed-Windows endpoint checks
   (antimalware survival, Explorer's own zip handling, `git.exe`, Git Bash, and the 1.6 GB ranged
   download). PowerShell 7 so the transport half runs on Linux before a device exists; the

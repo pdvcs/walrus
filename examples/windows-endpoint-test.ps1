@@ -9,15 +9,19 @@
   Git Bash run from the extracted tree, and that a multi-GB ranged download reassembles to the
   digest walrus publishes.
 
-  Targets PowerShell 7. That is not a style preference: pwsh 7 runs on Linux too, so the
-  transport half of this script — metadata, the ranged download, digest verification — is
-  exercised on the dev workstation before the device exists. Only the genuinely Windows-only
-  checks (Defender, the Explorer shell zip handler, git.exe, Git Bash) wait for hardware, and
-  they SKIP cleanly rather than erroring when run elsewhere.
+  Targets PowerShell 7, which runs on Linux as well as Windows — so the transport half of this
+  script can be exercised on a dev workstation, and the Windows-only checks (Defender, the
+  Explorer shell zip handler, git.exe, Git Bash) SKIP cleanly rather than erroring there.
 
-  Verified on Linux/pwsh 7.6.5 against GCP Dev, 2026-08-31: the download and digest paths pass.
-  The Windows-only checks below them have NOT been executed anywhere yet — treat their first
-  run on a real device as debugging the script as much as testing the endpoint.
+  Executed 2026-08-31 against GCP Dev on both: Linux/pwsh 7.6.5, and Windows 10 19045 with
+  pwsh 7.6.5, where every check passed — Explorer extracted the tree, git.exe reported
+  "git version 2.55.0.windows.5", Git Bash started (MSYS_NT-10.0-19045), and the 1.6 GB IntelliJ
+  artifact reassembled to its published digest in 107s over 49 ranged chunks.
+
+  ⚠️ That Windows host is a DEVELOPER machine, not a managed corporate endpoint. It proves this
+  script works and that the artifacts are sound; it does NOT settle WAL-60's actual premise,
+  which is whether a *managed* estate's antimalware and policies quarantine or block them. Run
+  this on a managed device before signing WAL-60 off.
 
   What deliberately stays human, and is NOT checked here:
     - WAL-60 step 5 — Git Credential Manager *prompting* and storing. Interactive by definition.
@@ -121,7 +125,10 @@ function Get-ArtifactFile {
       }
       if (-not $etag -and $resp.Headers.ETag) { $etag = $resp.Headers.ETag.ToString() }
 
-      $resp.Content.CopyToAsync($fs).GetAwaiter().GetResult()
+      # [void]: CopyToAsync returns a Task whose VoidTaskResult PowerShell would otherwise
+      # emit into the pipeline, once per chunk — 49 stray lines through the evidence for a
+      # 1.6 GB artifact.
+      [void]$resp.Content.CopyToAsync($fs).GetAwaiter().GetResult()
       $have = $fs.Length
       Write-Progress -Activity "Downloading $($Artifact.FileName)" `
         -Status ("{0:N0} / {1:N0} bytes" -f $have, $Artifact.Size) `
