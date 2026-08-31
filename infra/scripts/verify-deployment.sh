@@ -256,7 +256,8 @@ for pkg in get("/api/v1/packages")["packages"]:
             a = d["artifact"]
             out.append("\t".join([name, d["version"], a["os"], a["arch"],
                                   str(a["checksum"]), str(a["checksum_type"]),
-                                  str(a["file_size"])]))
+                                  str(a["file_size"]), str(a.get("transform")),
+                                  str(a.get("source_checksum"))]))
 print("\n".join(out))
 PY
 )
@@ -268,8 +269,19 @@ else
   no "WAL-102" "artifacts with no published digest: $(printf '%s' "$MISSING" | tr '\n' ' ')"
 fi
 
+# WAL-58's provenance split: for a transformed artifact the served bytes are walrus's own, so
+# its digest MUST differ from the upstream source digest. Equality means the published digest
+# describes bytes walrus does not serve — worse than a missing digest, because a verifying
+# client then fails on a good file. This is how WAL-102's second face was found.
+LIARS=$(printf '%s\n' "$ARTIFACTS" | awk -F'\t' 'NF && $8!="None" && $9!="None" && $5==$9 {print $1"/"$3"/"$4}')
+if [ -z "$LIARS" ]; then
+  ok "WAL-102" "every transformed artifact's digest differs from its upstream source digest"
+else
+  no "WAL-102" "served digest equals the upstream source digest on:$(printf ' %s' $LIARS)"
+fi
+
 WEAK=""
-while IFS=$'\t' read -r name ver os arch sum stype size; do
+while IFS=$'\t' read -r name ver os arch sum stype size xform srcsum; do
   [ -z "${name:-}" ] && continue
   et=$(curl -s -D - -o /dev/null -m 40 -H "Range: bytes=0-99" \
        "$SERVICE_URL/download/$name/$ver/$os/$arch" | grep -i '^etag:' | tr -d '\r' | cut -d' ' -f2-)

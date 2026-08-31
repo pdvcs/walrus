@@ -483,6 +483,22 @@ update` return anyway — including a service-level `scaling` block the API repo
   guard against splicing two builds together rotated on any re-download, on exactly the artifacts
   large enough to need resuming.
 
+- **WAL-102 (Fixed, second defect):** The same discovery-time write had a second branch. Where
+  discovery supplies a checksum _value_ rather than a URL, it did not null the stored digest — it
+  replaced it with **upstream's**. On an untransformed artifact those are the same number and
+  nothing shows; on a transformed one the published digest describes bytes walrus does not serve,
+  so every client that verifies its download fails on a good file. `gitwindows` was serving bytes
+  hashing to `feeea25e…` while publishing its upstream tar.bz2's `58fdf567…`. The repair now also
+  covers a transformed artifact whose `checksum` equals its `source_checksum` — WAL-58's
+  provenance split means those must differ — and the invariant is asserted by
+  `verify-deployment.sh`. Found by the first run of `examples/windows-endpoint-test.ps1`.
+
+- **WAL-60 / WAL-68:** `examples/windows-endpoint-test.ps1` — managed-Windows endpoint checks
+  (antimalware survival, Explorer's own zip handling, `git.exe`, Git Bash, and the 1.6 GB ranged
+  download). PowerShell 7 so the transport half runs on Linux before a device exists; the
+  Windows-only checks skip cleanly elsewhere. Reduces those tickets' next step to acquiring a
+  device rather than designing a test.
+
 - **Tooling:** `infra/scripts/verify-deployment.sh` — asserts a deployed environment against the
   invariants its tickets claim (WAL-40, WAL-43, WAL-48, WAL-66, WAL-86, WAL-92, WAL-95, WAL-96,
   WAL-97, WAL-101, WAL-102), each check tagged with its ticket and exiting non-zero on failure.

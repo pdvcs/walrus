@@ -457,10 +457,26 @@ export class SyncService {
       // so a package deliberately configured without checksums is not re-fetched forever.
       // Self-healing rather than a migration: it repairs the estate on the next sync and stays
       // correct if the state ever reappears.
-      const needsChecksumRepair =
+      const missingChecksum =
         artifactRow.status === "available" &&
         artifactRow.checksum === null &&
         artifactRow.checksum_type !== null;
+
+      // The same defect's other face, and the worse of the two. Where discovery supplies a
+      // checksum *value* rather than a URL, the old write did not null the digest — it replaced
+      // it with **upstream's**. For an untransformed artifact those are the same number and
+      // nothing is visibly wrong. For a transformed one the served bytes are walrus's own, so
+      // the published digest becomes a digest of bytes walrus does not serve, and every client
+      // that verifies its download fails on a good file. A null digest is at least honest;
+      // this one lies. `checksum === source_checksum` on a transformed artifact is exactly that
+      // state — WAL-58's provenance split means they must differ.
+      const upstreamDigestOverwroteServed =
+        artifactRow.status === "available" &&
+        artifactRow.transform !== null &&
+        artifactRow.source_checksum !== null &&
+        artifactRow.checksum === artifactRow.source_checksum;
+
+      const needsChecksumRepair = missingChecksum || upstreamDigestOverwroteServed;
 
       if (needsChecksumRepair) {
         log.warn(
@@ -468,8 +484,11 @@ export class SyncService {
             package: this.packageConfig.name,
             artifactId: artifactRow.id,
             version: version.version,
+            reason: missingChecksum
+              ? "no stored checksum"
+              : "served digest overwritten by upstream's",
           },
-          "Artifact is available with no stored checksum; re-downloading to repair it",
+          "Artifact digest does not describe the bytes served; re-downloading to repair it",
         );
       }
 

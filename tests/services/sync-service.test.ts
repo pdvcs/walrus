@@ -903,3 +903,100 @@ describe("SyncService checksum handling", () => {
     expect(deps.downloadArtifact).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * WAL-102's second face, found by running examples/windows-endpoint-test.ps1 against GCP Dev:
+ * `gitwindows` served bytes hashing to feeea25e… while publishing 58fdf567…, which is its
+ * *upstream* tar.bz2 digest. Where discovery supplies a checksum value rather than a URL, the
+ * old discovery-time write replaced the served digest with upstream's. On an untransformed
+ * artifact the two are the same number and nothing shows; on a transformed one the published
+ * digest describes bytes walrus does not serve, and every verifying client fails on a good file.
+ */
+describe("SyncService transformed-artifact digest repair", () => {
+  function poolFor(artifactRow: Record<string, unknown>) {
+    return {
+      discoverVersions: vi.fn().mockResolvedValue([discovered("0.6.2")]),
+      upsertPackage: vi.fn().mockResolvedValue({}),
+      createSyncJob: vi.fn().mockResolvedValue({ id: 100 }),
+      updateSyncJob: vi.fn().mockResolvedValue({}),
+      insertVersion: vi.fn().mockResolvedValue({ id: 1 }),
+      insertArtifact: vi.fn().mockResolvedValue({
+        cooling_off_until: null,
+        checksum: null,
+        checksum_type: null,
+        source_checksum: null,
+        transform: null,
+        ...artifactRow,
+      }),
+      updateArtifactStatus: vi.fn().mockResolvedValue({}),
+      incrementJobCounters: vi.fn().mockResolvedValue(undefined),
+      downloadArtifact: vi.fn().mockResolvedValue({ status: "available", attempts: 1 }),
+      enforceRetention: vi
+        .fn()
+        .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
+      getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+    };
+  }
+
+  function run(deps: ReturnType<typeof poolFor>) {
+    const service = new SyncService(
+      lockablePool(),
+      pkg,
+      { downloadArtifact: vi.fn() } as unknown as DownloadService,
+      { enforceRetention: vi.fn() } as unknown as RetentionService,
+      { deps, syncConcurrency: 1, downloadConcurrency: 1 },
+    );
+    return service.run({ triggerType: "scheduled" });
+  }
+
+  it("re-downloads a transformed artifact whose digest equals its upstream source digest", async () => {
+    const deps = poolFor({
+      id: 10,
+      status: "available",
+      checksum: "58fdf567",
+      checksum_type: "sha256",
+      source_checksum: "58fdf567",
+      transform: "tar-bz2-to-zip@1",
+    });
+
+    const result = await run(deps);
+
+    expect(result.artifactsQueued).toBe(1);
+    expect(deps.downloadArtifact).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves a healthy transformed artifact alone", async () => {
+    // The correct state: the served zip's digest, distinct from the upstream tar.bz2's.
+    const deps = poolFor({
+      id: 10,
+      status: "available",
+      checksum: "feeea25e",
+      checksum_type: "sha256",
+      source_checksum: "58fdf567",
+      transform: "tar-bz2-to-zip@1",
+    });
+
+    const result = await run(deps);
+
+    expect(result.artifactsQueued).toBe(0);
+    expect(deps.downloadArtifact).not.toHaveBeenCalled();
+  });
+
+  it("leaves an untransformed artifact alone when its digest equals the source digest", async () => {
+    // With no transform the served bytes ARE the upstream bytes, so equality is correct and
+    // must not be mistaken for the defect.
+    const deps = poolFor({
+      id: 10,
+      status: "available",
+      checksum: "abc123",
+      checksum_type: "sha256",
+      source_checksum: "abc123",
+      transform: null,
+    });
+
+    const result = await run(deps);
+
+    expect(result.artifactsQueued).toBe(0);
+    expect(deps.downloadArtifact).not.toHaveBeenCalled();
+  });
+});
