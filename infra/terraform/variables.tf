@@ -3,6 +3,11 @@ variable "project_id" {
   type        = string
 }
 
+variable "alert_notification_email" {
+  description = "Email address for Walrus operational alerts; deploy.sh derives the sole project owner when unset"
+  type        = string
+}
+
 variable "region" {
   description = "GCP region"
   type        = string

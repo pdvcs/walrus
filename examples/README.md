@@ -17,6 +17,10 @@ Downloads an artifact with resume and a progress bar. Python 3.9+, no dependenci
 
 # against a deployment
 WALRUS_URL=https://walrus.example.internal ./download_artifact.py golang 1.27
+
+# WAL-66 slow-link validation: 430 KiB/s = about 3.44 Mbit/s, below the 3.6 Mbit/s target
+WALRUS_URL=https://walrus.example.internal ./download_artifact.py intellij 2026.2 \
+  --os windows --arch x86-64 --chunk-bytes 33554432 --max-bytes-per-second 440320
 ```
 
 Interrupt it and run it again: it resumes from the `.part` file.
@@ -54,9 +58,8 @@ A stale validator is reported two different ways, and a client has to handle bot
 - **below the range-required threshold**, walrus does what RFC 9110 asks — ignores the `Range`
   and answers `200` with the whole representation, which is itself the "start over" signal;
 - **above it**, that answer is impossible: the whole representation is exactly what the server
-  refuses to send at this size. The mismatch surfaces as `400 range_required` instead. On a
-  request that _did_ carry a `Range`, that code cannot mean what its message says, so the script
-  reads it as the validator having gone stale.
+  refuses to send at this size. The mismatch surfaces as `400 stale_range_validator` instead,
+  with explicit discard-and-restart guidance.
 
 The second case is the one that matters in practice, since large artifacts are the ones actually
 resumed across processes — see the note in `download_artifact.py`.

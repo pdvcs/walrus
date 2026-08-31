@@ -4,6 +4,7 @@ import {
   autoBackfillPendingPackages,
   hashCpePairs,
 } from "../../src/services/vuln-backfill-autostart.js";
+import { log } from "../../src/common/log.js";
 
 function poolWithPending(
   pending: Array<{ package_name: string; cpe_hash: string; attempts: number }>,
@@ -90,6 +91,20 @@ describe("autoBackfillPendingPackages", () => {
 
     expect(result.failed).toEqual([{ package: "golang", error: "No CPE pairs" }]);
     expect(result.started).toEqual([]);
+  });
+
+  it("emits an operator-visible error when a failure exhausts automatic retries", async () => {
+    const { pool } = poolWithPending([{ package_name: "golang", cpe_hash: "h", attempts: 2 }]);
+    const startVulnBackfill = vi.fn().mockRejectedValue(new Error("No CPE pairs"));
+    const error = vi.spyOn(log, "error").mockImplementation(() => undefined);
+
+    await autoBackfillPendingPackages(pool, { startVulnBackfill });
+
+    expect(error).toHaveBeenCalledWith(
+      expect.objectContaining({ package: "golang", attempts: 3 }),
+      "Package exhausted automatic CVE backfill retries",
+    );
+    error.mockRestore();
   });
 
   it("does nothing when no package is missing coverage", async () => {

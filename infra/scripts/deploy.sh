@@ -37,6 +37,22 @@ for var in TF_VAR_project_id TF_VAR_gcs_bucket_name TF_VAR_cloud_sql_db_password
   fi
 done
 
+# Keep the address out of Terraform source. A project with exactly one human owner needs no
+# extra deploy configuration; shared projects must opt in with TF_VAR_alert_notification_email.
+if [[ -z "${TF_VAR_alert_notification_email:-}" ]]; then
+  mapfile -t WALRUS_PROJECT_OWNERS < <(
+    gcloud projects get-iam-policy "${TF_VAR_project_id}" \
+      --flatten="bindings[].members" \
+      --filter='bindings.role=roles/owner AND bindings.members:user:' \
+      --format='value(bindings.members)' | sed 's/^user://'
+  )
+  if (( ${#WALRUS_PROJECT_OWNERS[@]} != 1 )); then
+    echo "ERROR: set TF_VAR_alert_notification_email; project does not have exactly one user owner" >&2
+    exit 1
+  fi
+  export TF_VAR_alert_notification_email="${WALRUS_PROJECT_OWNERS[0]}"
+fi
+
 if (( ${#WALRUS_SESSION_SECRET} < 32 )); then
   echo "ERROR: WALRUS_SESSION_SECRET must be at least 32 bytes" >&2
   exit 1

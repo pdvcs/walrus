@@ -12,6 +12,7 @@ data/
 *.bak
 *.swp
 *~
+__pycache__/
 mise.toml
 
 .env.secrets

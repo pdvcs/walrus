@@ -167,6 +167,12 @@ export async function autoBackfillPendingPackages(
       const message = error instanceof Error ? error.message : String(error);
       // The attempt was already counted before the launch; only record why it failed.
       await recordBackfillError(pool, entry.package_name, message).catch(() => {});
+      if (entry.attempts + 1 >= MAX_ATTEMPTS) {
+        log.error(
+          { package: entry.package_name, attempts: entry.attempts + 1, err: error },
+          "Package exhausted automatic CVE backfill retries",
+        );
+      }
       log.error({ package: entry.package_name, err: error }, "Autonomous CVE backfill failed");
       result.failed.push({ package: entry.package_name, error: message });
     }

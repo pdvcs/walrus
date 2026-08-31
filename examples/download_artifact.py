@@ -46,6 +46,7 @@ import urllib.request
 # interruption costs little and a stalled chunk is noticed quickly. The server does not care:
 # it answers whatever range you ask for, so this is purely the client's retry granularity.
 CHUNK_BYTES = 32 * 1024 * 1024
+READ_BLOCK_BYTES = 64 * 1024
 
 MAX_ATTEMPTS_PER_CHUNK = 5
 BACKOFF_SECONDS = 2
@@ -187,7 +188,13 @@ def fetch_metadata(base: str, package: str, group: str, os_name: str, arch: str)
     }
 
 
-def fetch_chunk(url: str, start: int, end: int, etag: str | None) -> tuple[bytes, str | None]:
+def fetch_chunk(
+    url: str,
+    start: int,
+    end: int,
+    etag: str | None,
+    max_bytes_per_second: int | None,
+) -> tuple[bytes, str | None]:
     """One ranged GET. Returns the bytes and the artifact's current ETag.
 
     Raises ArtifactChanged when the server answers 200 — under `If-Range` that is the
@@ -205,7 +212,7 @@ def fetch_chunk(url: str, start: int, end: int, etag: str | None) -> tuple[bytes
                     "walrus returned the whole artifact instead of the requested range — "
                     "it has been re-synced since this download started"
                 )
-            return resp.read(), resp.headers.get("ETag")
+            return read_body(resp, max_bytes_per_second), resp.headers.get("ETag")
     except urllib.error.HTTPError as err:
         if err.code == 416:
             raise DownloadError(
@@ -221,7 +228,36 @@ def fetch_chunk(url: str, start: int, end: int, etag: str | None) -> tuple[bytes
         raise DownloadError(describe_http_error(err)) from err
 
 
-def download(meta: dict, dest: str, resume: bool, chunk_bytes: int = CHUNK_BYTES) -> None:
+def read_body(resp, max_bytes_per_second: int | None) -> bytes:
+    """Read a response, optionally shaping the receive rate for real-link validation.
+
+    Sleeping between small socket reads applies TCP back-pressure to the response itself. That is
+    meaningfully different from piping a completed curl transfer through a rate limiter: the latter
+    does not test whether the server can keep a slow request alive.
+    """
+    if max_bytes_per_second is None:
+        return resp.read()
+
+    parts: list[bytes] = []
+    received = 0
+    started = time.monotonic()
+    while block := resp.read(READ_BLOCK_BYTES):
+        parts.append(block)
+        received += len(block)
+        target_elapsed = received / max_bytes_per_second
+        delay = target_elapsed - (time.monotonic() - started)
+        if delay > 0:
+            time.sleep(delay)
+    return b"".join(parts)
+
+
+def download(
+    meta: dict,
+    dest: str,
+    resume: bool,
+    chunk_bytes: int = CHUNK_BYTES,
+    max_bytes_per_second: int | None = None,
+) -> None:
     total = meta["size"]
     part = dest + ".part"
     etag_file = part + ".etag"
@@ -262,7 +298,9 @@ def download(meta: dict, dest: str, resume: bool, chunk_bytes: int = CHUNK_BYTES
             end = min(have + chunk_bytes, total) - 1
             for attempt in range(1, MAX_ATTEMPTS_PER_CHUNK + 1):
                 try:
-                    body, seen_etag = fetch_chunk(meta["url"], have, end, etag)
+                    body, seen_etag = fetch_chunk(
+                        meta["url"], have, end, etag, max_bytes_per_second
+                    )
                     break
                 except ArtifactChanged:
                     raise
@@ -375,6 +413,13 @@ def clock(seconds: float) -> str:
     return f"{seconds}s"
 
 
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Download an artifact from walrus, resumably, with a progress bar.",
@@ -413,6 +458,12 @@ def main() -> int:
         help=f"bytes per ranged request (default {CHUNK_BYTES}); the server answers any size, "
         "so this is only how much a failed chunk costs you",
     )
+    parser.add_argument(
+        "--max-bytes-per-second",
+        type=positive_int,
+        help="cap socket receive rate for slow-link testing (for example 440320 = 430 KiB/s); "
+        "omit for normal downloads",
+    )
     args = parser.parse_args()
 
     try:
@@ -437,7 +488,13 @@ def main() -> int:
         return 1
 
     try:
-        download(meta, dest, resume=not args.no_resume, chunk_bytes=args.chunk_bytes)
+        download(
+            meta,
+            dest,
+            resume=not args.no_resume,
+            chunk_bytes=args.chunk_bytes,
+            max_bytes_per_second=args.max_bytes_per_second,
+        )
     except ArtifactChanged as err:
         # Deliberately not automatic: restarting silently would hide that the artifact moved
         # under a running download, which is worth a human noticing.
