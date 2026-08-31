@@ -134,6 +134,23 @@ check_workload walrus-api          service 1Gi 384 3
 check_workload walrus-sync         job     2Gi 640 4
 check_workload walrus-vuln-backfill job    1Gi 768 4
 
+# All three workloads must run the same build. A partial deploy leaves them split — terraform
+# updates the Jobs in phase 6 and the service is rolled in phase 7, so an apply that fails
+# between the two is invisible unless something compares them. That happened on 2026-08-31: an
+# alert policy the API rejected aborted the apply, and the service stayed a commit behind both
+# Jobs while every other check here passed.
+API_TAG=$(gcloud run services describe walrus-api --region="$REGION" --project="$PROJECT" \
+  --format='value(spec.template.spec.containers[0].image)' 2>/dev/null | sed 's/.*://')
+SYNC_TAG=$(gcloud run jobs describe walrus-sync --region="$REGION" --project="$PROJECT" \
+  --format='value(spec.template.spec.template.spec.containers[0].image)' 2>/dev/null | sed 's/.*://')
+BF_TAG=$(gcloud run jobs describe walrus-vuln-backfill --region="$REGION" --project="$PROJECT" \
+  --format='value(spec.template.spec.template.spec.containers[0].image)' 2>/dev/null | sed 's/.*://')
+if [ -n "$API_TAG" ] && [ "$API_TAG" = "$SYNC_TAG" ] && [ "$API_TAG" = "$BF_TAG" ]; then
+  ok "deploy" "service and both Jobs run the same image ($API_TAG)"
+else
+  no "deploy" "split deployment — api=$API_TAG sync=$SYNC_TAG backfill=$BF_TAG"
+fi
+
 # =========================================================================================
 head_ "Secrets — WAL-92"
 # =========================================================================================
@@ -220,11 +237,22 @@ gcloud monitoring policies list --project="$PROJECT" --format=json 2>/dev/null |
 import json, sys
 pols = json.load(sys.stdin)
 enabled = {p["displayName"] for p in pols if p.get("enabled")}
-missing = [n for n in ("Walrus Cloud Run error", "Walrus automatic CVE backfill exhausted")
-           if n not in enabled]
+want = {
+    "Walrus Cloud Run error",
+    "Walrus scheduler job failed",
+    "Walrus vulnerability sync degraded",
+    "Walrus automatic CVE backfill exhausted",
+    "Walrus blocked a version (informational)",
+}
+missing = sorted(want - enabled)
 assert not missing, f"missing or disabled: {missing}"
-' && ok "WAL-43" "both alert policies exist and are enabled" \
-   || no "WAL-43" "alert policies missing or disabled"
+# Severity is what lets an informational alert be routed apart from a service error; an alert
+# with none arrives looking like every other, which is how "[ALERT - No severity]" happened.
+unrated = sorted(p["displayName"] for p in pols
+                 if p["displayName"] in want and not p.get("severity"))
+assert not unrated, f"no severity set on: {unrated}"
+' && ok "WAL-43" "all five alert policies enabled, each with a severity" \
+   || no "WAL-43" "alert policies missing, disabled, or missing a severity"
 
 # =========================================================================================
 head_ "Machine-tier auth — WAL-86"
