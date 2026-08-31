@@ -811,3 +811,95 @@ describe("SyncService concurrency", () => {
     expect(connected).toBe(false);
   });
 });
+
+/**
+ * WAL-102. `artifacts.checksum` describes the bytes walrus has stored, so discovery — which
+ * runs before anything is fetched — must never write it onto an artifact that is already
+ * serving. The defect was `checksum: artifact.checksum ?? null` behind a guard satisfied by
+ * `checksumType` alone: for a package whose config supplies a checksum *URL* rather than a
+ * value (`uv` here, and intellij, ripgrep and maven3 in the estate) the digest is unknown
+ * until DownloadService fetches it, so every re-sync erased a correct digest. It could not
+ * self-heal, because only pending artifacts were ever queued for download.
+ */
+describe("SyncService checksum handling", () => {
+  function depsFor(artifactRow: Record<string, unknown>) {
+    return {
+      discoverVersions: vi.fn().mockResolvedValue([discovered("0.6.2")]),
+      upsertPackage: vi.fn().mockResolvedValue({}),
+      createSyncJob: vi.fn().mockResolvedValue({ id: 100 }),
+      updateSyncJob: vi.fn().mockResolvedValue({}),
+      insertVersion: vi.fn().mockResolvedValue({ id: 1 }),
+      insertArtifact: vi.fn().mockResolvedValue({ cooling_off_until: null, ...artifactRow }),
+      updateArtifactStatus: vi.fn().mockResolvedValue({}),
+      incrementJobCounters: vi.fn().mockResolvedValue(undefined),
+      downloadArtifact: vi.fn().mockResolvedValue({ status: "available", attempts: 1 }),
+      enforceRetention: vi
+        .fn()
+        .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
+      getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+    };
+  }
+
+  function serviceFor(deps: ReturnType<typeof depsFor>) {
+    return new SyncService(
+      lockablePool(),
+      pkg,
+      { downloadArtifact: vi.fn() } as unknown as DownloadService,
+      { enforceRetention: vi.fn() } as unknown as RetentionService,
+      { deps, syncConcurrency: 1, downloadConcurrency: 1 },
+    );
+  }
+
+  it("never overwrites the stored checksum of an artifact that is already serving", async () => {
+    const deps = depsFor({
+      id: 10,
+      status: "available",
+      checksum: "d1ge57",
+      checksum_type: "sha256",
+    });
+
+    await serviceFor(deps).run({ triggerType: "scheduled" });
+
+    expect(deps.updateArtifactStatus).not.toHaveBeenCalled();
+  });
+
+  it("does not write a null checksum when discovery supplies only the algorithm", async () => {
+    const deps = depsFor({ id: 10, status: "pending", checksum: null, checksum_type: null });
+
+    await serviceFor(deps).run({ triggerType: "scheduled" });
+
+    for (const [, , update] of deps.updateArtifactStatus.mock.calls) {
+      expect(update).not.toHaveProperty("checksum");
+    }
+    expect(deps.updateArtifactStatus).toHaveBeenCalledWith(
+      expect.anything(),
+      10,
+      expect.objectContaining({ checksum_type: "sha256" }),
+    );
+  });
+
+  it("re-downloads an available artifact left with no digest, so the estate self-heals", async () => {
+    const deps = depsFor({
+      id: 10,
+      status: "available",
+      checksum: null,
+      checksum_type: "sha256",
+    });
+
+    const result = await serviceFor(deps).run({ triggerType: "scheduled" });
+
+    expect(result.artifactsQueued).toBe(1);
+    expect(deps.downloadArtifact).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves a package configured without checksums alone", async () => {
+    // checksum_type NULL means "no digest is expected here", not "the digest was lost" —
+    // re-fetching these every sync would be a permanent re-download loop.
+    const deps = depsFor({ id: 10, status: "available", checksum: null, checksum_type: null });
+
+    const result = await serviceFor(deps).run({ triggerType: "scheduled" });
+
+    expect(result.artifactsQueued).toBe(0);
+    expect(deps.downloadArtifact).not.toHaveBeenCalled();
+  });
+});

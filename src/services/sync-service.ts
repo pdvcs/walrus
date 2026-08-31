@@ -420,15 +420,60 @@ export class SyncService {
         cooling_off_until: coolingOffUntil,
       });
 
-      if (artifact.checksum || artifact.checksumType) {
-        await this.deps.updateArtifactStatus(this.pool, artifactRow.id, {
+      // Record what *discovery* learned, and only that (WAL-102).
+      //
+      // Two rules, both learned the hard way. First, `artifacts.checksum` describes the bytes
+      // walrus has stored, so once an artifact is available its digest is a fact about those
+      // bytes and discovery has nothing to say about it — re-running discovery must not touch
+      // it. Second, a field discovery did not resolve must be left alone rather than written
+      // as NULL: for a package whose config gives a checksum *URL* rather than a value, the
+      // digest is not known until `DownloadService` fetches it, and `checksum ?? null` here
+      // erased the stored digest of an already-cached artifact on every subsequent sync. It
+      // could not self-heal, because an available artifact is never queued for download.
+      if (artifactRow.status !== "available") {
+        const discovered: Parameters<typeof updateArtifactStatus>[2] = {
           status: artifactRow.status,
-          checksum: artifact.checksum ?? null,
-          checksum_type: normalizeChecksumType(artifact.checksumType),
-        });
+        };
+        if (artifact.checksum) discovered.checksum = artifact.checksum;
+        const checksumType = normalizeChecksumType(artifact.checksumType);
+        if (checksumType) discovered.checksum_type = checksumType;
+
+        // `updateArtifactStatus` only writes the keys present on the update, so an omitted
+        // field keeps whatever the column already holds.
+        if (discovered.checksum !== undefined || discovered.checksum_type !== undefined) {
+          await this.deps.updateArtifactStatus(this.pool, artifactRow.id, discovered);
+        }
       }
 
-      if (artifactRow.status === "pending") {
+      // An artifact that is serving but carries no digest is the residue of WAL-102: its
+      // checksum was erased by a discovery-time write and cannot be recovered in place,
+      // because the digest describes the stored bytes and only a download recomputes it.
+      // Re-fetching also re-verifies against upstream on the way through, which is the
+      // stronger of the two repairs available (PO decision, 2026-08-31) — the alternative,
+      // hashing whatever is already in the bucket, would bless bytes that have been served
+      // without a published digest rather than check them.
+      //
+      // `checksum_type IS NOT NULL` keeps this to artifacts that are *meant* to have a digest,
+      // so a package deliberately configured without checksums is not re-fetched forever.
+      // Self-healing rather than a migration: it repairs the estate on the next sync and stays
+      // correct if the state ever reappears.
+      const needsChecksumRepair =
+        artifactRow.status === "available" &&
+        artifactRow.checksum === null &&
+        artifactRow.checksum_type !== null;
+
+      if (needsChecksumRepair) {
+        log.warn(
+          {
+            package: this.packageConfig.name,
+            artifactId: artifactRow.id,
+            version: version.version,
+          },
+          "Artifact is available with no stored checksum; re-downloading to repair it",
+        );
+      }
+
+      if (artifactRow.status === "pending" || needsChecksumRepair) {
         if (artifactRow.cooling_off_until !== null && artifactRow.cooling_off_until > new Date()) {
           continue; // still in cooling off period — leave as pending, download on next sync
         }

@@ -468,6 +468,26 @@ update` return anyway — including a service-level `scaling` block the API repo
   collation can affect. Found by inspecting twelve hours of unattended scheduler activity on GCP
   Dev, on a deployment reporting no degradations throughout.
 
+- **WAL-102 (Fixed):** A re-sync erased the stored checksum of an already-cached artifact, so
+  four of the thirteen packages served multi-hundred-MB and multi-GB downloads with no integrity
+  value at all — and the reference client treats an absent digest as a pass. `SyncService` wrote
+  `checksum: artifact.checksum ?? null` at _discovery_ time, behind a guard satisfied by the
+  checksum _algorithm_ alone; for a package whose config supplies a checksum URL rather than a
+  value the digest is not known until the download fetches it, so the write landed as NULL over a
+  correct digest. It could not self-heal, because only pending artifacts are queued for download.
+  Discovery no longer writes to an available artifact — its digest describes stored bytes, which
+  discovery does not know — and no longer writes fields it did not resolve. Affected artifacts
+  recover by re-download, triggered from the sync rather than by resetting rows to `pending`,
+  which would have 404ed them until the next sync completed. Also restores the content-derived
+  `If-Range` validator: without a checksum the ETag falls back to a completion timestamp, so the
+  guard against splicing two builds together rotated on any re-download, on exactly the artifacts
+  large enough to need resuming.
+
+- **WAL-66:** `examples/wal66-resume-test.sh` — an asserting harness for the interrupt/resume
+  manual test: SIGKILLs a ranged transfer mid-flight, resumes it in a fresh process, and checks
+  the chunk boundary, the persisted range validator, that it resumed rather than restarted, that
+  only the missing ranges crossed the wire, and the assembled digest.
+
 ## Version 0.1.0: Initial Release
 
 Initial Walrus release: a configuration-driven package ingress engine that discovers, caches, and
