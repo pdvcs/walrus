@@ -161,6 +161,25 @@ raise AssertionError("NVD_API_KEY not mounted")
              || no "WAL-92" "$name does not mount NVD_API_KEY as a secret"
 done
 
+# Only walrus-sync runs discovery, so the GitHub token is scoped to that job — asserted here so
+# the scoping stays deliberate rather than drifting to "wherever it was convenient" (WAL-103).
+GH_JSON=$(gcloud run jobs describe walrus-sync --region="$REGION" --project="$PROJECT" --format=json 2>/dev/null)
+GH_STATE=$(printf '%s' "$GH_JSON" | python3 -c '
+import json, sys
+c = json.load(sys.stdin)["spec"]["template"]["spec"]["template"]["spec"]["containers"][0]
+for e in c.get("env", []):
+    if e["name"] == "GITHUB_TOKEN":
+        print("SECRET" if e.get("valueFrom", {}).get("secretKeyRef") else "LITERAL")
+        break
+else:
+    print("ABSENT")
+')
+case "$GH_STATE" in
+  SECRET)  ok   "WAL-103" "walrus-sync mounts GITHUB_TOKEN by secret reference" ;;
+  LITERAL) no   "WAL-103" "GITHUB_TOKEN is a literal value on walrus-sync, not a secret reference" ;;
+  *)       warn "WAL-103" "no GITHUB_TOKEN on walrus-sync — GitHub discovery runs at 60 req/hour on a shared egress IP" ;;
+esac
+
 # =========================================================================================
 head_ "Scheduling — WAL-40 AC2 / WAL-48"
 # =========================================================================================

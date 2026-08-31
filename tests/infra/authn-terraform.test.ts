@@ -28,10 +28,22 @@ describe("authentication deployment wiring", () => {
     expect(cloudRun).not.toMatch(
       /value\s*=\s*"[^\n]+"[^\n]*WALRUS_(?:SESSION_SECRET|ADMIN_PASSWORD)/,
     );
-    // Five bindings: the three above, walrus-database-url, and walrus-nvd-api-key (WAL-92).
-    // The count is the assertion — a new secretAccessor grant should have to justify itself
-    // here rather than arrive unnoticed.
-    expect(iam.match(/roles\/secretmanager\.secretAccessor/g)).toHaveLength(5);
+    // Six bindings: the three above, walrus-database-url, walrus-nvd-api-key (WAL-92) and
+    // walrus-github-token (WAL-103). The count is the assertion — a new secretAccessor grant
+    // should have to justify itself here rather than arrive unnoticed. This test did its job:
+    // WAL-103's binding failed it until the grant was accounted for.
+    expect(iam.match(/roles\/secretmanager\.secretAccessor/g)).toHaveLength(6);
+  });
+
+  it("mounts the GitHub token on the sync job only (WAL-103)", () => {
+    // Only walrus-sync runs discovery, and api.github.com is reached from nowhere else. Scoping
+    // the token to one job keeps "who calls GitHub" answerable from the Terraform, and keeps the
+    // credential off the publicly invokable service. Both halves are asserted: that it is
+    // mounted at all, and that it is mounted exactly once.
+    const cloudRun = read("infra/terraform/cloudrun.tf");
+    expect(cloudRun).toContain('name = "GITHUB_TOKEN"');
+    expect(cloudRun.match(/name = "GITHUB_TOKEN"/g)).toHaveLength(1);
+    expect(cloudRun).toContain("var.github_token_configured");
   });
 
   it("uses one exact audience and scheduler principal on both sides of machine auth", () => {

@@ -473,6 +473,23 @@ resource "google_cloud_run_v2_job" "sync" {
             }
           }
         }
+        # Upstream GitHub credential (WAL-103). Deliberately mounted here and nowhere else: this
+        # is the only workload that runs discovery, and api.github.com is reached from nowhere
+        # else in the codebase. Scoping it to one job keeps "who calls GitHub" answerable from
+        # the Terraform rather than from a grep, and keeps the token off the public-facing
+        # service. Mounted only when a version exists.
+        dynamic "env" {
+          for_each = var.github_token_configured ? [1] : []
+          content {
+            name = "GITHUB_TOKEN"
+            value_source {
+              secret_key_ref {
+                secret  = google_secret_manager_secret.github_token.secret_id
+                version = "latest"
+              }
+            }
+          }
+        }
         volume_mounts {
           name       = "cloudsql"
           mount_path = "/cloudsql"

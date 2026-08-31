@@ -11,6 +11,8 @@ export class HttpRequestError extends Error {
   constructor(
     message: string,
     public readonly status?: number,
+    /** The upstream refused because a rate limit is exhausted, not because the request was bad. */
+    public readonly rateLimited = false,
   ) {
     super(message);
     this.name = "HttpRequestError";
@@ -46,6 +48,28 @@ export async function fetchWithRetry(
 
       const body = await safeText(response);
       const message = `HTTP ${response.status} from ${url}${body ? `: ${body}` : ""}`;
+
+      // A rate limit is not the same failure as an upstream being broken, and reads very
+      // differently to whoever the alert wakes: nothing is wrong with walrus or with the
+      // upstream, the budget is simply spent until a known time. Naming it here means the
+      // operator can tell the two apart without opening the log (WAL-103).
+      //
+      // It also must not be retried. The existing backoff is seconds; a rate-limit window is
+      // minutes to an hour, so every retry is guaranteed to fail and spends quota that the
+      // *next* package's discovery needs. GitHub returns 403 for this, not 429.
+      if (isRateLimited(response)) {
+        const resetAt = rateLimitResetAt(response);
+        log.error(
+          { url, status: response.status, resetAt },
+          "Upstream rate limit exhausted; not retrying until it resets",
+        );
+        throw new HttpRequestError(
+          `${message}${resetAt ? ` (rate limit resets at ${resetAt})` : ""}`,
+          response.status,
+          true,
+        );
+      }
+
       if (attempt < maxRetries && isRetryableStatus(response.status)) {
         log.warn(
           {
@@ -62,6 +86,14 @@ export async function fetchWithRetry(
 
       throw new HttpRequestError(message, response.status);
     } catch (err) {
+      // A failure already classified above — an HTTP status, or an exhausted rate limit —
+      // must be rethrown as it is. Re-wrapping it discards `status` and `rateLimited`, which
+      // is not cosmetic: `json-api.ts` treats a 404 release feed as "no releases yet" by
+      // testing `err.status === 404`, and that branch could never be reached because the
+      // status had already been stripped on the way out.
+      if (err instanceof HttpRequestError) {
+        throw err;
+      }
       const message = normalizeFetchError(err, timeoutMs, url);
       if (attempt < maxRetries && isRetryableError(err)) {
         log.warn(
@@ -98,6 +130,29 @@ function isRetryableStatus(status: number): boolean {
   return status === 408 || status === 429 || status >= 500;
 }
 
+/**
+ * A refusal caused by an exhausted quota rather than by the request.
+ *
+ * `x-ratelimit-remaining: 0` is the reliable signal — GitHub answers 403 for a spent core-API
+ * budget, so status alone cannot distinguish it from a permissions failure, and matching on the
+ * body text would break the first time the wording changed.
+ */
+function isRateLimited(response: Response): boolean {
+  if (response.status !== 403 && response.status !== 429) {
+    return false;
+  }
+  return header(response, "x-ratelimit-remaining") === "0";
+}
+
+/** The reset instant, when the upstream names one, as an ISO string. */
+function rateLimitResetAt(response: Response): string | undefined {
+  const reset = header(response, "x-ratelimit-reset");
+  if (!reset) return undefined;
+  const epochSeconds = Number(reset);
+  if (!Number.isFinite(epochSeconds)) return undefined;
+  return new Date(epochSeconds * 1000).toISOString();
+}
+
 function isRetryableError(err: unknown): boolean {
   if (err instanceof Error && err.name === "AbortError") {
     return true;
@@ -113,6 +168,15 @@ function normalizeFetchError(err: unknown, timeoutMs: number, url: string): stri
     return err.message;
   }
   return String(err);
+}
+
+/**
+ * Read one header without assuming the response carries any. Not defensive padding: a partial
+ * `Response` is the normal shape in tests, and a bare `.headers.get` there fails as an opaque
+ * TypeError inside the retry loop rather than as the assertion the test was written to make.
+ */
+function header(response: Response, name: string): string | null {
+  return response.headers?.get(name) ?? null;
 }
 
 async function safeText(response: Response): Promise<string> {

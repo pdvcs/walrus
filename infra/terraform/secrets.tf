@@ -43,3 +43,21 @@ resource "google_secret_manager_secret" "nvd_api_key" {
     auto {}
   }
 }
+
+# Upstream GitHub credential (WAL-103). Discovery for gitwindows, python, ripgrep and uv calls
+# api.github.com, which allows 60 requests/hour per IP unauthenticated — and Cloud Run's egress
+# address is shared with other tenants, so that budget is not even walrus's alone to spend. It
+# ran out on 2026-08-31 and failed a scheduled sync outright, taking four packages' freshness
+# with it. A token raises the limit to 5,000/hour.
+#
+# Same shape as the NVD key above and for the same reason: declared unconditionally so the IAM
+# binding and rotation path exist from the first apply, populated by deploy.sh only when
+# GITHUB_TOKEN is supplied, and mounted only when var.github_token_configured says a version
+# exists. A fresh project still bootstraps without one, just at the unauthenticated limit.
+resource "google_secret_manager_secret" "github_token" {
+  secret_id = "walrus-github-token"
+
+  replication {
+    auto {}
+  }
+}

@@ -15,6 +15,11 @@ set -euo pipefail
 #                                keyless at NVD's 5 req/30s instead of 50: slower ingestion, and
 #                                a historical backfill measured in hours rather than minutes.
 #                                Never required, so a fresh project can bootstrap without one.
+#   GITHUB_TOKEN               - GitHub API token (WAL-103). Absent, discovery for the
+#                                github-releases packages runs unauthenticated at 60 req/hour
+#                                per IP — and Cloud Run's egress address is shared with other
+#                                tenants, so that budget runs out and fails a whole sync. A
+#                                fine-grained PAT with public read-only access is enough.
 #   WALRUS_SESSION_SECRET_PREVIOUS - old session key during rotation
 # ---------------------------------------------------------------------------
 
@@ -80,6 +85,17 @@ else
   echo "      5 req/30s (vs 50 with a key); set it and re-run to enable the higher limit." >&2
 fi
 
+# Same contract for the GitHub token (WAL-103): derived from the environment rather than exposed
+# as a second operator switch that could disagree with what was actually put in Secret Manager.
+if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+  export TF_VAR_github_token_configured="true"
+else
+  export TF_VAR_github_token_configured="false"
+  echo "NOTE: GITHUB_TOKEN is not set — package discovery will call api.github.com" >&2
+  echo "      unauthenticated at 60 req/hour, shared with other tenants on this egress IP." >&2
+  echo "      A sync that exhausts it fails outright; set a token and re-run." >&2
+fi
+
 echo "==> Phase 1: TypeScript build"
 npm --prefix "${REPO_ROOT}" run build
 
@@ -138,6 +154,11 @@ populate_secret walrus-admin-password "${WALRUS_ADMIN_PASSWORD}"
 if [[ "${TF_VAR_nvd_api_key_configured}" == "true" ]]; then
   populate_secret walrus-nvd-api-key "${NVD_API_KEY}"
 fi
+# Same reasoning as the NVD key: only add a version when a token was supplied, so an empty
+# version never shadows the unauthenticated path the client already implements.
+if [[ "${TF_VAR_github_token_configured}" == "true" ]]; then
+  populate_secret walrus-github-token "${GITHUB_TOKEN}"
+fi
 
 echo "==> Phase 6: Terraform apply (full)"
 # Import the secret if it exists outside Terraform state (e.g. first deploy)
@@ -168,6 +189,12 @@ if [[ "${TF_VAR_nvd_api_key_configured}" == "true" ]] &&
   terraform -chdir="${TF_DIR}" import \
     google_secret_manager_secret.nvd_api_key \
     "projects/${PROJECT_ID}/secrets/walrus-nvd-api-key" || true
+fi
+if [[ "${TF_VAR_github_token_configured}" == "true" ]] &&
+  ! terraform -chdir="${TF_DIR}" state show google_secret_manager_secret.github_token &>/dev/null; then
+  terraform -chdir="${TF_DIR}" import \
+    google_secret_manager_secret.github_token \
+    "projects/${PROJECT_ID}/secrets/walrus-github-token" || true
 fi
 
 terraform -chdir="${TF_DIR}" apply -auto-approve

@@ -208,3 +208,13 @@ variable "nvd_api_key_configured" {
   type        = bool
   default     = false
 }
+
+# Set automatically by deploy.sh from the presence of GITHUB_TOKEN (WAL-103). Gates the
+# secret_key_ref rather than the secret, for the same reason as the NVD flag above: a reference
+# to a secret with no versions is a hard deploy failure, and an absent token should only mean a
+# lower rate limit.
+variable "github_token_configured" {
+  description = "Whether walrus-github-token holds a version to mount into the sync job"
+  type        = bool
+  default     = false
+}

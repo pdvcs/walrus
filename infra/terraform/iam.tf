@@ -110,3 +110,12 @@ resource "google_secret_manager_secret_iam_member" "walrus_api_nvd_api_key" {
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.walrus_api.email}"
 }
+
+# walrus-api: Secret Accessor for the upstream GitHub token (WAL-103). All three workloads run as
+# this account, but only walrus-sync mounts the token — see cloudrun.tf. Granted whether or not a
+# version exists yet, so supplying the token later needs no IAM change.
+resource "google_secret_manager_secret_iam_member" "walrus_api_github_token" {
+  secret_id = google_secret_manager_secret.github_token.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.walrus_api.email}"
+}
