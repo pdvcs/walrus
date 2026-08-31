@@ -483,6 +483,15 @@ update` return anyway — including a service-level `scaling` block the API repo
   guard against splicing two builds together rotated on any re-download, on exactly the artifacts
   large enough to need resuming.
 
+- **Tooling:** `infra/scripts/verify-deployment.sh` — asserts a deployed environment against the
+  invariants its tickets claim (WAL-40, WAL-43, WAL-48, WAL-66, WAL-86, WAL-92, WAL-95, WAL-96,
+  WAL-97, WAL-101, WAL-102), each check tagged with its ticket and exiting non-zero on failure.
+  Most of these were previously "manual tests", which in practice meant a person typing gcloud
+  commands and transcribing the result into a ticket — unrepeatable, and no help after the next
+  deploy. Distinguishes a broken invariant from a transient upstream failure so it does not cry
+  wolf, and scopes the backfill-sweep check to the running revision so it cannot be answered by
+  the history of code since replaced.
+
 - **WAL-66:** `examples/wal66-resume-test.sh` — an asserting harness for the interrupt/resume
   manual test: SIGKILLs a ranged transfer mid-flight, resumes it in a fresh process, and checks
   the chunk boundary, the persisted range validator, that it resumed rather than restarted, that
