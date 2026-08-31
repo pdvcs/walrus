@@ -18,6 +18,11 @@
 set -uo pipefail
 
 WALRUS_URL="${WALRUS_URL:-https://walrus-api-lh3bh3olnq-uc.a.run.app}"
+# Exported, not just set: download_artifact.py reads WALRUS_URL from the environment, and without
+# this it silently falls back to http://localhost:8080. The bash below reads the variable
+# directly, so metadata resolves fine and only the transfer fails — which reads as "the artifact
+# downloaded suspiciously fast" rather than as a configuration error.
+export WALRUS_URL
 PACKAGE="${PACKAGE:-intellij}"
 GROUP="${GROUP:-2026.2}"
 OS="${OS:-windows}"
@@ -96,8 +101,14 @@ DL_PID=$!
 
 sleep "$KILL_AFTER"
 if ! kill -0 "$DL_PID" 2>/dev/null; then
-  fail "phase 1 finished within ${KILL_AFTER}s — lower --kill-after or --rate; nothing was interrupted"
+  # Distinguish "too fast to interrupt" from "it fell over": both leave no running process, and
+  # reporting the first when it was the second sends you tuning --rate for an hour.
   wait "$DL_PID" 2>/dev/null
+  if [ -f "$PART" ] || [ -f "$OUT" ]; then
+    fail "phase 1 finished within ${KILL_AFTER}s — lower --kill-after or --rate; nothing was interrupted"
+  else
+    fail "phase 1 exited without transferring anything: $(tail -1 "$LOG1" 2>/dev/null)"
+  fi
   exit 1
 fi
 kill -9 "$DL_PID" 2>/dev/null
@@ -147,16 +158,44 @@ grep -qi 'discarding' "$LOG2" \
   && fail "phase 2 discarded the partial data: $(grep -m1 -i 'discarding' "$LOG2")" \
   || pass "the bytes already on disk were kept, not refetched"
 
-# Only the missing ranges should cross the wire. At a known rate, refetching the whole
-# artifact would take at least TOTAL/RATE seconds; resuming should take about
-# (TOTAL-HAVE)/RATE. Allow generous slack for TLS setup and per-chunk overhead.
+# Only the missing ranges should cross the wire. Asserted on BYTES, not on elapsed time: the
+# first version of this check compared the measured duration against TOTAL/RATE, an idealised
+# full-refetch time that assumes zero per-request overhead, while the measurement necessarily
+# includes it. On a real run that read 232s against a 193s "bound" and failed a resume that had
+# worked perfectly — a full refetch at the same observed overhead would have taken ~278s.
+#
+# The progress bar starts at the resume offset, so its first sample is the direct evidence:
+# a restart-from-zero opens near 0 bytes, a real resume opens at what was already on disk.
 REMAINING=$((TOTAL - HAVE))
-FLOOR=$((REMAINING / RATE))
-FULL=$((TOTAL / RATE))
-if [ "$ELAPSED2" -lt "$FULL" ]; then
-  pass "phase 2 took ${ELAPSED2}s against ${FULL}s for a full refetch — only the missing ${REMAINING} bytes were fetched (floor ${FLOOR}s)"
+FIRST_BYTES=$(grep -m1 -oE '[0-9.]+ (KB|MB|GB)/' "$LOG2" | head -1 | tr -d '/')
+RESUME_LINE=$(grep -m1 '^resuming at' "$LOG2")
+RESUMED_AT=$(printf '%s' "$RESUME_LINE" | sed -E 's/^resuming at ([0-9.]+ [KMG]B) of.*/\1/')
+HAVE_HUMAN=$(python3 -c "
+n=$HAVE
+for u in ('B','KB','MB','GB','TB'):
+    if abs(n) < 1024 or u=='TB': print(f'{n:.0f} {u}' if u=='B' else f'{n:.1f} {u}'); break
+    n/=1024")
+
+if [ "$RESUMED_AT" = "$HAVE_HUMAN" ]; then
+  pass "the resume offset matches the bytes on disk ($RESUMED_AT) — the log agrees with the filesystem"
 else
-  fail "phase 2 took ${ELAPSED2}s, at or above the ${FULL}s a full refetch would need"
+  fail "resume offset '$RESUMED_AT' does not match the $HAVE_HUMAN actually on disk"
+fi
+
+# The opening sample must already account for the retained bytes.
+if [ -n "$FIRST_BYTES" ] && [ "$FIRST_BYTES" != "0.0 B" ]; then
+  pass "phase 2 opened at $FIRST_BYTES of $TOTAL — it continued rather than starting over (${REMAINING} bytes left to fetch)"
+else
+  fail "phase 2 opened at $FIRST_BYTES — it appears to have restarted from the beginning"
+fi
+
+# A floor rather than a ceiling: the transfer cannot beat its own rate cap for the bytes it
+# still had to move. Faster than this would mean it did not actually fetch them.
+FLOOR=$((REMAINING / RATE))
+if [ "$ELAPSED2" -ge "$FLOOR" ]; then
+  pass "phase 2 took ${ELAPSED2}s against a ${FLOOR}s floor for the remaining bytes at the rate cap"
+else
+  fail "phase 2 took ${ELAPSED2}s, below the ${FLOOR}s floor — it cannot have transferred ${REMAINING} bytes"
 fi
 
 # ---------------------------------------------------------------------------------------
