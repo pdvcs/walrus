@@ -56,22 +56,32 @@ describe("autonomous backfill detection", () => {
   });
 
   /**
-   * The marker is written from TypeScript (`hashCpePairs`) but selected in SQL. If the two
-   * ever disagree the package looks permanently uncovered, and the sweep re-launches a
-   * backfill for it on every run, forever. Nothing else would surface that.
+   * WAL-101. The marker used to be written from TypeScript (`hashCpePairs`) but recomputed in
+   * SQL to select against, and the two disagreed whenever the pair ordering depended on
+   * collation — the package then looked permanently uncovered and the sweep re-launched a
+   * backfill for it on every run, forever.
+   *
+   * These are `gitwindows`' real pairs, the ones it happened to. Note that this test cannot
+   * fail on a `C.UTF-8` database even against the old code: byte order and UTF-16 code-unit
+   * order agree for ASCII, so only Cloud SQL's `en_US.UTF8` — which ignores punctuation at the
+   * primary weight and sorts `git:git` first — showed the divergence. What protects the
+   * behaviour now is structural: there is one digest implementation, so there is nothing left
+   * to disagree. The round trip is asserted here because it is the property that matters.
    */
-  it("computes the same CPE hash in SQL as in TypeScript", async () => {
+  it("stops selecting a package whose CPE pairs differ only by punctuation", async () => {
     await seedTrackedPackage(pool, [
-      { v: "zvendor", p: "prod" },
-      { v: "avendor", p: "prod" },
+      { v: "git-scm", p: "git" },
+      { v: "git", p: "git" },
     ]);
 
     const pending = await findPackagesNeedingBackfill(pool);
     const row = pending.find((p) => p.package_name === PKG);
     expect(row).toBeDefined();
+    expect(row!.cpe_hash).toBe(hashCpePairs(await listDistinctCpePairs(pool, PKG)));
 
-    const inTs = hashCpePairs(await listDistinctCpePairs(pool, PKG));
-    expect(row!.cpe_hash).toBe(inTs);
+    await markBackfillComplete(pool, PKG, row!.cpe_hash);
+
+    expect((await findPackagesNeedingBackfill(pool)).map((r) => r.package_name)).not.toContain(PKG);
   });
 
   it("selects a newly tracked package, and stops once its CPE set is marked covered", async () => {

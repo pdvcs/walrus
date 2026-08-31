@@ -456,6 +456,18 @@ update` return anyway — including a service-level `scaling` block the API repo
   defects were layered: fixing the first only revealed the second, and neither is visible without
   a real launch.
 
+- **WAL-101 (Fixed):** The autonomous backfill sweep re-launched the same package every two hours,
+  forever. A package's CPE coverage marker was written from TypeScript (`hashCpePairs`, which sorts
+  by UTF-16 code unit) but recomputed in SQL to select against (`string_agg(... ORDER BY ...)`,
+  which sorts by the database's collation). Cloud SQL's database is `en_US.UTF8`, and glibc ignores
+  punctuation at the primary weight, so `git-scm:git` and `git:git` canonicalise in opposite orders
+  on the two sides: `gitwindows` could never match its own marker. Nothing surfaced it — the job
+  exited 0 each time, and `markBackfillComplete` resets the attempt counter, so the retry budget
+  that would have raised an operator hint was never consumed. The digest is now computed in exactly
+  one place: the query returns the raw pairs and the comparison happens in TypeScript, which no
+  collation can affect. Found by inspecting twelve hours of unattended scheduler activity on GCP
+  Dev, on a deployment reporting no degradations throughout.
+
 ## Version 0.1.0: Initial Release
 
 Initial Walrus release: a configuration-driven package ingress engine that discovers, caches, and

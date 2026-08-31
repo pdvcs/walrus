@@ -25,41 +25,80 @@ export interface PendingBackfill {
  * A stable fingerprint of the package's CPE pairs. Comparing this rather than a bare
  * timestamp is what lets a *newly added* pair on an already-covered package be detected:
  * the set changed, so the recorded coverage no longer describes it.
+ *
+ * This is the *only* place a CPE set becomes a digest. It used to have a twin expressed in
+ * SQL, inside the sweep's selection query, and the two disagreed on any pair whose ordering
+ * depends on collation: Postgres sorts by the database's collation, and glibc's `en_US.UTF8`
+ * ignores punctuation at the primary weight, while `Array.prototype.sort` compares UTF-16
+ * code units. `git-scm:git` and `git:git` order one way in Cloud SQL and the other way here,
+ * so a package holding both could never match its own marker and was re-backfilled on every
+ * sweep forever (WAL-101). Keep the digest single-sourced.
  */
 export function hashCpePairs(pairs: Array<{ cpe_vendor: string; cpe_product: string }>): string {
-  const canonical = pairs
-    .map((p) => `${p.cpe_vendor}:${p.cpe_product}`)
+  const canonical = [...new Set(pairs.map((p) => `${p.cpe_vendor}:${p.cpe_product}`))]
     .sort()
     .join("|");
   return crypto.createHash("sha256").update(canonical).digest("hex");
 }
 
 /**
- * Packages whose current CPE set has never been backfilled, newest gaps first.
+ * Packages whose current CPE set has never been backfilled, fewest attempts first.
  *
  * Deliberately keyed on the CPE hash rather than on whether any `cve_affects` rows exist: a
  * package can legitimately have zero CVEs, and treating that as "needs backfill" would
  * re-walk it on every sweep forever.
+ *
+ * The query returns pairs and the stored marker; the comparison happens in TypeScript so that
+ * both sides of it run through `hashCpePairs`. Filtering in SQL would mean recomputing the
+ * digest there — see the note on `hashCpePairs` for what that cost.
  */
 export async function findPackagesNeedingBackfill(pool: Pool): Promise<PendingBackfill[]> {
   const { rows } = await pool.query<{
     package_name: string;
-    cpe_hash: string;
+    cpe_vendor: string;
+    cpe_product: string;
+    stored_hash: string | null;
     attempts: number;
   }>(
-    `SELECT p.name AS package_name,
-            encode(sha256(convert_to(string_agg(DISTINCT c.cpe_vendor || ':' || c.cpe_product, '|' ORDER BY c.cpe_vendor || ':' || c.cpe_product), 'UTF8')), 'hex') AS cpe_hash,
+    `SELECT DISTINCT p.name AS package_name,
+            c.cpe_vendor,
+            c.cpe_product,
+            p.vuln_backfill_cpe_hash AS stored_hash,
             p.vuln_backfill_attempts AS attempts
        FROM packages p
        JOIN package_cpes c ON c.package_name = p.name
-      GROUP BY p.name, p.vuln_backfill_cpe_hash, p.vuln_backfill_attempts
-     HAVING p.vuln_backfill_cpe_hash IS DISTINCT FROM
-            encode(sha256(convert_to(string_agg(DISTINCT c.cpe_vendor || ':' || c.cpe_product, '|' ORDER BY c.cpe_vendor || ':' || c.cpe_product), 'UTF8')), 'hex')
-        AND p.vuln_backfill_attempts < $1
-      ORDER BY p.vuln_backfill_attempts ASC, p.name ASC`,
+      WHERE p.vuln_backfill_attempts < $1`,
     [MAX_ATTEMPTS],
   );
-  return rows;
+
+  const byPackage = new Map<
+    string,
+    {
+      pairs: Array<{ cpe_vendor: string; cpe_product: string }>;
+      stored: string | null;
+      attempts: number;
+    }
+  >();
+  for (const row of rows) {
+    const entry = byPackage.get(row.package_name) ?? {
+      pairs: [],
+      stored: row.stored_hash,
+      attempts: row.attempts,
+    };
+    entry.pairs.push({ cpe_vendor: row.cpe_vendor, cpe_product: row.cpe_product });
+    byPackage.set(row.package_name, entry);
+  }
+
+  return [...byPackage.entries()]
+    .map(([package_name, { pairs, stored, attempts }]) => ({
+      package_name,
+      cpe_hash: hashCpePairs(pairs),
+      attempts,
+      stored,
+    }))
+    .filter((entry) => entry.stored !== entry.cpe_hash)
+    .sort((a, b) => a.attempts - b.attempts || (a.package_name < b.package_name ? -1 : 1))
+    .map(({ package_name, cpe_hash, attempts }) => ({ package_name, cpe_hash, attempts }));
 }
 
 /** Record that this package's current CPE set has been covered. */
