@@ -323,9 +323,42 @@ flagged everywhere but does not block on its own — PO decision, may be revisit
 (NVD success older than 12h, KEV 48h, OSV 8 days), sources that are currently failing or have
 never succeeded, and stuck or disabled autonomous backfills. These do not change `isAvailable`,
 which is reserved for failures that make the application wholly unavailable. External operational
-monitors should watch `degradations` length. The same list renders as a warning banner across the admin UI, which is currently the
-surface an operator sees it on; alerting and email notification are planned on top
-(TODO — see ADR-002 Option C).
+monitors should watch `degradations` length. The same list renders as a warning banner across the
+admin UI, and email alerting sits on top of it — see the next section.
+
+### 3a. Alerting (WAL-43)
+
+`infra/terraform/monitoring.tf` declares one notification channel and five alert policies. They
+are applied by `deploy.sh` with everything else; there is no separate step.
+
+**Setting the destination.** The address comes from `TF_VAR_alert_notification_email`. If it is
+unset, `deploy.sh` reads the project's sole user owner and uses that — and **fails the deploy** if
+the project has none or more than one, rather than guessing. A shared project must set the
+variable explicitly. The address is never committed: the repo holds the variable, not the value.
+
+| Policy                                   | Fires on                                          | Severity | What to do                                                                                                                                          |
+| ---------------------------------------- | ------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Walrus Cloud Run error                   | Any `ERROR` log from the service or either Job    | ERROR    | Read the log; the message names the failing package or sync                                                                                         |
+| Walrus scheduler job failed              | A Cloud Scheduler invocation fails                | ERROR    | The workload may be fine — check the target URL and the OIDC binding, since a revoked `run.invoker` looks like a failed attempt, not a deploy error |
+| Walrus vulnerability sync degraded       | One source fails **more than once** in four hours | WARNING  | Check `/app/status` for how far behind the source is; upstream rate limiting and an upstream outage want different responses                        |
+| Walrus automatic CVE backfill exhausted  | A package gives up on automatic backfill          | WARNING  | The package is outside self-healing until an operator intervenes                                                                                    |
+| Walrus blocked a version (informational) | A sync newly blocked one or more versions         | WARNING  | **No action needed** — this is the gate working. Sent so a blocked build is not a mystery                                                           |
+
+Two design points worth knowing before changing them:
+
+- **A single failed sync does not alert.** Each source runs on a fixed cadence, so a second
+  failure means the retry the first was entitled to has also failed. One transient upstream
+  timeout is normal and is visible on `/app/status`; paging on it teaches people to ignore the
+  channel.
+- **The scheduler policy filters on the resource type, not on job names.** A seventh scheduler
+  job is covered the moment it exists. Do not replace this with a list.
+
+Every policy carries a `documentation` block naming the action, which Cloud Monitoring includes
+in the notification.
+
+**Verifying it.** `./infra/scripts/verify-deployment.sh` asserts the policies exist and are
+enabled. Delivery itself cannot be asserted from inside the deployment — that is a manual step,
+and its evidence is a received email recorded on WAL-43.
 
 ### 4. After setup: what runs itself, and what does not
 
