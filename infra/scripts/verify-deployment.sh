@@ -438,10 +438,15 @@ case "$RESULT" in
   *)     no   "WAL-101" "${RESULT#FAIL }" ;;
 esac
 
+# Scoped to the running revision, for the same reason the sweep check above is: a failure by code
+# that has since been replaced says nothing about the deployment under test. Unscoped, this warned
+# about `walrus-sync-ltnwz` — the WAL-103 rate-limit failure — at every run for days after the fix
+# for it shipped, which is how a warning stops being read.
 FAILED_EXEC=$(gcloud run jobs executions list --region="$REGION" --project="$PROJECT" \
-  --format='value(name,status.failedCount)' --limit=20 2>/dev/null | awk '$2 != "" && $2 != "0" {print $1}')
-[ -z "$FAILED_EXEC" ] && ok "WAL-40" "no failed Cloud Run Job executions in the recent window" \
-                      || warn "WAL-40" "failed executions: $(printf '%s' "$FAILED_EXEC" | tr '\n' ' ')"
+  --format='value(name,status.failedCount,metadata.creationTimestamp)' --limit=50 2>/dev/null \
+  | awk -v since="$REV_SINCE" '$2 != "" && $2 != "0" && $3 >= since {print $1}')
+[ -z "$FAILED_EXEC" ] && ok "WAL-40" "no failed Cloud Run Job executions since the running revision deployed" \
+                      || warn "WAL-40" "failed executions since deploy: $(printf '%s' "$FAILED_EXEC" | tr '\n' ' ')"
 
 # =========================================================================================
 if [ "$DRIFT" = 1 ]; then

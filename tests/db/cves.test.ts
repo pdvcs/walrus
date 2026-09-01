@@ -186,6 +186,65 @@ describe("cves queries", () => {
     expect(forCve.map((r) => r.package_name).sort()).toEqual([PKG, PKG2]);
   });
 
+  // WAL-104. The loader is package-scoped and unbounded, and seven call sites reach it —
+  // `download.ts` among them — so anything it selects per row is paid for on the serving path,
+  // once per download, for the whole of a package's CVE history. Selecting `c.raw` whole meant
+  // parsing every advisory a JDK had ever had into a 384 MiB heap before a byte went out, and it
+  // aborted `walrus-api` sixteen times on GCP before anyone noticed.
+  //
+  // Mutation check: restore `c.raw` in place of the CASE expression in
+  // `listAffectsWithCveForPackage` and the projection test below fails on both of its
+  // assertions — the advisory body comes back, and `configurations` reappears beside
+  // `references`. The other two tests pass either way by design: they do not guard the
+  // projection, they guard the two ways the projection itself can go wrong. The null one is
+  // not hypothetical — the first version of this fix used `c.raw IS NULL`, which is never true
+  // on a `JSONB NOT NULL` column, and turned every advisory-less CVE's `raw` from `null` into
+  // an object. That test is the only reason it did not ship.
+  it("projects only the reference URLs out of the advisory, never the whole thing (WAL-104)", async () => {
+    await upsertCveFull(pool, {
+      ...blankCve(CVE),
+      raw: {
+        cve: {
+          id: CVE,
+          references: [{ url: "https://example.test/advisory" }],
+          // The parts that make a real NVD advisory large. None of them is read by anything,
+          // and all of them used to travel to every caller on every request.
+          descriptions: [{ lang: "en", value: "x".repeat(4096) }],
+          configurations: Array.from({ length: 64 }, (_, i) => ({
+            nodes: [{ cpeMatch: [{ criteria: `cpe:2.3:a:acme:widget:${i}:*:*:*:*:*:*:*` }] }],
+          })),
+        },
+      },
+    });
+    await insertAffects(pool, affects({}));
+
+    const [row] = await listAffectsWithCveForPackage(pool, PKG);
+    expect(row.raw).toEqual({ cve: { references: [{ url: "https://example.test/advisory" }] } });
+    expect(Object.keys(row.raw?.cve ?? {})).toEqual(["references"]);
+  });
+
+  it("keeps a null advisory null rather than inventing an empty one (WAL-104)", async () => {
+    await upsertCveFull(pool, { ...blankCve(CVE), raw: null });
+    await insertAffects(pool, affects({}));
+
+    const [row] = await listAffectsWithCveForPackage(pool, PKG);
+    expect(row.raw).toBeNull();
+  });
+
+  it("still reaches the references a CVE genuinely has, so /vulns keeps its links (WAL-104)", async () => {
+    await upsertCveFull(pool, {
+      ...blankCve(CVE),
+      raw: { cve: { id: CVE, references: [{ url: "https://a.test" }, { url: "https://b.test" }] } },
+    });
+    await insertAffects(pool, affects({}));
+
+    const [row] = await listAffectsWithCveForPackage(pool, PKG);
+    expect(row.raw?.cve?.references?.map((r) => r.url)).toEqual([
+      "https://a.test",
+      "https://b.test",
+    ]);
+  });
+
   it("carries the CPE version-NA flag through insert and select (WAL-69)", async () => {
     await upsertCveFull(pool, blankCve(CVE));
     await insertAffects(

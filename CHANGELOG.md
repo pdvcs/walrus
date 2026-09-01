@@ -535,6 +535,26 @@ update` return anyway — including a service-level `scaling` block the API repo
   was single-sourced, and the JDK packages' new historical CVE sets are what crossed the ceiling.
   Not addressed by WAL-49, whose scope is the sync path rather than the request handler.
 
+- **WAL-104 (Fixed):** `listAffectsWithCveForPackage` no longer selects `c.raw`. It rebuilds only
+  the references subtree in SQL, so the loader stops carrying every CVE's whole advisory to all
+  seven of its call sites — `download.ts` among them, which is why serving one JDK artifact meant
+  parsing that package's entire advisory history into a 384 MiB heap first. No opt-in flag and no
+  type change: `AffectsWithCveRow.raw` was already declared as nothing but
+  `{ cve?: { references?: … } }`, so the query had been over-delivering against its own contract.
+  Fixing it at the projection covers `/vulns` too, which an opt-in would have left aborting.
+  Guarded by `jsonb_typeof(c.raw) = 'null'` rather than `IS NULL`, since the column is
+  `JSONB NOT NULL` and an absent advisory is stored as the JSON value `null`.
+
+- **Tooling (WAL-95, WAL-97):** `tests/infra/accumulating-helpers.test.ts` — WAL-97 left
+  `cvesForCpe` and `cvesModifiedSince` on `NvdClient` with no callers in `src/`, and recorded them
+  as "a loaded gun": public, obvious to reach for, and reintroducing WAL-95 verbatim with nothing
+  failing. This greps `src/` for call sites and fails naming the file that added one. It does not
+  replace deleting them, which still means rewriting twenty-one test usages against `cvePages`.
+
+- **Tooling (WAL-40):** `verify-deployment.sh`'s failed-execution check is scoped to the running
+  revision, like the sweep check beside it. Unscoped it warned about `walrus-sync-ltnwz` — the
+  WAL-103 rate-limit failure — at every run for days after the fix for it shipped.
+
 - **Tooling (WAL-104):** `verify-deployment.sh` no longer swallows a failed catalog request. Its
   artifact block wrapped every fetch in `except Exception: continue`, so the 503 from an instance
   the script had itself crashed was indistinguishable from a package with nothing to check: two

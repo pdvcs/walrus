@@ -261,7 +261,27 @@ export async function getCveById(pool: Pool, id: string): Promise<CveRow | null>
   return rows[0] ?? null;
 }
 
-/** All affects rows (joined to CVE metadata) for one package — powers /vulns and cross-ref. */
+/**
+ * All affects rows (joined to CVE metadata) for one package — powers /vulns and cross-ref.
+ *
+ * **Never select `c.raw` whole here (WAL-104).** It holds the entire NVD or OSV advisory, and this
+ * loader is package-scoped and unbounded: every row of a package's corpus lands in the process at
+ * once. Seven call sites reach it, `download.ts` among them, so serving one JDK artifact meant
+ * parsing that package's whole advisory history into a 384 MiB heap before a byte went out.
+ * Sixteen heap aborts on `pdutta-demos` between 2026-08-31 and 2026-09-01 came from exactly that.
+ *
+ * The single reader of this field wants at most five reference URLs (`buildReferences` in
+ * `vuln-query.ts`), which is why `AffectsWithCveRow.raw` is already typed as nothing but
+ * `{ cve?: { references?: ... } }`. Rebuilding that shape in SQL honours the declared type instead
+ * of over-delivering against it, and costs the callers that never touch `raw` — the gate, the
+ * catalog routes, the availability sweep — nothing at all.
+ *
+ * The `jsonb_typeof` guard, not `IS NULL`: the column is `JSONB NOT NULL`, so an absent advisory
+ * is stored as the JSON value `null` and `c.raw IS NULL` is never true. Without the guard a CVE
+ * with no advisory read back as `{"cve":{"references":null}}` where it used to read back as
+ * `null` — a caller doing `row.raw?.cve` would have started seeing an object. Caught by the
+ * regression test below, which is the only reason it is not still in here.
+ */
 export async function listAffectsWithCveForPackage(
   pool: Pool,
   packageName: string,
@@ -271,7 +291,11 @@ export async function listAffectsWithCveForPackage(
     `SELECT ca.cve_id, ca.version_start, ca.version_start_excl, ca.version_end,
             ca.version_end_excl, ca.exact_version, ca.fixed_in, ca.source, ca.version_na,
             c.severity, c.severity_source, c.cvss_v3_score, c.cvss_v4_score, c.cvss_v2_score,
-            c.description, c.is_kev, c.raw, p.cve_version_extract,
+            c.description, c.is_kev, p.cve_version_extract,
+            CASE WHEN jsonb_typeof(c.raw) = 'null' THEN NULL
+                 ELSE jsonb_build_object('cve',
+                        jsonb_build_object('references', c.raw->'cve'->'references'))
+            END AS raw,
             (s.id IS NOT NULL) AS suppressed,
             s.id AS suppression_id,
             s.reason AS suppression_reason,
