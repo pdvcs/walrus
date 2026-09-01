@@ -156,8 +156,22 @@ export function createInternalRouter(deps: InternalRouteDeps): Router {
       );
       const allOk = outcomes.every((o) => o.ok);
       const alreadyRunning = source !== "all" && outcomes[0]?.code === "already_running";
+      // WAL-108. `207 Multi-Status` is the right answer for `all`, where some sources may have
+      // succeeded and others failed and one status code cannot say so. For a single named source
+      // there is exactly one outcome, so answering 207 reports a total failure as partial success
+      // of a set of one — and Cloud Scheduler, which treats any 2xx as success, then records the
+      // attempt as fine and does not retry.
+      //
+      // That is not hypothetical: the 18:20Z nvd tick on 2026-09-01 failed on an upstream timeout,
+      // the scheduler logged a success, and WAL-106's retry — shipped an hour earlier for exactly
+      // this kind of lost run — could not fire. 502 rather than 500 because the failure is
+      // upstream's, not ours; the body is unchanged, so callers reading `outcomes` are unaffected.
+      //
+      // `already_running` stays 409 deliberately. Contention is not a failure and must not consume
+      // a retry, the same rule `autoBackfillPendingPackages` follows when it refunds an attempt.
+      const status = allOk ? 200 : alreadyRunning ? 409 : source === "all" ? 207 : 502;
       const hints = deps.vulnHints ? await deps.vulnHints() : [];
-      res.status(allOk ? 200 : alreadyRunning ? 409 : 207).json({
+      res.status(status).json({
         source,
         outcomes,
         ...(hints.length > 0 ? { hints } : {}),

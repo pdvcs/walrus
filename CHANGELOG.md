@@ -557,6 +557,21 @@ update` return anyway — including a service-level `scaling` block the API repo
   unrecoverable, which an alert plus a one-call reset solves without blunting the signal.
   Documented in `engineering/docs/build-release.md`.
 
+- **WAL-108 (Fixed):** `POST /internal/vuln-sync/:source` answers **502** when a single named
+  source's sync wholly failed, instead of `207`. For one source there is exactly one outcome, so
+  207 reported a total failure as partial success of a set of one — and Cloud Scheduler, which
+  treats any 2xx as success, recorded the attempt as fine and did not retry. That is how the
+  18:20Z nvd tick on 2026-09-01 failed on an upstream timeout with every scheduler-shaped signal
+  calling it clean, and why WAL-106's retry could not fire for the failure that actually recurs.
+  `207` is kept for `all`, where the set genuinely can be partial; `409 already_running` is
+  unchanged, because contention is not a failure and must not consume a retry. The admin route
+  carried the same expression and now follows the same rule.
+
+  Accepted cost: a transient upstream timeout now opens an alert incident where it previously
+  stayed silent until a second failure within four hours. The retry is worth more than the quiet —
+  and under the old behaviour the second failure would have paged anyway, later and after two lost
+  runs instead of none.
+
 - **Tooling (WAL-108):** `verify-deployment.sh`'s scheduler-tick check now warns on a 2xx that is
   not 200. `/internal/vuln-sync/:source` answers `207` when the sync ran and failed — for one named
   source, a partial success of a set of one — and Cloud Scheduler treats any 2xx as success, so the

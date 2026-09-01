@@ -176,7 +176,14 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
         return;
       }
       const allOk = outcomes.every((o: SourceOutcome) => o.ok);
-      res.status(allOk ? 200 : alreadyRunning ? 409 : 207).json({ source, outcomes });
+      // Same rule as the internal route (WAL-108): 207 says "some of this set worked", which is
+      // true for `all` and a misstatement for one named source, where the set has one member. No
+      // scheduler reads this route, so nothing retries on it either way — but an API client
+      // deserves the same answer from both, and two routes disagreeing about what a failed sync
+      // looks like is how the next reader learns the wrong rule.
+      res
+        .status(allOk ? 200 : alreadyRunning ? 409 : source === "all" ? 207 : 502)
+        .json({ source, outcomes });
     } catch (err) {
       next(err);
     }
