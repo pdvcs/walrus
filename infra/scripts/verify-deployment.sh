@@ -272,25 +272,35 @@ head_ "Artifact integrity — WAL-102 / WAL-66"
 # Every artifact walrus serves must publish a digest and derive its If-Range validator from it.
 # A timestamp ETag is the WAL-102 signature: it means the digest is missing, so a resumed
 # download's validator rotates whenever the object is rewritten even if the bytes are identical.
+#
+# A failed fetch is a finding, not a package to skip. This block used to `except: continue` on
+# every request, which meant the 503 from an instance it had just crashed read as "nothing to
+# check here": two runs on 2026-09-01 each aborted walrus-api on `azuljdk` and each still printed
+# "0 failures", with azuljdk's artifacts silently absent from the count (WAL-104). A harness whose
+# error path is indistinguishable from its empty path cannot be evidence for anything.
 ARTIFACTS=$(python3 - "$SERVICE_URL" <<'PY'
-import json, sys, urllib.request
+import json, sys, urllib.error, urllib.request
 base = sys.argv[1]
 def get(path):
     with urllib.request.urlopen(base + path, timeout=30) as r:
         return json.load(r)
+def why(e):
+    return f"HTTP {e.code}" if isinstance(e, urllib.error.HTTPError) else type(e).__name__
 out = []
 for pkg in get("/api/v1/packages")["packages"]:
     name = pkg["name"]
     try:
         groups = get(f"/api/v1/packages/{name}/groups").get("groups") or []
-    except Exception:
+    except Exception as e:
+        out.append(f"!ERR\t{name}/groups: {why(e)}")
         continue
     if not groups:
         continue
     g = groups[0].get("version_group") or groups[0].get("group")
     try:
         vers = get(f"/api/v1/packages/{name}/versions")
-    except Exception:
+    except Exception as e:
+        out.append(f"!ERR\t{name}/versions: {why(e)}")
         continue
     for v in vers.get("versions", [])[:1]:
         for plat in v.get("platforms", []):
@@ -298,7 +308,8 @@ for pkg in get("/api/v1/packages")["packages"]:
                 continue
             try:
                 d = get(f"/api/v1/packages/{name}/versions/{g}/latest?os={plat['os']}&arch={plat['arch']}")
-            except Exception:
+            except Exception as e:
+                out.append(f"!ERR\t{name}/{plat['os']}/{plat['arch']} latest: {why(e)}")
                 continue
             a = d["artifact"]
             out.append("\t".join([name, d["version"], a["os"], a["arch"],
@@ -308,6 +319,14 @@ for pkg in get("/api/v1/packages")["packages"]:
 print("\n".join(out))
 PY
 )
+
+FETCH_ERRORS=$(printf '%s\n' "$ARTIFACTS" | awk -F'\t' '$1=="!ERR" {print $2}')
+ARTIFACTS=$(printf '%s\n' "$ARTIFACTS" | awk -F'\t' '$1!="!ERR"')
+if [ -z "$FETCH_ERRORS" ]; then
+  ok "WAL-104" "every package answered the catalog requests this check makes"
+else
+  no "WAL-104" "catalog requests failed on: $(printf '%s\n' "$FETCH_ERRORS" | tr '\n' ',' | sed 's/,$//; s/,/, /g')"
+fi
 
 MISSING=$(printf '%s\n' "$ARTIFACTS" | awk -F'\t' 'NF && $5=="None" {print $1"/"$3"/"$4}')
 if [ -z "$MISSING" ]; then
@@ -370,8 +389,23 @@ SWEEPS=$(gcloud logging read \
   "resource.type=\"cloud_run_revision\" AND jsonPayload.msg=\"Started autonomous CVE backfill for newly tracked package\" AND timestamp>=\"${REV_SINCE}\"" \
   --project="$PROJECT" --format=json --limit=50 2>/dev/null)
 
-RESULT=$(printf '%s' "$SWEEPS" | python3 -c '
-import json, sys
+# Zero launches is ambiguous on its own and used to be reported as an inconclusive WARN forever.
+# It has two very different causes: the sweep is broken (WAL-98's signature — 200 with nothing
+# launched), or every package's CPE set is already covered and there is nothing left to select,
+# which is the terminal state WAL-40 AC5 actually asks for. Two further facts separate them —
+# whether the sweep has fired at all since the deploy, and whether any package has exhausted its
+# retries. Both are readable without credentials, so a healthy estate now passes instead of
+# warning at every run until someone stops believing the warning.
+SWEEP_FIRES=$(gcloud logging read \
+  "resource.type=\"cloud_scheduler_job\" AND resource.labels.job_id=\"walrus-vuln-backfill-auto\" AND jsonPayload.\"@type\"=\"type.googleapis.com/google.cloud.scheduler.logging.AttemptFinished\" AND timestamp>=\"${REV_SINCE}\"" \
+  --project="$PROJECT" --format='value(jsonPayload.debugInfo)' --limit=50 2>/dev/null \
+  | grep -c 'response code number = 200' || true)
+STUCK=$(gcloud logging read \
+  "resource.type=\"cloud_run_revision\" AND jsonPayload.msg=\"Package exhausted automatic CVE backfill retries\" AND timestamp>=\"${REV_SINCE}\"" \
+  --project="$PROJECT" --format='value(jsonPayload.package)' --limit=20 2>/dev/null | sort -u | paste -sd' ' -)
+
+RESULT=$(printf '%s' "$SWEEPS" | SWEEP_FIRES="$SWEEP_FIRES" STUCK="$STUCK" python3 -c '
+import json, os, sys
 es = json.load(sys.stdin)
 seen = {}
 for e in es:
@@ -379,8 +413,19 @@ for e in es:
     if p:
         seen[p] = seen.get(p, 0) + 1
 dupes = {k: v for k, v in seen.items() if v > 1}
+fires = int(os.environ.get("SWEEP_FIRES") or 0)
+stuck = (os.environ.get("STUCK") or "").split()
 if dupes:
     print("FAIL re-selected since deploy: " + ", ".join(f"{k}x{v}" for k, v in dupes.items()))
+elif stuck:
+    print("FAIL exhausted automatic backfill retries: " + ", ".join(stuck))
+elif not seen and fires >= 2:
+    # Nothing launched, the sweep did run, and nothing is stuck: every CPE set is covered.
+    # This is select -> launch -> mark -> stop having reached its end, not a sweep doing nothing.
+    print(f"OK sweep at its terminal state: {fires} sweep(s) since deploy selected nothing "
+          "and no package has exhausted its retries")
+elif not seen:
+    print(f"THIN only {fires} sweep(s) have fired since deploy; too early to tell covered from stalled")
 elif len(seen) < 2:
     # One launch cannot show whether the NEXT sweep moves on, which is the whole property.
     print(f"THIN only {len(seen)} sweep launch(es) since deploy; needs a second to be conclusive")

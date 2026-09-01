@@ -526,6 +526,28 @@ update` return anyway — including a service-level `scaling` block the API repo
   wolf, and scopes the backfill-sweep check to the running revision so it cannot be answered by
   the history of code since replaced.
 
+- **WAL-104 (Open, found 2026-09-01):** `listAffectsWithCveForPackage` selects each CVE's whole
+  `raw` advisory JSON for every `cve_affects` row of a package, unbounded, and seven call sites
+  reach it — including `download.ts`, so **every download of a JDK artifact loads the package's
+  entire CVE corpus into a 384 MiB heap before a byte is served**. Sixteen heap aborts on
+  `pdutta-demos` between 2026-08-31T15:15Z and 2026-09-01T10:22Z, on `azuljdk` and `openjdk` read
+  paths. Exposed by WAL-101's fix: the sweep only began completing backfills once the coverage hash
+  was single-sourced, and the JDK packages' new historical CVE sets are what crossed the ceiling.
+  Not addressed by WAL-49, whose scope is the sync path rather than the request handler.
+
+- **Tooling (WAL-104):** `verify-deployment.sh` no longer swallows a failed catalog request. Its
+  artifact block wrapped every fetch in `except Exception: continue`, so the 503 from an instance
+  the script had itself crashed was indistinguishable from a package with nothing to check: two
+  runs on 2026-09-01 each aborted `walrus-api` and each printed "0 failures", with the affected
+  package's artifacts silently absent from the count. A failed request now names the package and
+  the status and fails the run.
+
+- **Tooling (WAL-40 AC5):** `verify-deployment.sh`'s backfill-sweep check can now tell the sweep's
+  terminal state from a stalled one. Zero launches used to warn "needs a second to be conclusive"
+  at every run, which is a check nobody reads for long; it now also reads the sweep's own fire
+  count and the exhausted-retries log line, so an estate where every CPE set is covered passes
+  rather than warning forever.
+
 - **WAL-66:** `examples/wal66-resume-test.sh` — an asserting harness for the interrupt/resume
   manual test: SIGKILLs a ranged transfer mid-flight, resumes it in a fresh process, and checks
   the chunk boundary, the persisted range validator, that it resumed rather than restarted, that
