@@ -109,6 +109,8 @@ describe("admin vuln explorer + sync (isolated)", () => {
           },
         }),
         getVulnBackfill: async () => null,
+        resetBackfillAttempts: async (packageName?: string) =>
+          packageName ? [packageName] : ["azuljdk", "maven3"],
         queryVulns: async (product) =>
           product === "asdfgh" ? unresolvedResult() : resolvedResult(),
         getDataFreshness: async () => ({
@@ -909,6 +911,81 @@ describe("admin vuln explorer + sync (isolated)", () => {
     const json = await request(app).post("/admin/v1/vuln-backfill").send({ since: "not-a-date" });
     expect(json.status).toBe(400);
     expect(json.body.error).toMatch(/since/i);
+  });
+
+  /**
+   * WAL-100 AC1. The exhausted-attempts lockout was operator-visible and had no operator action:
+   * the hint said "no longer being retried" and the only documented way out was direct database
+   * access. These cover the route that closes that, and in particular the two decisions in it that
+   * are easy to get wrong later.
+   */
+  describe("POST /vuln-backfill/reset-attempts (WAL-100)", () => {
+    it("resets one named package and reports what changed", async () => {
+      const res = await request(buildApp())
+        .post("/admin/v1/vuln-backfill/reset-attempts")
+        .send({ package: "azuljdk" });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ reset_count: 1, packages: ["azuljdk"] });
+    });
+
+    it("resets every exhausted package when none is named", async () => {
+      const res = await request(buildApp()).post("/admin/v1/vuln-backfill/reset-attempts").send({});
+
+      expect(res.status).toBe(200);
+      expect(res.body.packages).toEqual(["azuljdk", "maven3"]);
+    });
+
+    it("succeeds with an empty list when nothing was exhausted", async () => {
+      // Not a 404. An operator clearing a state that has already cleared itself — a sweep
+      // succeeded, or the environment was rebuilt — has not made a mistake, and retrying the same
+      // call must not start reporting errors.
+      const res = await request(buildApp({ resetBackfillAttempts: async () => [] }))
+        .post("/admin/v1/vuln-backfill/reset-attempts")
+        .send({});
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ reset_count: 0, packages: [] });
+    });
+
+    it("404s on a package that does not exist", async () => {
+      const res = await request(buildApp({ packageExists: async () => false }))
+        .post("/admin/v1/vuln-backfill/reset-attempts")
+        .send({ package: "nope" });
+
+      expect(res.status).toBe(404);
+    });
+
+    it("audits the reset, because it re-enables work nobody will watch being started", async () => {
+      // The next sweep launches a Cloud Run Job that no human triggered. The audit row is the only
+      // thing tying that job back to the person who made it possible.
+      const logged: Array<Record<string, unknown>> = [];
+      const res = await request(
+        buildApp({ logAdminAction: async (details) => void logged.push(details) }),
+      )
+        .post("/admin/v1/vuln-backfill/reset-attempts")
+        .send({ package: "azuljdk" });
+
+      expect(res.status).toBe(200);
+      expect(logged).toHaveLength(1);
+      expect(logged[0]).toMatchObject({
+        action: "vuln-backfill-reset-attempts",
+        package: "azuljdk",
+        reset_count: 1,
+        packages: ["azuljdk"],
+      });
+    });
+
+    it("redirects a browser form back to the explorer instead of a JSON dead end", async () => {
+      const res = await request(buildApp())
+        .post("/admin/v1/vuln-backfill/reset-attempts")
+        .set("accept", "text/html")
+        .send("package=azuljdk");
+
+      expect(res.status).toBe(303);
+      expect(res.headers.location).toContain("/admin/v1/vulns?");
+      expect(res.headers.location).toContain("product=azuljdk");
+    });
   });
 });
 

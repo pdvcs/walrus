@@ -32,7 +32,10 @@ import { crossReferenceVersions, getVersionAvailabilityStatus } from "./services
 import { queryVulns, VulnQueryDeps } from "./services/vuln-query.js";
 import { getVulnHints } from "./services/vuln-hints.js";
 import { getDegradations } from "./services/degradations.js";
-import { autoBackfillPendingPackages } from "./services/vuln-backfill-autostart.js";
+import {
+  autoBackfillPendingPackages,
+  resetBackfillAttempts,
+} from "./services/vuln-backfill-autostart.js";
 import {
   listAvailabilityHistory,
   listRecentTransitions,
@@ -359,6 +362,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         recordAvailabilityTransitions(pool, { source, trigger: "admin" }),
       startVulnBackfill,
       getVulnBackfill: (id) => getVulnBackfillJob(pool, id),
+      resetBackfillAttempts: (packageName) => resetBackfillAttempts(pool, packageName),
       getActiveSuppressionCount: () => countActiveCveSuppressions(pool),
       listActiveSuppressions: () => listActiveCveSuppressions(pool),
       listSuppressionAudit: (opts) => listSuppressionAuditActions(pool, opts),

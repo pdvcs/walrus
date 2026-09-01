@@ -40,6 +40,8 @@ export interface AdminVulnsRouteDeps {
     packageName?: string,
   ) => Promise<{ job?: VulnBackfillJobRow; alreadyRunning?: boolean }>;
   getVulnBackfill: (id: string) => Promise<VulnBackfillJobRow | null>;
+  /** WAL-100: clear the retry budget so the sweep picks a stuck package up again. */
+  resetBackfillAttempts: (packageName?: string) => Promise<string[]>;
   getActiveSuppressionCount: () => Promise<number>;
   listActiveSuppressions: () => Promise<CveSuppressionRow[]>;
   listSuppressionAudit: (opts: ListSuppressionAuditOptions) => Promise<AdminActionRow[]>;
@@ -334,6 +336,61 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
         }
         return void res.status(400).json({ error: error.message });
       }
+      next(error);
+    }
+  });
+
+  /**
+   * WAL-100 AC1. Re-enable self-healing for packages the sweep has given up on.
+   *
+   * Audited like every other operator action, and for a sharper reason than consistency: this one
+   * re-enables *automatic* work. The next sweep will launch a Cloud Run Job nobody watched anyone
+   * ask for, so the audit row is the only thing connecting that job to a person.
+   *
+   * Resetting nothing is a 200 with an empty list, not a 404. "No package was exhausted" is a
+   * successful, idempotent outcome — an operator clearing a state that has already cleared itself
+   * (a sweep succeeded, or the environment was rebuilt) has not made a mistake, and a retry of the
+   * same call must not start reporting errors.
+   */
+  router.post("/vuln-backfill/reset-attempts", async (req, res, next) => {
+    try {
+      const body = (req.body ?? {}) as { package?: unknown };
+      const packageName = optionalString(body.package);
+      if (packageName && deps.packageExists && !(await deps.packageExists(packageName))) {
+        const message = `Unknown package: ${packageName}`;
+        if (req.headers.accept?.includes("text/html")) {
+          return void res.redirect(
+            303,
+            `/admin/v1/vulns?sync_error=${encodeURIComponent(message)}`,
+          );
+        }
+        return void res.status(404).json({ error: message });
+      }
+
+      const reset = await deps.resetBackfillAttempts(packageName);
+      await deps.logAdminAction(
+        {
+          action: "vuln-backfill-reset-attempts",
+          ...(packageName ? { package: packageName } : { scope: "all-exhausted" }),
+          reset_count: reset.length,
+          packages: reset,
+        },
+        req.auth?.subject,
+      );
+
+      if (req.headers.accept?.includes("text/html")) {
+        const context = new URLSearchParams();
+        if (packageName) context.set("product", packageName);
+        context.set(
+          "synced",
+          reset.length === 0
+            ? "No package had exhausted its backfill attempts"
+            : `Backfill attempts reset for ${reset.length} package(s): ${reset.join(", ")}`,
+        );
+        return void res.redirect(303, `/admin/v1/vulns?${context.toString()}`);
+      }
+      res.status(200).json({ reset_count: reset.length, packages: reset });
+    } catch (error) {
       next(error);
     }
   });

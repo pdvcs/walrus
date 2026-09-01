@@ -535,6 +535,28 @@ update` return anyway — including a service-level `scaling` block the API repo
   was single-sourced, and the JDK packages' new historical CVE sets are what crossed the ceiling.
   Not addressed by WAL-49, whose scope is the sync path rather than the request handler.
 
+- **WAL-100 (Fixed):** `POST /admin/v1/vuln-backfill/reset-attempts` clears the automatic-backfill
+  retry budget for one package or every exhausted one, audited like any other operator action.
+  After three failed attempts a package stopped being retried, and the counter was cleared only by
+  a successful backfill — the very thing that could not start — so the documented recovery was a
+  `psql` session against a Cloud SQL instance the deployment deliberately keeps off the public
+  internet. On `pdutta-demos` that had put eleven of thirteen packages permanently outside
+  self-healing (WAL-98, WAL-99).
+
+  It resets only rows at or above the ceiling, and only the counter and last error — never
+  `vuln_backfill_cpe_hash` or `vuln_backfill_completed_at`, which are the sweep's record of what it
+  has covered. Resetting nothing is a `200` with an empty list, not a `404`, so the call is safe to
+  repeat. The exhausted-packages hint now names the route and says to fix the underlying cause
+  first, since the error is already in the hint and resetting without reading it just burns three
+  more attempts.
+
+  **Recorded decision: the counter does not decay.** Ageing attempts out would restore the
+  unbounded retry the budget exists to prevent — a permanently broken package would hold the
+  sweep's single active slot on every round, starving packages that could be fixed. The problem was
+  never that the budget is too strict but that an exhausted package was invisible and
+  unrecoverable, which an alert plus a one-call reset solves without blunting the signal.
+  Documented in `engineering/docs/build-release.md`.
+
 - **WAL-105 (Tooling):** `verify-deployment.sh` asserts that every Cloud Scheduler tick since the
   running revision deployed actually reached the service, not just that each job's _last_ attempt
   succeeded. A tick refused hours ago and recovered since was previously indistinguishable from

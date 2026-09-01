@@ -401,6 +401,63 @@ curl -X POST "$WALRUS_URL/admin/v1/vuln-backfill" \
   -H 'Content-Type: application/json' -d '{"package":"<name>"}'
 ```
 
+#### Recovering a package that has stopped being retried (WAL-100)
+
+After three failed attempts a package stops being retried and is named in the operator hints:
+
+```
+2 package(s) have exhausted 3 automatic CVE backfill attempts and are no longer being retried:
+azuljdk (Cloud Run Job launch failed (403): ...)
+```
+
+Until it is cleared, **that package's versions are served without complete CVE data** and nothing
+will fix it on its own — the counter is cleared by a successful backfill, which is exactly what
+cannot start. The `Walrus automatic CVE backfill exhausted` alert (§3a) fires on this.
+
+**Read the error before clearing it.** The budget did its job: three launches genuinely failed,
+and the reason is in the hint. Resetting without fixing the cause just burns three more attempts.
+The two seen in practice were a malformed job-launch payload and a missing IAM permission
+(WAL-98, WAL-99) — both infrastructure faults, neither visible from the package itself.
+
+Once the cause is fixed:
+
+```bash
+# One package
+curl -X POST "$WALRUS_URL/admin/v1/vuln-backfill/reset-attempts" \
+  -H "Authorization: Bearer $WALRUS_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"package":"<name>"}'
+
+# Every package that has exhausted its budget
+curl -X POST "$WALRUS_URL/admin/v1/vuln-backfill/reset-attempts" \
+  -H "Authorization: Bearer $WALRUS_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' -d '{}'
+```
+
+It returns what it changed — `{"reset_count": 1, "packages": ["azuljdk"]}` — and is audited like
+any other operator action, which matters more here than elsewhere: the next sweep starts a Cloud
+Run Job that nobody watched a human trigger, and the audit row is the only thing tying that job to
+a person. Resetting when nothing was exhausted is a `200` with an empty list, not an error, so it
+is safe to re-run.
+
+It clears **only** the attempt counter and the last error. It does not touch
+`vuln_backfill_cpe_hash` or `vuln_backfill_completed_at` — those are the sweep's record of what it
+has already covered, and rewriting them would make it re-backfill a package that is fine.
+
+A per-package `POST /admin/v1/vuln-backfill` also clears the counter as a side effect of
+succeeding, and remains useful when you want the work to happen _now_ rather than at the next
+sweep. Prefer `reset-attempts` when you only want to restore eligibility.
+
+**Why the counter does not decay.** Three consecutive failures and three failures spread over a
+month are different signals, and this counter cannot tell them apart — a real limitation, and a
+deliberate one. Ageing attempts out would restore the unbounded retry the budget exists to
+prevent: a permanently broken package would be re-selected forever, and because only one backfill
+runs at a time it would hold the sweep's single slot on every round, starving packages that could
+actually be fixed. That is the WAL-101 failure mode, reached by a different route. The problem
+worth solving was never "the budget is too strict" but "an exhausted package was invisible and
+unrecoverable" — and an alert plus a one-call reset solves that without blunting the signal.
+Revisit only if exhaustion starts happening from genuinely unrelated transients, which would be
+evidence the retry count is too low rather than that it should decay.
+
 ### Operator CVE suppressions
 
 When upstream has attributed a CVE to the right CPE shape but the wrong product in fact, use the

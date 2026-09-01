@@ -25,12 +25,20 @@ export function backfillDisabledHint(packages: string[]): string {
   );
 }
 
+/**
+ * WAL-100 AC2. The hint used to end at "no longer being retried", which tells an operator the
+ * state and not the move — the same gap WAL-43 AC6 closed for alerts. It now names the route that
+ * clears the budget, because the alternative recovery was a psql session against a database the
+ * deployment deliberately keeps off the public internet.
+ */
 export function backfillStuckHint(entries: Array<{ name: string; error: string | null }>): string {
   const detail = entries.map((e) => `${e.name}${e.error ? ` (${e.error})` : ""}`).join("; ");
   return (
     `${entries.length} package(s) have exhausted ${MAX_ATTEMPTS} automatic CVE backfill ` +
     `attempts and are no longer being retried: ${detail}. Until this is resolved their ` +
-    `versions are served without complete CVE data.`
+    `versions are served without complete CVE data. Fix the underlying cause first — the ` +
+    `error above is why the launch failed — then POST /admin/v1/vuln-backfill/reset-attempts ` +
+    `to make them eligible for the next sweep, optionally with {"package":"<name>"} for one.`
   );
 }
 

@@ -145,6 +145,42 @@ export async function recordBackfillError(
   ]);
 }
 
+/**
+ * Clear the retry budget so the sweep will pick a package up again (WAL-100).
+ *
+ * The budget itself is right: WAL-37 added it so a package that fails without reporting back is
+ * not retried forever, and only lock contention refunds an attempt. What was missing is any way to
+ * *undo* it. `vuln_backfill_attempts` was reset only by `markBackfillComplete` — by the very
+ * backfill that cannot start — so three failed sweeps left a package permanently outside
+ * self-healing, and the documented recovery was a `psql` session against a Cloud SQL instance the
+ * deployment is designed to keep off the public internet. An infrastructure fault lasting three
+ * sweeps therefore converted a self-healing system into a silently non-self-healing one, with no
+ * supported way back. On `pdutta-demos` that was eleven of thirteen packages (WAL-98, WAL-99).
+ *
+ * Deliberately *only* clears the counter and the last error. It does not touch
+ * `vuln_backfill_cpe_hash` or `vuln_backfill_completed_at`: this makes a package eligible to be
+ * retried, it does not assert that its coverage is stale. Those two are the sweep's own record of
+ * what it has done (WAL-101), and an operator action that quietly rewrote them would make the next
+ * sweep re-backfill a package that is already covered.
+ *
+ * `packageName` omitted resets every package that has exhausted its budget. Scoping to exhausted
+ * rows rather than to all rows keeps the audit entry honest about what changed — resetting a
+ * package sitting at 1 attempt is not a recovery, and reporting it as one would inflate the count
+ * an operator reads back.
+ */
+export async function resetBackfillAttempts(pool: Pool, packageName?: string): Promise<string[]> {
+  const { rows } = await pool.query<{ name: string }>(
+    `UPDATE packages
+        SET vuln_backfill_attempts = 0,
+            vuln_backfill_last_error = NULL
+      WHERE ($1::text IS NULL OR name = $1)
+        AND vuln_backfill_attempts >= $2
+      RETURNING name`,
+    [packageName ?? null, MAX_ATTEMPTS],
+  );
+  return rows.map((r) => r.name).sort();
+}
+
 export interface AutoBackfillResult {
   pending: number;
   started: string[];
