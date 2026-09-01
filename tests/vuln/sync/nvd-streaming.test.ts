@@ -4,8 +4,8 @@ import { backfillNvd, incrementalNvdSync } from "../../../src/vuln/sync/nvd-sync
 import type { NvdClient, NvdCveItem, NvdCvePage } from "../../../src/vuln/sync/nvd-client.js";
 
 /**
- * WAL-95. The incremental sync used to call `cvesModifiedSince`, which concatenates every page
- * of a lastMod window into one array. On a fresh database there is no cursor, so the first sync
+ * WAL-95. The incremental sync used to call `cvesModifiedSince` (since deleted), which
+ * concatenated every page of a lastMod window into one array. On a fresh database there is no cursor, so the first sync
  * of any new environment requests the full 119-day window — and on the first real GCP deployment
  * that aborted the service with `FATAL ERROR: Reached heap limit`, signal 6, about two minutes in.
  *
@@ -64,13 +64,11 @@ function fakePool() {
 
 function fakeNvd(pageCount: number) {
   const total = pageCount * PAGE_SIZE;
-  const cvesModifiedSince = vi.fn();
   return {
-    cvesModifiedSince,
     async *cvePages(): AsyncGenerator<NvdCvePage> {
       for (let i = 0; i < pageCount; i++) yield page(i * PAGE_SIZE, total);
     },
-  } as unknown as NvdClient & { cvesModifiedSince: ReturnType<typeof vi.fn> };
+  } as unknown as NvdClient;
 }
 
 describe("incremental NVD sync streams pages (WAL-95)", () => {
@@ -86,14 +84,11 @@ describe("incremental NVD sync streams pages (WAL-95)", () => {
     for (const writes of transactions) expect(writes).toBe(PAGE_SIZE);
   });
 
-  it("never calls the accumulating cvesModifiedSince path", async () => {
-    const { pool } = fakePool();
-    const nvd = fakeNvd(PAGES);
-
-    await incrementalNvdSync(pool, nvd, { now: new Date("2026-08-30T12:00:00Z") });
-
-    expect(nvd.cvesModifiedSince).not.toHaveBeenCalled();
-  });
+  // There used to be a test here asserting `cvesModifiedSince` was never called. It was deleted
+  // on 2026-09-01 along with the method itself: an assertion that a non-existent method went
+  // uncalled cannot fail, and a test that cannot fail is worse than no test — it reads like
+  // coverage. The property is now held two better ways: the accumulating method does not exist,
+  // and `tests/infra/accumulating-helpers.test.ts` fails if `src/` ever grows a call to one.
 
   it("still ingests every CVE in the window, and counts them once", async () => {
     const { pool, transactions } = fakePool();
@@ -133,17 +128,9 @@ describe("backfill NVD sync streams pages (WAL-97)", () => {
     for (const writes of transactions) expect(writes).toBe(PAGE_SIZE);
   });
 
-  it("never calls the accumulating cvesForCpe path", async () => {
-    const { pool } = fakePool();
-    const nvd = fakeNvd(PAGES) as unknown as { cvesForCpe: ReturnType<typeof vi.fn> };
-    (nvd as { cvesForCpe: ReturnType<typeof vi.fn> }).cvesForCpe = vi.fn();
-
-    await backfillNvd(pool, nvd as unknown as NvdClient, {
-      now: new Date("2026-08-30T12:00:00Z"),
-    });
-
-    expect(nvd.cvesForCpe).not.toHaveBeenCalled();
-  });
+  // Its `cvesForCpe` twin was deleted for the same reason — see the note in the WAL-95 block
+  // above. What still matters here is the transaction-per-page assertion, which is a statement
+  // about memory rather than about which method was called, and holds whatever the client offers.
 
   it("queries NVD by the pair's virtualMatchString", async () => {
     const { pool } = fakePool();

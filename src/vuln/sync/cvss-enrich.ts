@@ -4,7 +4,7 @@
  * Most CVEs without a severity are OSV stubs: `upsertCveStub` never sets one,
  * and the CPE-keyed NVD paths cannot reach them because those CVEs sit in NVD
  * with `vulnStatus: "Deferred"` — full CVSS metrics, but no CPE configurations,
- * so `cvesForCpe`/`virtualMatchString` never returns them. A by-id lookup does.
+ * so a `virtualMatchString` query never returns them. A by-id lookup does.
  *
  * This walks `cves WHERE severity IS NULL`, fetches each from NVD by id, and
  * re-upserts through the shared `extractCvss` + `upsertCveFull` path, so it

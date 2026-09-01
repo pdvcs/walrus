@@ -535,6 +535,28 @@ update` return anyway — including a service-level `scaling` block the API repo
   was single-sourced, and the JDK packages' new historical CVE sets are what crossed the ceiling.
   Not addressed by WAL-49, whose scope is the sync path rather than the request handler.
 
+- **WAL-95 / WAL-97 (Removed):** `NvdClient.cvesForCpe` and `NvdClient.cvesModifiedSince` are
+  deleted. Both were three lines draining `cvePages` into one array, and both had already become
+  out-of-memory aborts in production — WAL-95 on the incremental path, WAL-97 on the backfill
+  path. WAL-97 recorded them as "a loaded gun" and asked for this. Deleted rather than deprecated:
+  the hazard was that the accumulating call sat in autocomplete beside the streaming one, and a
+  comment does not move autocomplete. `nvd-client.test.ts` drains `cvePages` through a local
+  `collect()` helper instead — accumulation was never the defect, accumulation reachable from
+  `src/` was.
+
+  Two now-vacuous tests went with them: `nvd-streaming.test.ts` asserted the methods were never
+  called, which cannot fail once they do not exist. `tests/infra/accumulating-helpers.test.ts`
+  replaces them and is stronger — it fails on a call _or_ a redefinition, and strips comments
+  first so it does not fire on the note explaining why the methods are gone.
+
+- **Tooling (WAL-93):** `infra/scripts/verify-teardown.sh` — asserts a torn-down project is
+  actually empty, and that the three things `teardown.sh` documents as retained (Terraform state
+  bucket, artifact bucket, Artifact Registry images) survived. Written before the teardown it
+  checks, because the manual test is one-shot and destructive: the 2026-08-30 disposal was
+  interrupted and its evidence is unrecoverable. Includes a reachability gate, since every check
+  is a list-and-count and an expired credential would otherwise report a pristine teardown.
+  Inverse-tested against the live environment: 10 failures with counts matching reality.
+
 - **WAL-104 (Fixed):** `listAffectsWithCveForPackage` no longer selects `c.raw`. It rebuilds only
   the references subtree in SQL, so the loader stops carrying every CVE's whole advisory to all
   seven of its call sites — `download.ts` among them, which is why serving one JDK artifact meant

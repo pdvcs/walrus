@@ -165,31 +165,21 @@ export class NvdClient {
     }
   }
 
-  /** All CVEs matching a virtual match string (per-product backfill). */
-  async cvesForCpe(
-    virtualMatchString: string,
-    extraParams: Record<string, string> = {},
-  ): Promise<NvdCveItem[]> {
-    const items: NvdCveItem[] = [];
-    for await (const page of this.cvePages({ virtualMatchString, ...extraParams })) {
-      items.push(...page.vulnerabilities);
-    }
-    return items;
-  }
-
-  /** CVEs modified in a window (incremental sync). */
-  async cvesModifiedSince(lastModStartDate: string, lastModEndDate: string): Promise<NvdCveItem[]> {
-    const items: NvdCveItem[] = [];
-    for await (const page of this.cvePages({ lastModStartDate, lastModEndDate })) {
-      items.push(...page.vulnerabilities);
-    }
-    return items;
-  }
+  // `cvesForCpe(virtualMatchString, extraParams)` and `cvesModifiedSince(from, to)` used to live
+  // here. Both were three lines draining `cvePages` into one array, and both became
+  // out-of-memory aborts in production: WAL-95 on the incremental path, which crashed
+  // `walrus-api` twice a day, and WAL-97 on the backfill path. Nothing bounded what NVD returned,
+  // so the array was as large as the query was broad.
+  //
+  // They are deleted rather than deprecated because the hazard was never the implementation — it
+  // was that the accumulating call was the obvious one to reach for, sitting in autocomplete next
+  // to the streaming one. Callers page with `cvePages` and ingest per page. A test that wants a
+  // finished list builds one itself from a fake transport; see `collect` in `nvd-client.test.ts`.
 
   /**
    * A single CVE by id. Used by the CVSS enrichment pass to reach CVEs that the
    * CPE-keyed paths never see: NVD "Deferred" records carry full CVSS metrics
-   * but no CPE configurations, so `cvesForCpe` cannot find them.
+   * but no CPE configurations, so a `virtualMatchString` query cannot find them.
    * Returns null when NVD does not know the id.
    */
   async cveById(cveId: string): Promise<NvdCveItem | null> {

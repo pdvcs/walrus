@@ -259,7 +259,7 @@ describe("nvd-sync ingestion", () => {
 
   /**
    * Stands in for `NvdClient.cvePages`, which `backfillNvd` consumes instead of the accumulating
-   * `cvesForCpe` since WAL-97. One call per (CPE pair, publication window), and the pair now travels
+   * the accumulating `cvesForCpe` since WAL-97, which no longer exists. One call per (CPE pair, publication window), and the pair now travels
    * inside the params object as `virtualMatchString` rather than as a separate first argument.
    */
   const pagesOf = (vulnerabilities: NvdCveItem[] = []) =>
