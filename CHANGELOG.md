@@ -414,6 +414,22 @@ New deps: `fuzzball`, `semver` (runtime); `fast-check` (dev). `pg_trgm` extensio
   a Cloud Run Job that has no resource pin at all. It now ingests per page. Not reached in live
   testing only because no environment had run a historical backfill yet, which is exactly what
   WAL-77 does.
+- **WAL-45 (Added):** `npm run validate -- --online` probes every configured CPE pair against the
+  NVD CPE dictionary and reports how many entries each has;
+  `/admin/v1/validate-toml` renders the same check as a `cpe_dictionary` step. A syntactically
+  valid `vendor:product` can name the wrong product, and nothing downstream notices — the targeted
+  backfill walks zero results, reports success, and marks the package covered.
+
+  Deliberately advisory: zero hits **warns and names the pair**, never fails, because products NVD
+  has never had to name legitimately have no dictionary entry, so absence of evidence cannot
+  distinguish a typo from an obscure-but-correct pair. Upstream being unreachable is reported as
+  `unchecked` rather than as zero hits — conflating them would train analysts to ignore the
+  warning. No network calls without the flag, so CI stays offline, and the walk paces itself
+  through the NVD client's rate limiter for the keyless 4-per-30s budget.
+
+  OSV mappings get no equivalent probe; that half is [WAL-109](engineering/tasks/WAL-109.md),
+  deferred.
+
 - **WAL-48 (Changed):** The scheduled CVSS enrichment run is bounded. Cloud Scheduler now POSTs a
   `limit`, sized by a documented Terraform variable rather than walking the entire un-scored
   backlog and being cut off mid-walk. The default is derived for the keyless NVD rate, since an
