@@ -51,3 +51,50 @@ describe("scheduled cvss run is bounded", () => {
     expect(scheduler).toContain("body    = each.value.body == null ? null : base64encode(");
   });
 });
+
+/**
+ * WAL-106, on top of WAL-105.
+ *
+ * A Cloud Run 429 — `no available instance` — is a request that never reached walrus: nothing ran,
+ * no advisory lock was taken, no cursor was read. Every vuln-sync job must therefore be able to
+ * try again, or a tick landing while the service is between instances is silently lost and shows
+ * up only as an alert email.
+ *
+ * `nvd` was the one job with `retries = 0`, and it is also the only source **not** on a shortened
+ * cadence in GCP Dev, so it is exactly the one the "dev runs more often anyway" argument does not
+ * protect. It is pinned here because the value is one character and the reasoning behind it is a
+ * paragraph: the next person to read the comment should not be able to quietly revert the value
+ * without the test noticing.
+ */
+describe("every vuln-sync job can retry a refused tick (WAL-105, WAL-106)", () => {
+  const scheduler = read("infra/terraform/scheduler.tf");
+
+  const retriesFor = (source: string) => {
+    const start = scheduler.indexOf(`    ${source} = {`);
+    expect(start, `no map entry for ${source}`).toBeGreaterThan(-1);
+    const m = scheduler.slice(start).match(/retries\s+= (\d+)/);
+    expect(m, `no retries for ${source}`).not.toBeNull();
+    return Number(m![1]);
+  };
+
+  it("gives every source at least one retry", () => {
+    for (const source of ["nvd", "kev", "osv", "cvss"]) {
+      expect(retriesFor(source), `${source} cannot retry a 429`).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  it("keeps osv's larger allowance, since a lost weekly run is stale for seven days", () => {
+    expect(retriesFor("osv")).toBeGreaterThanOrEqual(2);
+  });
+
+  it("keeps the backoff long enough to clear a min-instance replacement gap", () => {
+    // Replacement was observed at 6-16 minutes on 2026-09-01 (WAL-105). The same gap is what lets
+    // cvss retry into the nvd lock safely, so shortening it would trade one problem for another.
+    const m = scheduler.match(/min_backoff_duration = "(\d+)s"[\s\S]{0,400}?each\.value/);
+    const backoff = Number(
+      (scheduler.match(/for_each = local\.vuln_sync_jobs[\s\S]*?min_backoff_duration = "(\d+)s"/) ??
+        m)![1],
+    );
+    expect(backoff).toBeGreaterThanOrEqual(600);
+  });
+});

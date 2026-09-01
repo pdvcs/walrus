@@ -276,12 +276,26 @@ export async function getCveById(pool: Pool, id: string): Promise<CveRow | null>
  * of over-delivering against it, and costs the callers that never touch `raw` — the gate, the
  * catalog routes, the availability sweep — nothing at all.
  *
+ * `description` is capped for the same reason (WAL-104 AC3). Its only consumer on this row is
+ * `vuln-query.ts`, which truncates to `VULN_SUMMARY_MAX_CHARS` before rendering — so the rest of a
+ * multi-kilobyte NVD description was fetched, parsed and discarded, once per row, on every request
+ * including a download. The cap is passed as a parameter rather than written into the SQL so the
+ * number has one home; `+ 1` so the consumer can still tell a truncated description from an exact
+ * fit and keep its ellipsis.
+ *
  * The `jsonb_typeof` guard, not `IS NULL`: the column is `JSONB NOT NULL`, so an absent advisory
  * is stored as the JSON value `null` and `c.raw IS NULL` is never true. Without the guard a CVE
  * with no advisory read back as `{"cve":{"references":null}}` where it used to read back as
  * `null` — a caller doing `row.raw?.cve` would have started seeing an object. Caught by the
  * regression test below, which is the only reason it is not still in here.
  */
+/**
+ * How much of a CVE description reaches a caller. Defined here, beside the query that applies it,
+ * so the loader and the one consumer that renders it cannot disagree about the number — the
+ * mistake WAL-101 was.
+ */
+export const VULN_SUMMARY_MAX_CHARS = 300;
+
 export async function listAffectsWithCveForPackage(
   pool: Pool,
   packageName: string,
@@ -291,7 +305,7 @@ export async function listAffectsWithCveForPackage(
     `SELECT ca.cve_id, ca.version_start, ca.version_start_excl, ca.version_end,
             ca.version_end_excl, ca.exact_version, ca.fixed_in, ca.source, ca.version_na,
             c.severity, c.severity_source, c.cvss_v3_score, c.cvss_v4_score, c.cvss_v2_score,
-            c.description, c.is_kev, p.cve_version_extract,
+            left(c.description, $3) AS description, c.is_kev, p.cve_version_extract,
             CASE WHEN jsonb_typeof(c.raw) = 'null' THEN NULL
                  ELSE jsonb_build_object('cve',
                         jsonb_build_object('references', c.raw->'cve'->'references'))
@@ -318,7 +332,7 @@ export async function listAffectsWithCveForPackage(
      ) s ON true
      WHERE ca.package_name = $1
      ORDER BY ca.cve_id DESC`,
-    [packageName, opts.excludeSuppressionId ?? null],
+    [packageName, opts.excludeSuppressionId ?? null, VULN_SUMMARY_MAX_CHARS + 1],
   );
   return rows;
 }

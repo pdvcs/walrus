@@ -4,7 +4,7 @@
  * path — no duplicated resolution/matching logic.
  */
 import { Resolution } from "../vuln/resolver.js";
-import { AffectsWithCveRow } from "../db/queries/cves.js";
+import { AffectsWithCveRow, VULN_SUMMARY_MAX_CHARS } from "../db/queries/cves.js";
 import { VULN_DISCLAIMER } from "../routes/schemas.js";
 import {
   describeAffectedRange,
@@ -172,7 +172,7 @@ export async function queryVulns(
       cvss_v3_score: row.cvss_v3_score !== null ? Number(row.cvss_v3_score) : null,
       cvss_v4_score: row.cvss_v4_score == null ? null : Number(row.cvss_v4_score),
       cvss_v2_score: row.cvss_v2_score == null ? null : Number(row.cvss_v2_score),
-      summary: truncate(row.description, 300),
+      summary: truncate(row.description, VULN_SUMMARY_MAX_CHARS),
       affected: {
         range: describeAffectedRange(toRange(row), row.version_na),
         matched_because: entry.reason,

@@ -49,6 +49,14 @@ if [ -z "$SERVICE_URL" ]; then
 fi
 printf 'walrus deployment check — %s\n%s\n' "$PROJECT" "$SERVICE_URL"
 
+# When the running revision went live. Several checks below are scoped to it, because an
+# assertion about a deployment must not be answerable by the history of a different one — judged
+# over seven days the sweep check failed on code WAL-101 had already replaced.
+REV_SINCE=$(gcloud run revisions list --region="$REGION" --project="$PROJECT" \
+  --format='value(creationTimestamp)' --filter='status.conditions.type=Active AND status.conditions.status=True' \
+  --limit=1 2>/dev/null)
+REV_SINCE="${REV_SINCE:-$(date -u -d '1 day ago' '+%Y-%m-%dT%H:%M:%SZ')}"
+
 # =========================================================================================
 head_ "Serving health"
 # =========================================================================================
@@ -218,6 +226,71 @@ assert not errored, f"last attempt failed: {errored}"
 ' && ok "WAL-40" "all six scheduler jobs enabled, fired, and last attempt reported success" \
    || no "WAL-40" "scheduler jobs are not all healthy"
 
+# WAL-105 AC3. The check above reads each job's *last* attempt, so a tick that was refused three
+# hours ago and then recovered looks identical to one that never failed. That is the gap WAL-105
+# fell through: on 2026-09-01 two scheduled syncs were refused with a Cloud Run 429 before they
+# reached walrus, and the only trace was an email. `/app/status` cannot help — walrus reports
+# degradation in requests it received, and these never arrived — so this has to be asked from
+# outside the service, against every attempt since the running revision went live.
+#
+# A refused tick that a retry rescued is a WARN, not a failure: the sync happened, and the same
+# "do not cry wolf" rule the sweep and vuln-source checks follow applies here. Only a job whose
+# most recent attempt failed has actually lost its window.
+TICKS=$(gcloud logging read \
+  "resource.type=\"cloud_scheduler_job\" AND jsonPayload.\"@type\"=\"type.googleapis.com/google.cloud.scheduler.logging.AttemptFinished\" AND timestamp>=\"${REV_SINCE}\"" \
+  --project="$PROJECT" --format=json --limit=200 2>/dev/null)
+
+RESULT=$(printf '%s' "$TICKS" | python3 -c '
+import json, re, sys
+events = json.load(sys.stdin)
+by_job = {}
+for e in events:
+    p = e.get("jsonPayload") or {}
+    job = (p.get("jobName") or "").rsplit("/", 1)[-1]
+    if not job:
+        continue
+    m = re.search(r"response code number = (\d+)", p.get("debugInfo") or "")
+    # No parsable code means the attempt did not reach an HTTP response at all; treat it as a
+    # failure rather than skipping it, or an unreachable service reads as a clean run.
+    code = int(m.group(1)) if m else 0
+    by_job.setdefault(job, []).append((e.get("timestamp") or "", code))
+
+if not by_job:
+    print("THIN no scheduler attempts recorded since the running revision deployed")
+    raise SystemExit
+
+lost, recovered = [], []
+for job, attempts in by_job.items():
+    attempts.sort()
+    bad = []
+    for t, c in attempts:
+        if 200 <= c < 300:
+            continue
+        bad.append(t[11:19] + "Z->" + (str(c) if c else "no response"))
+    if not bad:
+        continue
+    detail = job + " (" + ", ".join(bad) + ")"
+    # Most recent attempt is the one that decides: if it succeeded, something got through.
+    if 200 <= attempts[-1][1] < 300:
+        recovered.append(detail)
+    else:
+        lost.append(detail)
+
+total = sum(len(a) for a in by_job.values())
+if lost:
+    print("FAIL scheduled ticks never reached the service: " + "; ".join(sorted(lost)))
+elif recovered:
+    print("WARN refused then recovered on retry: " + "; ".join(sorted(recovered)))
+else:
+    print(f"OK all {total} scheduled tick(s) since deploy reached the service")
+')
+case "$RESULT" in
+  OK*)   ok   "WAL-105" "${RESULT#OK }" ;;
+  WARN*) warn "WAL-105" "${RESULT#WARN }" ;;
+  THIN*) warn "WAL-105" "${RESULT#THIN }" ;;
+  *)     no   "WAL-105" "${RESULT#FAIL }" ;;
+esac
+
 printf '%s' "$SCHED" | python3 -c '
 import base64, json, sys
 for j in json.load(sys.stdin):
@@ -379,12 +452,7 @@ head_ "Autonomous backfill — WAL-101 / WAL-40 AC5"
 # The sweep must make progress: a package it launches must be marked, so the next sweep picks a
 # different one. A package selected by two consecutive sweeps is the WAL-101 signature and the
 # concrete form of WAL-43's deferred "succeeded but achieved nothing" alert.
-# Scoped to the revision that is actually serving: launches by code since replaced say nothing
-# about the deployment under test, and before WAL-101 there are plenty of them.
-REV_SINCE=$(gcloud run revisions list --region="$REGION" --project="$PROJECT" \
-  --format='value(creationTimestamp)' --filter='status.conditions.type=Active AND status.conditions.status=True' \
-  --limit=1 2>/dev/null)
-REV_SINCE="${REV_SINCE:-$(date -u -d '1 day ago' '+%Y-%m-%dT%H:%M:%SZ')}"
+# Scoped to the revision that is actually serving — see REV_SINCE near the top of the file.
 SWEEPS=$(gcloud logging read \
   "resource.type=\"cloud_run_revision\" AND jsonPayload.msg=\"Started autonomous CVE backfill for newly tracked package\" AND timestamp>=\"${REV_SINCE}\"" \
   --project="$PROJECT" --format=json --limit=50 2>/dev/null)

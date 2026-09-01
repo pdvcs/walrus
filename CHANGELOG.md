@@ -535,6 +535,33 @@ update` return anyway — including a service-level `scaling` block the API repo
   was single-sourced, and the JDK packages' new historical CVE sets are what crossed the ceiling.
   Not addressed by WAL-49, whose scope is the sync path rather than the request handler.
 
+- **WAL-105 (Tooling):** `verify-deployment.sh` asserts that every Cloud Scheduler tick since the
+  running revision deployed actually reached the service, not just that each job's _last_ attempt
+  succeeded. A tick refused hours ago and recovered since was previously indistinguishable from
+  one that never failed — which is how two scheduled syncs refused with a Cloud Run 429 on
+  2026-09-01 left no trace but an email. A rescued tick warns; only a job whose most recent
+  attempt failed is a failure. An attempt with no parsable response code counts as failed, or an
+  unreachable service reads as a clean run.
+
+- **WAL-106:** `walrus-vuln-sync-nvd` gets `retries = 1`. It was 0, reasoned as "retrying would
+  mostly re-hit the advisory lock and log 409s" — true for a request that arrived and met a
+  running sync, false for a Cloud Run 429, where the request never reached walrus, no lock was
+  taken and there is nothing to duplicate. The shared `min_backoff_duration` stays at 600s
+  because cvss depends on that gap to clear the nvd lock. Pinned by
+  `tests/infra/scheduler-terraform.test.ts`.
+
+- **WAL-104 (AC3, width half):** `listAffectsWithCveForPackage` caps `c.description` at the length
+  its one consumer actually renders. A multi-kilobyte NVD description travelled per row on every
+  request including downloads, and `vuln-query.ts` truncated it to 300 characters before display.
+  The cap is a query parameter rather than a literal so the number has one home, and it is
+  `+ 1` so the consumer can still distinguish an exact fit from an overflow and keep its ellipsis
+  — the cap is invisible in rendered output. Measured before the change: ~1.1s of every JDK
+  download's time to first byte was the gate loading affects (1.32s vs 0.25s for ripgrep).
+
+  The _count_ half of AC3 is deliberately not done. Pushing version matching or criticality into
+  SQL would put the same rule in two languages, which is exactly WAL-101; doing it safely means
+  storing a computed flag at ingest, which is a migration rather than a query edit.
+
 - **WAL-95 / WAL-97 (Removed):** `NvdClient.cvesForCpe` and `NvdClient.cvesModifiedSince` are
   deleted. Both were three lines draining `cvePages` into one array, and both had already become
   out-of-memory aborts in production — WAL-95 on the incremental path, WAL-97 on the backfill

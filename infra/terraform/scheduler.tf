@@ -56,10 +56,20 @@ locals {
       # incremental NVD walk. 1800s is the maximum it allows; the Cloud Run
       # service itself permits 3600s, so the scheduler is the binding limit.
       deadline = "1800s"
-      # No retry: the NVD cursor only advances on success, so the next scheduled
-      # run repeats the same window anyway. Retrying would mostly re-hit the
-      # advisory lock and log 409s.
-      retries = 0
+      # One retry, and the reason is narrower than it looks (WAL-106).
+      #
+      # This was 0, on the argument that the NVD cursor only advances on success, so the next
+      # scheduled run repeats the same window anyway and a retry would mostly re-hit the advisory
+      # lock and log 409s. That holds for a request that *arrived* and met a running sync. It does
+      # not hold for a Cloud Run 429 — `no available instance`, WAL-105 — where the request never
+      # reached walrus at all: no lock was taken, no cursor was read, and there is no work to
+      # duplicate. A retry is the correct response to that in a way it is not to a 409.
+      #
+      # The retry can still land on a genuine 409 if a slow walk is in flight at +600s. That costs
+      # one alert email, which is what a lost window costs anyway, so the trade only ever improves
+      # on the previous behaviour. `min_backoff_duration` below is shared across these jobs and is
+      # deliberately not shortened: cvss depends on that gap to clear the nvd lock safely.
+      retries = 1
     }
     kev = {
       body     = null

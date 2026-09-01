@@ -12,6 +12,7 @@ import {
   knownCveIds,
   getCveById,
   listAffectsWithCveForPackage,
+  VULN_SUMMARY_MAX_CHARS,
   listAffectedPackagesForCve,
   AffectsInsert,
 } from "../../src/db/queries/cves.js";
@@ -221,6 +222,26 @@ describe("cves queries", () => {
     const [row] = await listAffectsWithCveForPackage(pool, PKG);
     expect(row.raw).toEqual({ cve: { references: [{ url: "https://example.test/advisory" }] } });
     expect(Object.keys(row.raw?.cve ?? {})).toEqual(["references"]);
+  });
+
+  it("caps the description at what its one consumer renders, plus the overflow marker (WAL-104)", async () => {
+    // The description travelled in full to every caller on every request — download included —
+    // and the only reader truncates it. `+1` is load-bearing: it is what lets `truncate` still
+    // tell "exactly 300" from "longer than 300" and keep its ellipsis, so capping here is
+    // invisible to the rendered output rather than quietly changing it.
+    await upsertCveFull(pool, { ...blankCve(CVE), description: "d".repeat(5000) });
+    await insertAffects(pool, affects({}));
+
+    const [row] = await listAffectsWithCveForPackage(pool, PKG);
+    expect(row.description).toHaveLength(VULN_SUMMARY_MAX_CHARS + 1);
+  });
+
+  it("leaves a description shorter than the cap untouched (WAL-104)", async () => {
+    await upsertCveFull(pool, { ...blankCve(CVE), description: "short" });
+    await insertAffects(pool, affects({}));
+
+    const [row] = await listAffectsWithCveForPackage(pool, PKG);
+    expect(row.description).toBe("short");
   });
 
   it("keeps a null advisory null rather than inventing an empty one (WAL-104)", async () => {
