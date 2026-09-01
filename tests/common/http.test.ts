@@ -82,13 +82,17 @@ describe("http retry helpers", () => {
  */
 describe("upstream rate limiting", () => {
   function rateLimitedResponse(status: number, remaining: string, reset?: string) {
+    // `?? null` rather than letting an absent `reset` come back as `undefined`: the real
+    // `Headers.get` returns `string | null`, and a stub that answers `undefined` invites the
+    // production code to be written against a shape no browser or Node runtime produces.
+    const headers: Record<string, string | undefined> = {
+      "x-ratelimit-remaining": remaining,
+      "x-ratelimit-reset": reset,
+    };
     return {
       ok: false,
       status,
-      headers: {
-        get: (name: string) =>
-          name === "x-ratelimit-remaining" ? remaining : name === "x-ratelimit-reset" ? reset : null,
-      },
+      headers: { get: (name: string) => headers[name] ?? null },
       text: () => Promise.resolve('{"message":"API rate limit exceeded for 1.2.3.4."}'),
     };
   }
