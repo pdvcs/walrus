@@ -557,6 +557,21 @@ update` return anyway — including a service-level `scaling` block the API repo
   unrecoverable, which an alert plus a one-call reset solves without blunting the signal.
   Documented in `engineering/docs/build-release.md`.
 
+- **WAL-107 (Fixed):** the download refusal quotes the CVSS score that actually crossed the gate.
+  `firstScore` took the first non-null of v3, v4, v2, but the gate fires when _any_ of them reaches
+  9.0 — so `CVE-2026-6100` (v3 8.1, v4 9.1) produced
+  `blocked by CVE-2026-6100 (CVSS 8.1)` under a rule that blocks at 9.0, an explanation that argues
+  against itself. WAL-79 exists so that line stands alone in a CI log.
+
+  Only the filter changed, not the v3 → v4 → v2 order: quoting the _highest_ crossing score would
+  have started preferring CVSS v2, two generations old and routinely rating higher than the modern
+  vectors. An existing test caught that, having already pinned v4 9.9 over v2 10.0.
+
+  The admin UI was correct throughout — it renders `HIGH (9.1) blocks at 9.1` — and two of the three
+  faults originally filed under this ticket were errors in how the gate was being checked, not in
+  the product. Recorded on the ticket, because the method error is the more useful half: when
+  checking whether a gate fires, ask the gate.
+
 - **WAL-108 (Fixed):** `POST /internal/vuln-sync/:source` answers **502** when a single named
   source's sync wholly failed, instead of `207`. For one source there is exactly one outcome, so
   207 reported a total failure as partial success of a set of one — and Cloud Scheduler, which

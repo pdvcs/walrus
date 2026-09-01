@@ -238,6 +238,68 @@ describe("download routes", () => {
 
     // The gate is any-of across CVSS versions (ADR-005), so a body naming only v3 would
     // misdescribe a v4-caused refusal — the same mistake availability history already corrected.
+    /**
+     * WAL-107. The gate fires when *any* of v3/v4/v2 reaches 9.0, so quoting the first score that
+     * merely exists can name a number that does not justify the refusal.
+     *
+     * Live on `pdutta-demos` 2026-09-01: `CVE-2026-6100` is v3 8.1 and v4 9.1, and the 403 read
+     * `blocked by CVE-2026-6100 (CVSS 8.1)` under a rule that blocks at 9.0 — an explanation that
+     * argues against itself. The admin UI had it right all along, showing `HIGH (9.1)` and the
+     * words `blocks at 9.1`.
+     *
+     * Mutation check: restore `if (score !== null) return score;` (first non-null rather than
+     * first crossing) and the first test below fails with 8.1.
+     */
+    it("quotes the score that crossed the gate, not the first one present (WAL-107)", async () => {
+      const response = await get403([
+        criticalAffects({
+          cve_id: "CVE-2026-6100",
+          severity: "HIGH",
+          severity_source: "nvd-cvss-v3",
+          cvss_v3_score: "8.1",
+          cvss_v4_score: "9.1",
+          fixed_in: "3.12.14",
+        }),
+      ]);
+
+      expect(response.body.error).toContain("CVSS 9.1");
+      expect(response.body.error).not.toContain("8.1");
+      // The payload still carries both, so a reader can check the sentence against the data.
+      expect(response.body.blocked_by).toMatchObject({
+        cve_id: "CVE-2026-6100",
+        severity: "HIGH",
+        cvss_v3_score: 8.1,
+        cvss_v4_score: 9.1,
+      });
+    });
+
+    it("keeps the v3-first order among scores that did cross (WAL-107)", async () => {
+      // Only the filter changed, not the preference. Quoting the *highest* crossing score would
+      // have started preferring CVSS v2, which is two generations old and rates higher than the
+      // modern vectors — a different way of being misleading.
+      const response = await get403([
+        criticalAffects({ cvss_v3_score: "9.2", cvss_v4_score: "9.6", cvss_v2_score: "10.0" }),
+      ]);
+
+      expect(response.body.error).toContain("CVSS 9.2");
+    });
+
+    it("falls back to the severity word when the block came from severity alone (WAL-107)", async () => {
+      // `meetsCriticalGate`'s other branch: no score crosses, but the CVE is rated CRITICAL.
+      // There is no number to quote, and inventing one from a sub-threshold score would be the
+      // original bug in a new place.
+      const response = await get403([
+        criticalAffects({
+          severity: "CRITICAL",
+          cvss_v3_score: null,
+          cvss_v4_score: null,
+          cvss_v2_score: null,
+        }),
+      ]);
+
+      expect(response.body.error).toContain("(critical)");
+    });
+
     it("reports every score, not just v3", async () => {
       const response = await get403([
         criticalAffects({

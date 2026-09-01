@@ -3,7 +3,11 @@ import { Readable } from "stream";
 import { Response, Router } from "express";
 import { log } from "../common/log.js";
 import { AffectsWithCveRow } from "../db/queries/cves.js";
-import { BlockingCveMatch, findBlockingCveMatch } from "../services/vuln-service.js";
+import {
+  BlockingCveMatch,
+  CRITICAL_SCORE,
+  findBlockingCveMatch,
+} from "../services/vuln-service.js";
 import { z } from "zod";
 import { BlockedVersionErrorSchema } from "./schemas.js";
 import {
@@ -173,7 +177,7 @@ export function createDownloadRouter(deps: DownloadRouteDeps): Router {
 function blockedVersionBody(version: string, blocking: BlockingCveMatch): BlockedVersionError {
   const cve = blocking.cve;
   try {
-    const score = firstScore(cve);
+    const score = blockingScore(cve);
     const qualifier =
       score !== null ? `CVSS ${score}` : (cve.severity?.toLowerCase() ?? "critical");
     const remedy = cve.fixed_in ? ` — fixed in ${cve.fixed_in}` : "";
@@ -227,14 +231,31 @@ function toScore(value: number | string | null | undefined): number | null {
 }
 
 /**
- * The score to quote in the one-line message: v3 by preference because it is what most readers
- * recognise, then v4, then v2. Which version it came from is in `severity_source`, and all three
- * are in the body — this is only choosing what fits on a line.
+ * The score to quote in the one-line message: the **highest one that actually crossed the gate**
+ * (WAL-107).
+ *
+ * This used to take the first non-null of v3, v4, v2, on the reasoning that v3 is what most
+ * readers recognise and this was "only choosing what fits on a line". It is not only that. The
+ * gate fires when *any* of the three reaches `CRITICAL_SCORE`, so preferring v3 can name a number
+ * that does not justify the refusal: `CVE-2026-6100` is v3 8.1 and v4 9.1, and the message read
+ * `blocked by CVE-2026-6100 (CVSS 8.1)` under a rule that blocks at 9.0. WAL-79 exists so that
+ * line stands alone in a CI log — it stood alone and read as though the gate were broken.
+ *
+ * The order is unchanged — v3, then v4, then v2 — and only the filter is new: the first score that
+ * *crossed*, rather than the first score that exists. Keeping the order matters. The obvious
+ * alternative, "quote the highest crossing score", would have quietly overridden a deliberate
+ * preference already encoded in the tests: a CVE with v4 9.9 and v2 10.0 should quote 9.9, because
+ * CVSS v2 is two generations old and routinely rates higher than the modern vectors. Highest-wins
+ * would have started quoting the v2 number wherever one exists.
+ *
+ * `null` when nothing crossed, which is the `severity === "CRITICAL"` branch of
+ * `meetsCriticalGate`: then there is no score to quote and the caller falls back to the severity
+ * word. All three scores remain in `blocked_by` either way, so a reader can check.
  */
-function firstScore(cve: BlockingCveMatch["cve"]): number | null {
+function blockingScore(cve: BlockingCveMatch["cve"]): number | null {
   for (const raw of [cve.cvss_v3_score, cve.cvss_v4_score, cve.cvss_v2_score]) {
     const score = toScore(raw);
-    if (score !== null) return score;
+    if (score !== null && score >= CRITICAL_SCORE) return score;
   }
   return null;
 }
