@@ -557,6 +557,13 @@ update` return anyway — including a service-level `scaling` block the API repo
   unrecoverable, which an alert plus a one-call reset solves without blunting the signal.
   Documented in `engineering/docs/build-release.md`.
 
+- **Tooling (WAL-108):** `verify-deployment.sh`'s scheduler-tick check now warns on a 2xx that is
+  not 200. `/internal/vuln-sync/:source` answers `207` when the sync ran and failed — for one named
+  source, a partial success of a set of one — and Cloud Scheduler treats any 2xx as success, so the
+  18:20Z nvd tick on 2026-09-01 failed on an upstream timeout while every scheduler-shaped signal
+  called it clean. The tick did reach the service, which is what the check asks, so this is a
+  warning rather than a failure; the underlying status code is WAL-108.
+
 - **WAL-105 (Tooling):** `verify-deployment.sh` asserts that every Cloud Scheduler tick since the
   running revision deployed actually reached the service, not just that each job's _last_ attempt
   succeeded. A tick refused hours ago and recovered since was previously indistinguishable from

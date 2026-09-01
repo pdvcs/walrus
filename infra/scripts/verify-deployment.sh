@@ -236,6 +236,16 @@ assert not errored, f"last attempt failed: {errored}"
 # A refused tick that a retry rescued is a WARN, not a failure: the sync happened, and the same
 # "do not cry wolf" rule the sweep and vuln-source checks follow applies here. Only a job whose
 # most recent attempt failed has actually lost its window.
+#
+# 2xx-other-than-200 is its own WARN, and the reason is a mistake this check made on its first
+# day. `/internal/vuln-sync/:source` answers `207` when the sync ran and failed — for one named
+# source that is a "partial success" of a set of one — and Cloud Scheduler, which treats any 2xx
+# as success, records the attempt as fine and does not retry. On 2026-09-01 the 18:20Z nvd tick
+# failed on an upstream timeout and every scheduler-shaped signal, this check included, called it
+# a clean run. It is literally true that the tick reached the service, which is what this check
+# asks; it is still worth saying out loud, because "all green while the sync failed" is the exact
+# shape of the defect this file exists to catch. The failure itself is not unmonitored — it feeds
+# `walrus/vuln_sync_failed` and WAL-43's degraded policy — but nothing here could see it.
 TICKS=$(gcloud logging read \
   "resource.type=\"cloud_scheduler_job\" AND jsonPayload.\"@type\"=\"type.googleapis.com/google.cloud.scheduler.logging.AttemptFinished\" AND timestamp>=\"${REV_SINCE}\"" \
   --project="$PROJECT" --format=json --limit=200 2>/dev/null)
@@ -259,14 +269,16 @@ if not by_job:
     print("THIN no scheduler attempts recorded since the running revision deployed")
     raise SystemExit
 
-lost, recovered = [], []
+def at(t, c):
+    return t[11:19] + "Z->" + (str(c) if c else "no response")
+
+lost, recovered, partial = [], [], []
 for job, attempts in by_job.items():
     attempts.sort()
-    bad = []
-    for t, c in attempts:
-        if 200 <= c < 300:
-            continue
-        bad.append(t[11:19] + "Z->" + (str(c) if c else "no response"))
+    bad = [at(t, c) for t, c in attempts if not (200 <= c < 300)]
+    odd = [at(t, c) for t, c in attempts if 200 <= c < 300 and c != 200]
+    if odd:
+        partial.append(job + " (" + ", ".join(odd) + ")")
     if not bad:
         continue
     detail = job + " (" + ", ".join(bad) + ")"
@@ -277,12 +289,22 @@ for job, attempts in by_job.items():
         lost.append(detail)
 
 total = sum(len(a) for a in by_job.values())
+notes = []
+if recovered:
+    notes.append("refused then recovered on retry: " + "; ".join(sorted(recovered)))
+if partial:
+    notes.append(
+        "reached the service but answered 2xx-not-200, so the scheduler recorded success "
+        "without retrying — check /app/status, the sync may have failed: "
+        + "; ".join(sorted(partial))
+    )
+
 if lost:
     print("FAIL scheduled ticks never reached the service: " + "; ".join(sorted(lost)))
-elif recovered:
-    print("WARN refused then recovered on retry: " + "; ".join(sorted(recovered)))
+elif notes:
+    print("WARN " + " | ".join(notes))
 else:
-    print(f"OK all {total} scheduled tick(s) since deploy reached the service")
+    print(f"OK all {total} scheduled tick(s) since deploy reached the service and answered 200")
 ')
 case "$RESULT" in
   OK*)   ok   "WAL-105" "${RESULT#OK }" ;;
