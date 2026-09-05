@@ -414,7 +414,7 @@ export function createAdminRouter(deps: AdminRouteDeps): Router {
       // The HTML page is paginated at a fixed 100/page; `page` is 1-based. JSON keeps
       // its unbounded-by-default contract with an optional limit.
       const page = wantsHtml ? Math.max(1, optionalInteger(req.query.page) ?? 1) : undefined;
-      const limit = optionalInteger(req.query.limit) ?? (wantsHtml ? undefined : undefined);
+      const limit = optionalInteger(req.query.limit);
 
       const jobs = await deps.listJobs({
         packageName,
