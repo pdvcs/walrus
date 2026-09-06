@@ -603,6 +603,36 @@ update` return anyway — including a service-level `scaling` block the API repo
   and under the old behaviour the second failure would have paged anyway, later and after two lost
   runs instead of none.
 
+- **WAL-111 (Fixed):** `NvdClient.get` now reads the response body **inside** the guard that wraps
+  the fetch. `AbortSignal.timeout` bounds the whole exchange, but only the handshake sat in the
+  `try` — so when the 30s deadline landed during the body read, which is where it lands on a
+  2000-row NVD page, `res.json()` rejected with a raw `TimeoutError` that bypassed the retry loop
+  entirely. `maxRetries: 5` and its exponential backoff were dead code on the path that actually
+  fails.
+
+  Five occurrences between 2026-08-31 and 2026-09-04, all `nvd`. Every one recovered on Cloud
+  Scheduler's `retryCount: 1` at +600s rather than in the client, and on 2026-09-02 that retry
+  also timed out, losing the window until the 16:20Z tick. Two signatures prove the loop was
+  skipped rather than exhausted: a 30.2s request latency, where five retries plus backoff would be
+  150s+, and a log carrying the bare `TimeoutError` instead of
+  `NVD request failed after 5 retries: …`, with no backoff warning anywhere in the window.
+
+  Same line, second trigger: a 200 carrying truncated JSON rejected with `SyntaxError` and escaped
+  identically. Both are retried now, and a body-phase failure is no longer judged by the status
+  that happened to arrive with the headers — an aborted 200 must not classify as a non-retryable
+  `HTTP 200`. Failures also reach the log as `name: message`; the incident's DOMException was
+  serialized with all 25 of its legacy constants, burying the one line that mattered.
+
+  This narrows the accepted cost recorded just above: an NVD timeout that recovers on the first
+  retry no longer opens an incident at all, because it no longer leaves the client.
+
+  The test that should have caught this passed throughout — it rejects the _fetch promise_, the
+  one phase that was always handled. The suite could not have caught it: every response in
+  `nvd-client.test.ts` is built from an already-materialized string, so `res.json()` on one can
+  never reject. It gains a `streamingFailure()` fixture — a `Response` backed by a stream that
+  errors mid-body — and a table-driven case asserting nothing escapes `get` unwrapped at any of
+  the three stages a request can fail at.
+
 - **Tooling (WAL-108):** `verify-deployment.sh`'s scheduler-tick check now warns on a 2xx that is
   not 200. `/internal/vuln-sync/:source` answers `207` when the sync ran and failed — for one named
   source, a partial success of a set of one — and Cloud Scheduler treats any 2xx as success, so the

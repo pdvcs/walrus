@@ -86,6 +86,20 @@ class RateLimiter {
   }
 }
 
+/**
+ * Render an unknown throwable for a message.
+ *
+ * Not `String(err)`: the WAL-111 timeouts reached Cloud Logging as a DOMException serialized
+ * with every one of its legacy constants (`ABORT_ERR=20;DATA_CLONE_ERR=25;…`), burying the one
+ * line that mattered. Name and message are what a reader needs, and the retry wrapper is where
+ * they end up.
+ */
+function describeError(err: unknown): string {
+  if (err instanceof Error) return `${err.name}: ${err.message}`;
+  if (typeof err === "string") return err;
+  return JSON.stringify(err) ?? "unknown error";
+}
+
 export class NvdClient {
   private readonly apiKey: string | undefined;
   private readonly fetchFn: typeof fetch;
@@ -118,31 +132,53 @@ export class NvdClient {
       if (this.apiKey) headers["apiKey"] = this.apiKey;
 
       let res: Response | undefined;
-      let networkErr: unknown;
+      // Widened from `networkErr` (WAL-111): this now holds a body-phase failure too, which is
+      // not a network error in the usual sense but must be treated as one here.
+      let transportErr: unknown;
       try {
         res = await this.fetchFn(url, {
           headers,
           signal: AbortSignal.timeout(this.requestTimeoutMs),
         });
+        // The body read belongs INSIDE this guard, and the `await` is load-bearing — returning
+        // the promise unawaited would settle it outside the try and restore the bug.
+        //
+        // `AbortSignal.timeout` bounds the whole exchange, not the handshake: NVD sends headers
+        // promptly and then streams, so on a 2000-row page the deadline lands here. While this
+        // line sat outside the try, that abort rejected `res.json()` with a raw TimeoutError
+        // that bypassed the retry loop entirely — five lost ingestion windows between 31 Aug
+        // and 4 Sep 2026, every one of them recovered by Cloud Scheduler's retry rather than by
+        // `maxRetries`, which was never once consulted.
+        if (res.ok) return await res.json();
       } catch (err) {
-        networkErr = err;
+        transportErr = err;
       }
-
-      if (res?.ok) return res.json();
 
       attempt++;
       if (attempt > this.maxRetries) {
         throw new Error(
-          `NVD request failed after ${this.maxRetries} retries: ${url} → ${res ? `HTTP ${res.status}` : String(networkErr)}`,
+          `NVD request failed after ${this.maxRetries} retries: ${url} → ${
+            transportErr !== undefined ? describeError(transportErr) : `HTTP ${res?.status}`
+          }`,
         );
       }
       const status = res?.status;
-      if (res && status !== 403 && status !== 503 && status !== 429 && (status ?? 0) < 500) {
+      // Only a *status* failure can be non-retryable. A transport failure carries a status
+      // incidentally — the headers arrived, the payload did not — so judging it by that status
+      // would turn an aborted 200 into a permanent "no retry for HTTP 200".
+      if (
+        res &&
+        transportErr === undefined &&
+        status !== 403 &&
+        status !== 503 &&
+        status !== 429 &&
+        (status ?? 0) < 500
+      ) {
         throw new Error(`NVD request failed (no retry for HTTP ${status}): ${url}`);
       }
       const delay = this.backoffBaseMs * 2 ** (attempt - 1) * (1 + Math.random() * 0.25);
       this.log.warn(
-        `NVD ${status ?? "network error"} on attempt ${attempt}, backing off ${Math.round(delay)}ms`,
+        `NVD ${transportErr !== undefined ? "transport error" : status} on attempt ${attempt}, backing off ${Math.round(delay)}ms`,
       );
       await this.sleepFn(delay);
     }

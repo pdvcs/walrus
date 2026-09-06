@@ -19,6 +19,28 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+const timeoutError = (): DOMException =>
+  new DOMException("The operation was aborted due to timeout", "TimeoutError");
+
+/**
+ * A 200 whose body fails partway through the stream.
+ *
+ * `jsonResponse` above cannot express this: its body is an already-materialized string, so
+ * `res.json()` on one can never reject. That is precisely why no test caught WAL-111 — the whole
+ * suite was structurally incapable of failing a body read, and the timeout test that existed
+ * rejected the *fetch promise* instead, which is the one phase that was always handled.
+ */
+function streamingFailure(err: unknown, status = 200): Response {
+  const stream = new ReadableStream({
+    start(controller) {
+      // A partial, unparseable prefix: the shape a real aborted page arrives in.
+      controller.enqueue(new TextEncoder().encode('{"resultsPerPage":2000,"vulnerab'));
+      controller.error(err);
+    },
+  });
+  return new Response(stream, { status, headers: { "content-type": "application/json" } });
+}
+
 /**
  * Drain `cvePages` into one array.
  *
@@ -124,6 +146,64 @@ describe("NvdClient (injected fetch)", () => {
     for (const call of fetchFn.mock.calls) {
       expect((call[1] as RequestInit).signal).toBeInstanceOf(AbortSignal);
     }
+  });
+
+  // ── Body-phase transport failures (WAL-111) ─────────────────────────────────
+  //
+  // `AbortSignal.timeout` bounds the entire exchange, not just the handshake. NVD answers a
+  // 2000-row page quickly and then streams it, so the deadline lands during the body read far
+  // more often than during the handshake — that is the failure that reached production on 2 and
+  // 4 September 2026, five times in the preceding week. The test above covers the handshake and
+  // passed throughout.
+
+  it("retries a timeout that lands during the body read", async () => {
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(streamingFailure(timeoutError()))
+      .mockResolvedValueOnce(jsonResponse(page(0, 1, 1)));
+
+    const client = new NvdClient({ apiKey: "k", fetchFn, backoffBaseMs: 1 }, noSleep);
+    const items = await collect(client, "cpe:2.3:a:x:y");
+
+    expect(items).toHaveLength(1);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["the fetch promise rejects", () => Promise.reject(timeoutError())],
+    ["the body stream aborts mid-read", () => Promise.resolve(streamingFailure(timeoutError()))],
+    [
+      "the body is truncated JSON",
+      () =>
+        Promise.resolve(
+          new Response('{"resultsPer', {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+        ),
+    ],
+  ])("wraps a persistent failure rather than leaking it when %s", async (_case, respond) => {
+    const fetchFn = vi.fn().mockImplementation(respond);
+    const client = new NvdClient(
+      { apiKey: "k", fetchFn, backoffBaseMs: 1, maxRetries: 2 },
+      noSleep,
+    );
+
+    const err: unknown = await collect(client, "cpe:2.3:a:x:y").then(
+      () => {
+        throw new Error("expected the walk to reject");
+      },
+      (e: unknown) => e,
+    );
+
+    // The invariant, stated once for every stage a request can fail at: nothing leaves `get`
+    // except a wrapped Error naming the retry budget. A bare DOMException escaping here is the
+    // exact production signature — Cloud Logging carried `TimeoutError: The operation was
+    // aborted due to timeout` instead of this message, which is how we knew the retry loop had
+    // been bypassed rather than exhausted.
+    expect((err as Error).name).toBe("Error");
+    expect((err as Error).message).toMatch(/NVD request failed after 2 retries/);
+    expect(fetchFn).toHaveBeenCalledTimes(3);
   });
 
   it("rate limiter waits once the keyless window budget is used", async () => {
