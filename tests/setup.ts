@@ -22,7 +22,7 @@ function databaseName(connectionString: string): string {
 
 const dbName = databaseName(url);
 
-if (!/_test$/.test(dbName)) {
+if (!dbName.endsWith("_test")) {
   throw new Error(
     `Refusing to run the test suite against database "${dbName || url || "(unset)"}".\n` +
       `Tests perform destructive writes/deletes and must target a dedicated database whose ` +
