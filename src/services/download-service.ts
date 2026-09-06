@@ -10,6 +10,7 @@ import { getTransform, checkGate } from "../transform/index.js";
 import { TransformResultMeta } from "../transform/types.js";
 import { Semaphore } from "../common/semaphore.js";
 import { log } from "../common/log.js";
+import { createEgressFetch } from "../common/http.js";
 
 export type ChecksumAlgorithm = "sha256" | "sha1";
 
@@ -87,6 +88,13 @@ const sharedTransformSemaphore = new Semaphore(config.TRANSFORM_CONCURRENCY);
 
 export class DownloadService {
   private readonly fetchImpl: typeof fetch;
+  /**
+   * Egress rules (WAL-113) can restrict by `purpose`, and artifact bytes and checksum
+   * sidecars are different rows in the plan's egress table — so each gets its own default
+   * `createEgressFetch()` instance. A test-injected `opts.fetchImpl` still overrides both with
+   * the same mock, exactly as before this split (WAL-112).
+   */
+  private readonly checksumFetchImpl: typeof fetch;
   private readonly maxRetries: number;
   private readonly statusRepo: ArtifactStatusRepo;
   private readonly transformSemaphore: Semaphore;
@@ -96,7 +104,8 @@ export class DownloadService {
     private readonly storage: StorageBackend,
     opts: DownloadServiceOptions = {},
   ) {
-    this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.fetchImpl = opts.fetchImpl ?? createEgressFetch({ purpose: "artifact" });
+    this.checksumFetchImpl = opts.fetchImpl ?? createEgressFetch({ purpose: "checksum" });
     this.maxRetries = opts.maxRetries ?? config.DOWNLOAD_MAX_ATTEMPTS - 1;
     this.statusRepo = opts.statusRepo ?? { updateArtifactStatus };
     this.transformSemaphore = opts.transformSemaphore ?? sharedTransformSemaphore;
@@ -231,7 +240,7 @@ export class DownloadService {
     const expectedChecksum =
       req.expectedChecksum ??
       (req.checksumUrl
-        ? await fetchChecksumFromUrl(req.checksumUrl, this.fetchImpl, algorithm)
+        ? await fetchChecksumFromUrl(req.checksumUrl, this.checksumFetchImpl, algorithm)
         : undefined);
 
     // The upstream digest is verified against the source bytes, always. What is recorded on

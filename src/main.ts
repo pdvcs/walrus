@@ -106,6 +106,7 @@ import { installOperatorAuth } from "./authn/operator.js";
 import { loadOperatorAuthRuntime, type OperatorAuthRuntime } from "./authn/runtime.js";
 import { loadMachineAuth } from "./authn/google-oidc.js";
 import { createAuthAuditSinks } from "./authn/audit.js";
+import { loadEgressConfig } from "./common/egress-rules.js";
 
 const storage = createStorageBackend();
 const vulnSyncImpls = createVulnSyncImpls(pool);
@@ -633,6 +634,13 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
 }
 
 async function start(): Promise<void> {
+  // Fail-fast on a malformed rules file, same contract as loadConfig() (WAL-113 AC1): a bad
+  // WALRUS_EGRESS_RULES refuses to start the server rather than serving with rules ignored.
+  // path.resolve() matches how WALRUS_ADMINS_FILE is resolved in loadOperatorAuthRuntime below.
+  loadEgressConfig({
+    rulesFile: path.resolve(config.WALRUS_EGRESS_RULES),
+    mode: config.WALRUS_EGRESS_MODE,
+  });
   const authAudit = createAuthAuditSinks(pool);
   const operatorAuth = await loadOperatorAuthRuntime(config, {
     auditLogin: authAudit.auditLogin,

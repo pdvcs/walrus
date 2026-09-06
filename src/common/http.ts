@@ -1,5 +1,6 @@
 import { config } from "../config/index.js";
 import { log } from "./log.js";
+import { type EgressPurpose, getEgressState, matchEgressRule } from "./egress-rules.js";
 
 export interface HttpRetryOptions {
   timeoutMs?: number;
@@ -23,6 +24,56 @@ const DEFAULT_TIMEOUT_MS = config.DISCOVERY_HTTP_TIMEOUT_MS;
 const DEFAULT_MAX_RETRIES = config.DISCOVERY_HTTP_MAX_RETRIES;
 const DEFAULT_RETRY_BASE_DELAY_MS = config.DISCOVERY_HTTP_RETRY_BASE_DELAY_MS;
 
+export interface CreateEgressFetchOptions {
+  /** Which class of egress traffic this fetch belongs to (WAL-113 rule `purpose` restriction). */
+  purpose: EgressPurpose;
+}
+
+/**
+ * The single seam every outbound (public-internet) fetch in walrus goes through. Every later
+ * egress layer (declarative rewrite rules, CONNECT proxying, an adopter extension) attaches
+ * here, instead of at each of the five call sites that used to open their own `fetch` (WAL-112).
+ *
+ * Rule matching (WAL-113) consults the *current* egress state on every call via
+ * `getEgressState()`, not a snapshot taken when this factory ran — `WALRUS_EGRESS_RULES` is
+ * loaded once at boot, but several call sites construct their `createEgressFetch()` instance at
+ * module-import time, before that boot step runs.
+ */
+export function createEgressFetch(options: CreateEgressFetchOptions): typeof fetch {
+  const { purpose } = options;
+  return async (input, init) => {
+    const state = getEgressState();
+    const url = urlOf(input);
+    const match = matchEgressRule(url, purpose, state.rules);
+
+    if (match) {
+      const headers = new Headers(init?.headers);
+      for (const [name, value] of Object.entries(match.headers)) {
+        headers.set(name, value);
+      }
+      return fetch(match.rewrittenUrl, { ...init, headers });
+    }
+
+    if (state.mode === "strict") {
+      throw new HttpRequestError(
+        `Egress refused under WALRUS_EGRESS_MODE=strict: no rule matched ${purpose} request to ${url}`,
+      );
+    }
+    if (state.mode === "rules") {
+      log.warn({ url, purpose }, "No egress rule matched; proceeding with a direct connection");
+    }
+    return fetch(input, init);
+  };
+}
+
+function urlOf(input: Parameters<typeof fetch>[0]): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.href;
+  return input.url;
+}
+
+const discoveryFetch = createEgressFetch({ purpose: "discovery" });
+
 export async function fetchWithRetry(
   url: string,
   init: RequestInit = {},
@@ -37,7 +88,7 @@ export async function fetchWithRetry(
     const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-      const response = await fetch(url, {
+      const response = await discoveryFetch(url, {
         ...init,
         signal: controller.signal,
       });
@@ -165,9 +216,27 @@ function normalizeFetchError(err: unknown, timeoutMs: number, url: string): stri
     return `Request timed out after ${timeoutMs}ms: ${url}`;
   }
   if (err instanceof Error) {
-    return err.message;
+    // Node's global `fetch` throws a generic `TypeError: fetch failed` on a connection-level
+    // failure and stashes the actual reason (ENOTFOUND, ECONNREFUSED, a TLS error) on
+    // `err.cause` — exactly what's needed to tell a misconfigured egress rewrite or proxy apart
+    // from a plain outage, and exactly what a bare `err.message` throws away (WAL-116).
+    const cause = describeCause(err.cause);
+    return cause !== undefined ? `${err.message}: ${cause}` : err.message;
   }
   return String(err);
+}
+
+function describeCause(cause: unknown): string | undefined {
+  if (cause === undefined) return undefined;
+  if (cause instanceof Error) return cause.message;
+  if (typeof cause === "string" || typeof cause === "number" || typeof cause === "boolean") {
+    return String(cause);
+  }
+  try {
+    return JSON.stringify(cause);
+  } catch {
+    return undefined;
+  }
 }
 
 /**

@@ -727,6 +727,48 @@ update` return anyway — including a service-level `scaling` block the API repo
   the chunk boundary, the persisted range validator, that it resumed rather than restarted, that
   only the missing ranges crossed the wire, and the assembled digest.
 
+**Wave 19 — Enterprise egress: chokepoint, declarative rewrites, and configuration**
+
+An enterprise running walrus as its own ingress, often behind a corporate proxy or an
+Artifactory remote, previously had no seam for rewriting upstream URLs or for its own config
+variables short of forking walrus's own source. See
+[plans/enterprise-extension-points.md](engineering/plans/enterprise-extension-points.md) for the
+full design; this wave ships the two lowest-friction layers (Layer 0 CONNECT proxying and the
+Layer 2 extension module remain deferred — [WAL-72](engineering/tasks/WAL-72.md)).
+
+- **WAL-112 (Added):** `createEgressFetch()` (`src/common/http.ts`) is now the single chokepoint
+  every outbound public-internet `fetch` in walrus goes through — discovery, artifact bytes,
+  checksum sidecars, the NVD/OSV/KEV vuln feeds, and Google OIDC/JWKS verification for
+  machine-tier auth, five call sites unified with no behaviour change. GCP-internal traffic
+  (GCS, Cloud SQL, the Cloud Run control plane) never passes through it.
+- **WAL-113 (Added):** `WALRUS_EGRESS_RULES` points at a TOML file of prefix-match rewrite
+  rules (longest-prefix-wins, first-match-wins, optional per-rule header injection with `${VAR}`
+  interpolation, optional `purpose` restriction), validated at boot with the same fail-fast
+  contract as `loadConfig()`. `WALRUS_EGRESS_MODE` (`direct` default / `rules` / `strict`)
+  governs what happens when nothing matches. The simplest supported case needs no special
+  handling: `match = "https://"` / `rewrite = "https://my-rewriting-proxy/url/https://"` wraps
+  every HTTPS URL under the same prefix-substitution mechanism as any other rule.
+  `WALRUS_EGRESS_RULES` defaults to `config/egress-rules.toml`, a real file shipped empty
+  (comments only), the same way `WALRUS_ADMINS_FILE` defaults to `config/admins.toml` — both
+  enterprise config files now live side by side under `config/`, edited in a fork the same way.
+- **WAL-114 (Added):** `WALRUS_EXT_*` is now a reserved env-var namespace upstream promises
+  never to define into, so an adopter's future extension config can't collide with a walrus
+  release — see [engineering/docs/enterprise.md](engineering/docs/enterprise.md).
+- **WAL-115 (Added):** `GET /admin/v1/egress` reports the active mode and rule count, and, given
+  `?url=`, a dry-run of how that URL would be rewritten — header _names_ only, never values, so
+  the endpoint can't be used to read back a credential a rule injects. Per ADR-004 (no shell in
+  production) and ADR-007 (every production action has an API).
+- **WAL-116 (Fixed):** Node's global `fetch` throws an opaque `TypeError: fetch failed` on a
+  connection-level failure and stashes the real reason (`ENOTFOUND`, `ECONNREFUSED`, a TLS
+  error) on `err.cause`, which `normalizeFetchError` discarded. Surfaced now — most useful for
+  telling a misconfigured egress rewrite or proxy apart from a plain outage.
+
+- **Tooling note:** `@iarna/toml` tags every parsed table, including inline tables, with hidden
+  `Symbol(type)`/`Symbol(declared)` own properties. Zod v4's `z.record()` validates via
+  `Reflect.ownKeys` and trips on them; `.strict()` object schemas don't. WAL-113's rule
+  `headers` are validated by hand with `Object.entries()` instead — worth remembering before
+  reaching for `z.record()` on any other `@iarna/toml` output in this codebase.
+
 ## Version 0.1.0: Initial Release
 
 Initial Walrus release: a configuration-driven package ingress engine that discovers, caches, and

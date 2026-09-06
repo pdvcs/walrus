@@ -2,6 +2,7 @@ import { createPublicKey, verify as verifySignature, type JsonWebKey } from "nod
 import type { RequestHandler } from "express";
 import type { AppConfig } from "../config/index.js";
 import { log } from "../common/log.js";
+import { createEgressFetch } from "../common/http.js";
 
 const GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs";
 const DEFAULT_JWKS_TTL_MS = 60 * 60 * 1000;
@@ -130,7 +131,7 @@ export class GoogleOidcVerifier {
   }
 
   private async fetchKeys(): Promise<void> {
-    const fetchImpl = this.options.fetch ?? fetch;
+    const fetchImpl = this.options.fetch ?? createEgressFetch({ purpose: "auth" });
     const response = await fetchImpl(this.options.jwksUrl ?? GOOGLE_JWKS_URL, {
       signal: AbortSignal.timeout(5000),
     });

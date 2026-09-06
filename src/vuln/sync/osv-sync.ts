@@ -14,6 +14,7 @@ import {
 import { listPackagesWithOsv } from "../../db/queries/package-aliases.js";
 import { setSyncState } from "../../db/queries/vuln-sync-state.js";
 import { config } from "../../config/index.js";
+import { createEgressFetch } from "../../common/http.js";
 
 const OSV_QUERY_URL = "https://api.osv.dev/v1/query";
 
@@ -47,7 +48,7 @@ export interface OsvSyncResult {
 export async function queryOsvPackage(
   ecosystem: string,
   name: string,
-  fetchFn: typeof fetch = fetch,
+  fetchFn: typeof fetch = createEgressFetch({ purpose: "vuln-feed" }),
 ): Promise<OsvVuln[]> {
   const vulns: OsvVuln[] = [];
   let pageToken: string | undefined;
@@ -177,7 +178,7 @@ export async function applyOsvVulns(
 /** OSV cross-check for all packages with an OSV mapping. */
 export async function osvSyncAll(
   pool: Pool,
-  fetchFn: typeof fetch = fetch,
+  fetchFn: typeof fetch = createEgressFetch({ purpose: "vuln-feed" }),
 ): Promise<OsvSyncResult> {
   const packages = await listPackagesWithOsv(pool);
   const result: OsvSyncResult & { failures: Array<{ package: string; error: string }> } = {

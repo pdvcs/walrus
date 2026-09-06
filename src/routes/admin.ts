@@ -15,6 +15,7 @@ import { PackageConfigSchema, PackageConfig } from "../types/package-config.js";
 import { sortVersionsDesc } from "../common/version-utils.js";
 import { defaultCpeProbe, CpeVerifyResult } from "../vuln/cpe-verify.js";
 import { BASE_PAGE_STYLES, renderAdminNav, type AdminNavItem } from "./page-shell.js";
+import { getEgressState, matchEgressRule } from "../common/egress-rules.js";
 
 interface VersionDetail {
   version: string;
@@ -454,6 +455,46 @@ export function createAdminRouter(deps: AdminRouteDeps): Router {
       } else {
         res.json(buildJobResponse(detail));
       }
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Per ADR-004 (no shell in production) and ADR-007 (every production action has an API),
+  // "is my egress rewrite working?" has to be answerable over HTTP — there is no container
+  // shell to grep logs in. Given ?url=, this is a dry-run only: it reports what *would* happen,
+  // never issues the request. Header values are never returned, only names, so a response can't
+  // leak a bearer token or credential set by a rule (WAL-115).
+  router.get("/egress", (req, res, next) => {
+    try {
+      const state = getEgressState();
+      const url = optionalString(req.query.url);
+      const body: {
+        mode: string;
+        ruleCount: number;
+        dryRun?: {
+          url: string;
+          matched: boolean;
+          rewrittenUrl: string | null;
+          headerNames: string[];
+        };
+      } = {
+        mode: state.mode,
+        ruleCount: state.rules.length,
+      };
+      if (url !== undefined) {
+        // No purpose filter: reports whether this URL would be rewritten under ANY configured
+        // rule, not one specific traffic class — the simplest thing that answers "is this
+        // working at all" without asking the adopter to also specify a purpose.
+        const match = matchEgressRule(url, undefined, state.rules);
+        body.dryRun = {
+          url,
+          matched: match !== null,
+          rewrittenUrl: match?.rewrittenUrl ?? null,
+          headerNames: match ? Object.keys(match.headers) : [],
+        };
+      }
+      res.json(body);
     } catch (err) {
       next(err);
     }

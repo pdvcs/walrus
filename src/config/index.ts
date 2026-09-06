@@ -102,6 +102,15 @@ const configSchema = z.object({
   WALRUS_SESSION_EPOCH: z.coerce.number().int().nonnegative().default(0),
   WALRUS_INTERNAL_AUDIENCE: z.string().optional(),
   WALRUS_INTERNAL_SERVICE_ACCOUNT: z.string().optional(),
+  // Enterprise egress rewriting (WAL-113). Path to a TOML rule file, same shape as
+  // WALRUS_ADMINS_FILE: defaults to a file under config/ that ships empty, so out of the box
+  // this changes nothing. File contents are validated separately, at boot, by
+  // loadEgressConfig() in src/common/egress-rules.ts — this only names where to find it.
+  WALRUS_EGRESS_RULES: z.string().default("config/egress-rules.toml"),
+  // direct: today's behaviour (configured rules, if any, still apply to a matching URL).
+  // rules: an unmatched URL is logged at warn and attempted anyway.
+  // strict: an unmatched URL is refused rather than attempted direct.
+  WALRUS_EGRESS_MODE: z.enum(["direct", "rules", "strict"]).default("direct"),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;

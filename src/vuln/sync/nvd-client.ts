@@ -5,6 +5,7 @@
  * lastModStartDate/lastModEndDate windows for incremental sync.
  */
 import { config } from "../../config/index.js";
+import { createEgressFetch } from "../../common/http.js";
 
 const BASE_CVES = "https://services.nvd.nist.gov/rest/json/cves/2.0";
 const BASE_CPES = "https://services.nvd.nist.gov/rest/json/cpes/2.0";
@@ -114,7 +115,7 @@ export class NvdClient {
     // Respect an explicitly passed `apiKey: undefined` (forces keyless mode);
     // only fall back to the env key when the option is absent entirely.
     this.apiKey = Object.hasOwn(opts, "apiKey") ? opts.apiKey : config.NVD_API_KEY;
-    this.fetchFn = opts.fetchFn ?? fetch;
+    this.fetchFn = opts.fetchFn ?? createEgressFetch({ purpose: "vuln-feed" });
     this.backoffBaseMs = opts.backoffBaseMs ?? 2000;
     this.maxRetries = opts.maxRetries ?? 5;
     this.requestTimeoutMs = opts.requestTimeoutMs ?? config.VULN_HTTP_TIMEOUT_MS;

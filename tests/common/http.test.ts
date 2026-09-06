@@ -1,8 +1,245 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fetchJsonWithRetry, fetchWithRetry, HttpRequestError } from "../../src/common/http.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  createEgressFetch,
+  fetchJsonWithRetry,
+  fetchWithRetry,
+  HttpRequestError,
+} from "../../src/common/http.js";
+import { configureEgress } from "../../src/common/egress-rules.js";
+import { log } from "../../src/common/log.js";
 
 beforeEach(() => {
   vi.restoreAllMocks();
+});
+
+afterEach(() => {
+  // Every createEgressFetch() call reads the shared module-level state, so a rule/mode left
+  // behind by one test would otherwise leak into the next (WAL-113).
+  configureEgress({ mode: "direct", rules: [] });
+});
+
+describe("createEgressFetch", () => {
+  it("passes calls straight through to the global fetch when no rule matches (WAL-112/113: no behaviour change)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const egressFetch = createEgressFetch({ purpose: "artifact" });
+    const init = { method: "GET" };
+    await egressFetch("https://example.test/artifact", init);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith("https://example.test/artifact", init);
+  });
+
+  it("resolves the global fetch at call time, not at creation time", async () => {
+    // The chokepoint is created once (module load, or a service constructor) but must still
+    // honour a fetch stub installed afterwards — this is what keeps every existing test's
+    // `vi.stubGlobal("fetch", ...)` working unchanged after migrating a call site onto it.
+    const egressFetch = createEgressFetch({ purpose: "artifact" });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await egressFetch("https://example.test/artifact");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("rewrites the URL and merges headers when a rule matches (WAL-113)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+    configureEgress({
+      mode: "rules",
+      rules: [
+        {
+          match: "https://github.com/",
+          rewrite: "https://artifactory.corp/artifactory/github-remote/",
+          headers: { Authorization: "Bearer secret-token" },
+        },
+      ],
+    });
+
+    const egressFetch = createEgressFetch({ purpose: "artifact" });
+    await egressFetch("https://github.com/foo/bar/releases/x.tar.gz", {
+      headers: { Accept: "application/octet-stream" },
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [calledUrl, calledInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(calledUrl).toBe(
+      "https://artifactory.corp/artifactory/github-remote/foo/bar/releases/x.tar.gz",
+    );
+    const headers = new Headers(calledInit.headers);
+    expect(headers.get("authorization")).toBe("Bearer secret-token");
+    expect(headers.get("accept")).toBe("application/octet-stream");
+  });
+
+  it("implements the simplest catch-all wrap with no special-casing (WAL-113 AC3)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+    configureEgress({
+      mode: "rules",
+      rules: [{ match: "https://", rewrite: "https://my-rewriting-proxy/url/https://" }],
+    });
+
+    const egressFetch = createEgressFetch({ purpose: "discovery" });
+    await egressFetch("https://example.test/some/path?x=1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://my-rewriting-proxy/url/https://example.test/some/path?x=1",
+      expect.anything(),
+    );
+  });
+
+  it("prefers the longest matching prefix regardless of file order (WAL-113 AC2)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+    configureEgress({
+      mode: "rules",
+      rules: [
+        // Catch-all listed first; the more specific rule must still win.
+        { match: "https://", rewrite: "https://catch-all.corp/" },
+        { match: "https://github.com/", rewrite: "https://specific.corp/" },
+      ],
+    });
+
+    const egressFetch = createEgressFetch({ purpose: "artifact" });
+    await egressFetch("https://github.com/foo");
+
+    expect(fetchMock).toHaveBeenCalledWith("https://specific.corp/foo", expect.anything());
+  });
+
+  it("restricts a rule to its declared purpose (WAL-113 AC5)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+    configureEgress({
+      mode: "rules",
+      rules: [
+        {
+          match: "https://services.nvd.nist.gov/",
+          purpose: "vuln-feed",
+          rewrite: "https://egress.corp/nvd/",
+        },
+      ],
+    });
+
+    const vulnFeedFetch = createEgressFetch({ purpose: "vuln-feed" });
+    await vulnFeedFetch("https://services.nvd.nist.gov/rest/json/cves/2.0");
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "https://egress.corp/nvd/rest/json/cves/2.0",
+      expect.anything(),
+    );
+
+    const artifactFetch = createEgressFetch({ purpose: "artifact" });
+    await artifactFetch("https://services.nvd.nist.gov/rest/json/cves/2.0");
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "https://services.nvd.nist.gov/rest/json/cves/2.0",
+      undefined,
+    );
+  });
+
+  it("mode=direct proceeds silently when nothing matches (WAL-113 AC6)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+    const warnSpy = vi.spyOn(log, "warn");
+    configureEgress({ mode: "direct", rules: [] });
+
+    const egressFetch = createEgressFetch({ purpose: "artifact" });
+    await egressFetch("https://example.test/unmatched");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it("mode=rules warns and proceeds direct when nothing matches (WAL-113 AC7)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+    const warnSpy = vi.spyOn(log, "warn");
+    configureEgress({ mode: "rules", rules: [] });
+
+    const egressFetch = createEgressFetch({ purpose: "artifact" });
+    const response = await egressFetch("https://example.test/unmatched");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect((response as { ok: boolean }).ok).toBe(true);
+  });
+
+  it("mode=strict refuses an unmatched request without ever calling fetch (WAL-113 AC8)", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    configureEgress({ mode: "strict", rules: [] });
+
+    const egressFetch = createEgressFetch({ purpose: "artifact" });
+    await expect(egressFetch("https://example.test/unmatched")).rejects.toThrow(HttpRequestError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("strict still applies a matching rule rather than refusing it", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+    configureEgress({
+      mode: "strict",
+      rules: [{ match: "https://example.test/", rewrite: "https://proxy.corp/" }],
+    });
+
+    const egressFetch = createEgressFetch({ purpose: "artifact" });
+    await egressFetch("https://example.test/artifact.zip");
+
+    expect(fetchMock).toHaveBeenCalledWith("https://proxy.corp/artifact.zip", expect.anything());
+  });
+});
+
+describe("fetchWithRetry via the egress chokepoint", () => {
+  it("still honours a global fetch stub after routing through createEgressFetch (WAL-112)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ ok: true }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await fetchWithRetry("https://example.test/discovery");
+
+    expect(response.ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("a strict-mode refusal is not retried (WAL-113: HttpRequestError already classified)", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    configureEgress({ mode: "strict", rules: [] });
+
+    await expect(
+      fetchWithRetry("https://example.test/discovery", {}, { maxRetries: 2, retryBaseDelayMs: 0 }),
+    ).rejects.toThrow("Egress refused");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("normalizeFetchError via fetchWithRetry", () => {
+  it("surfaces err.cause instead of the opaque 'fetch failed' message (WAL-116)", async () => {
+    const cause = Object.assign(new Error("ENOTFOUND example.test"), { code: "ENOTFOUND" });
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError("fetch failed", { cause }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      fetchWithRetry("https://example.test/discovery", {}, { maxRetries: 0 }),
+    ).rejects.toThrow(/fetch failed: ENOTFOUND example\.test/);
+  });
+
+  it("leaves a plain error message alone when there is no cause", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError("fetch failed"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    let thrown: unknown;
+    try {
+      await fetchWithRetry("https://example.test/discovery", {}, { maxRetries: 0 });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(HttpRequestError);
+    expect((thrown as Error).message).toBe("fetch failed");
+  });
 });
 
 describe("http retry helpers", () => {
