@@ -392,6 +392,22 @@ export const CveSuppressionStatusSchema = z
   })
   .openapi("CveSuppressionStatus");
 
+export const EgressStatusSchema = z
+  .object({
+    mode: z.enum(["direct", "rules", "strict"]).openapi({
+      description: "Effective WALRUS_EGRESS_MODE governing outbound public-internet egress.",
+    }),
+    rule_count: z
+      .number()
+      .int()
+      .openapi({
+        description:
+          "Rules loaded from WALRUS_EGRESS_RULES. Never rule content or header values" +
+          " — see GET /admin/v1/egress?url= for a dry-run of what a specific URL would do.",
+      }),
+  })
+  .openapi("EgressStatus");
+
 export const StatusResponseSchema = HealthResponseSchema.extend({
   vuln_data_freshness: DataFreshnessSchema.nullable(),
   vuln_sync_status: VulnSyncStatusSchema.nullable(),
@@ -400,6 +416,11 @@ export const StatusResponseSchema = HealthResponseSchema.extend({
       "Operator suppressions currently excluding a CVE from the critical-CVE gate. A " +
       "suppression is a deliberate, audited decision rather than a fault, so it is " +
       "reported here in its own right and never as a degradation. Null if unreadable.",
+  }),
+  egress: EgressStatusSchema.openapi({
+    description:
+      "Enterprise egress rewriting state (WAL-113). Mode and rule count only, safe to expose " +
+      "publicly; nothing here reveals a rule's match/rewrite targets or header values.",
   }),
   degradations: z.array(DegradationSchema).openapi({
     description:

@@ -5,6 +5,7 @@ import { createApp } from "../../src/main.js";
 import { upsertPackage } from "../../src/db/queries/packages.js";
 import { upsertCveFull } from "../../src/db/queries/cves.js";
 import { createCveSuppression } from "../../src/db/queries/cve-suppressions.js";
+import { configureEgress } from "../../src/common/egress-rules.js";
 
 const HEALTH_PACKAGE = "health-suppression-package";
 const HEALTH_CVE = "CVE-2099-7070";
@@ -185,6 +186,24 @@ describe("application health and status", () => {
     expect(Array.isArray(res.body.degradations)).toBe(true);
     expect(res.body).not.toHaveProperty("status");
     expect(res.body).not.toHaveProperty("service");
+  });
+
+  it("reports the effective egress mode and rule count on /app/status", async () => {
+    configureEgress({
+      mode: "strict",
+      rules: [{ match: "https://", rewrite: "http://localhost:9000/proxy/https://" }],
+    });
+    try {
+      const app = createApp({
+        health: { startedAt: STARTED, now: () => AFTER_GRACE, checkDatabase: async () => {} },
+      });
+      const res = await request(app).get("/app/status");
+
+      expect(res.status).toBe(200);
+      expect(res.body.egress).toEqual({ mode: "strict", rule_count: 1 });
+    } finally {
+      configureEgress({ mode: "direct", rules: [] });
+    }
   });
 
   it("reports degradations without changing availability", async () => {

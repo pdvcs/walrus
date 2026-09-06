@@ -14,6 +14,7 @@ export interface ApplicationStatusDetails {
   vuln_sync_status: unknown;
   cve_suppressions: unknown;
   degradations: unknown[];
+  egress: unknown;
 }
 
 export interface HealthRouterDeps {

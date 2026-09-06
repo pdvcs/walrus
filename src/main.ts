@@ -106,7 +106,7 @@ import { installOperatorAuth } from "./authn/operator.js";
 import { loadOperatorAuthRuntime, type OperatorAuthRuntime } from "./authn/runtime.js";
 import { loadMachineAuth } from "./authn/google-oidc.js";
 import { createAuthAuditSinks } from "./authn/audit.js";
-import { loadEgressConfig } from "./common/egress-rules.js";
+import { loadEgressConfig, getEgressState } from "./common/egress-rules.js";
 
 const storage = createStorageBackend();
 const vulnSyncImpls = createVulnSyncImpls(pool);
@@ -322,7 +322,9 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
               () => [],
             ),
           ]);
-        return { vuln_data_freshness, vuln_sync_status, cve_suppressions, degradations };
+        const egressState = getEgressState();
+        const egress = { mode: egressState.mode, rule_count: egressState.rules.length };
+        return { vuln_data_freshness, vuln_sync_status, cve_suppressions, degradations, egress };
       },
     }),
   );
