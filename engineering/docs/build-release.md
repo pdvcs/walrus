@@ -360,6 +360,80 @@ in the notification.
 enabled. Delivery itself cannot be asserted from inside the deployment — that is a manual step,
 and its evidence is a received email recorded on WAL-43.
 
+### 3b. Where to look when something fails (WAL-119)
+
+Alerting is one tier of three, and it is the narrowest on purpose. Most of what you want when
+something has gone wrong is not in your inbox.
+
+| Tier          | Surface                                                       | Holds                                  | Reach it by                                                         |
+| ------------- | ------------------------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------- |
+| 1 — Page      | the five policies in §3a                                      | the few things needing a human **now** | email                                                               |
+| 2 — Triage    | **Cloud Error Reporting** + the _Walrus operations_ dashboard | every grouped error; counts and trend  | Console → Observability → Error Reporting / Monitoring → Dashboards |
+| 3 — Forensics | Logs Explorer, Log Analytics                                  | everything                             | Console → Logging                                                   |
+
+**Start at tier 2.** Tier 1 tells you something broke; tier 2 tells you what, how often, since
+when, and whether it is new.
+
+#### Cloud Error Reporting
+
+Nothing configures it and nothing in this repo enables it — it reads Cloud Logging directly and
+has grouped walrus's errors since the first deployment. It is the single most useful surface
+here and the least known.
+
+**It groups by stack trace, not by severity.** This is the fact to carry: an entry's `severity`
+is irrelevant to whether Error Reporting sees it, and walrus's application logs are all
+`DEFAULT` severity (see WAL-117). What matters is that a stack reaches the log — which is why
+exceptions must be logged under the **`err`** key. pino serializes `err` and no other key; an
+`Error` under any other name is written as `{}`, and a record with no stack enters no group and
+appears in no count. A lint rule enforces this (WAL-120); do not suppress it.
+
+**Coverage is complete, and was measured rather than assumed:** of 65 stack-carrying log entries
+across `cloud_run_revision` and `cloud_run_job` in the first ten days of deployment, 0 were
+ungrouped. It also groups **platform** errors walrus never logs — Cloud Run's _"no available
+instance"_ (WAL-105) appears as its own group — so do not think of it as "walrus's errors".
+
+Each group carries a count, first- and last-seen, the affected revisions, and a resolution
+status:
+
+| Status         | Means                | Use it when                                                                                                |
+| -------------- | -------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `OPEN`         | untriaged            | the default                                                                                                |
+| `ACKNOWLEDGED` | **seen, not acting** | you have looked and decided it can wait — this is the one that fixes inbox fatigue without hiding anything |
+| `RESOLVED`     | believed fixed       | a recurrence re-opens it automatically, so this is a claim the system will check                           |
+
+Acknowledging suppresses your attention, not ingestion. A routine, expected fault can sit
+`ACKNOWLEDGED` or `RESOLVED` indefinitely without muting anything real — `cvss` colliding with a
+running `nvd` walk files as its own `VulnSyncAlreadyRunningError` group, separate from genuine
+NVD failures, precisely so it can be dismissed on its own.
+
+#### The _Walrus operations_ dashboard
+
+Four charts, declared in `infra/terraform/monitoring.tf` and applied by `deploy.sh` with
+everything else:
+
+| Chart                                      | Answers                                                          |
+| ------------------------------------------ | ---------------------------------------------------------------- |
+| Vulnerability sync failures by source      | is one source failing, or all of them?                           |
+| Cloud Scheduler invocation failures by job | did the trigger fire, or is the workload the problem?            |
+| walrus-api requests by response class      | is walrus serving?                                               |
+| Cloud Run Job executions by result         | are sync and backfill still succeeding, or merely still running? |
+
+**It is Terraform, not a console artefact — do not hand-edit it.** A dragged widget is drift
+that no plan will show you, and it is absent from any freshly deployed project.
+
+One implementation note worth knowing before extending it: **Cloud Scheduler publishes no metric
+to Cloud Monitoring.** The scheduler chart is fed by a log-based metric,
+`walrus/scheduler_job_failed`, over the same filter as the scheduler alert policy. If you add a
+chart for anything scheduler-shaped, it will need the same treatment.
+
+#### Which surface answers which question
+
+- _"Has this happened before, and how often?"_ → Error Reporting. It is the only surface that
+  groups, and the group's first-seen date is usually the answer.
+- _"Is it happening now, and to what?"_ → the dashboard.
+- _"What exactly happened in this one request?"_ → Logs Explorer, by `insertId` or trace.
+- _"Do I need to act right now?"_ → tier 1 already told you, or it did not.
+
 ### 4. After setup: what runs itself, and what does not
 
 Once the one-time backfill in §2 has been done, vulnerability ingestion is autonomous — no

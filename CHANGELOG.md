@@ -796,6 +796,29 @@ the full picture; this is the first of them.
   monitoring filter or metric reads them; the point is that a log key named `error` now always
   holds an `Error`, which is what makes the lint rule above honest rather than a source of
   suppression comments.
+- **WAL-119 (Added):** a _Walrus operations_ dashboard (`google_monitoring_dashboard` in
+  `infra/terraform/monitoring.tf`, the project's first) charting vulnerability sync failures by
+  source, Cloud Scheduler invocation failures by job, walrus-api requests by response class, and
+  Cloud Run Job executions by result. Applied and destroyed by `deploy.sh` / `teardown.sh` with
+  everything else; `verify-deployment.sh` asserts it exists. It is Terraform rather than a
+  console artefact for the reason WAL-96 established on the service — a dragged widget is drift
+  no plan will show you, and a console dashboard is absent from a freshly deployed project.
+- **WAL-119 (Added):** `walrus/scheduler_job_failed`, a second log-based metric, over the same
+  filter as the scheduler alert policy and extracting the job id as a label. Cloud Scheduler
+  publishes **no** metric to Cloud Monitoring — verified against the deployed project, where
+  `cloudscheduler.googleapis.com/*` has no descriptors at all while the `cloud_scheduler_job`
+  resource type is well known — so a scheduler failure is chartable only from its log. The
+  policy still matches the log directly: it should alert on the event, not on a threshold over
+  an alignment window.
+- **WAL-119 (Added):** runbook §3b, _Where to look when something fails_
+  ([build-release.md](engineering/docs/build-release.md)) — the three tiers, and Cloud Error
+  Reporting written down for the first time. It has grouped every stack-carrying error since the
+  first deployment at zero configuration, and nothing in the repo mentioned it: the WAL-111
+  investigation reconstructed by hand a grouping it had been maintaining all along. Documents
+  that it groups by **stack trace, not severity** (hence WAL-120's `err` key), that coverage was
+  measured at 65 of 65 stack-carrying entries grouped, that it also groups platform errors walrus
+  never logs, and what `OPEN` / `ACKNOWLEDGED` / `RESOLVED` are for — `ACKNOWLEDGED` being the
+  one that answers inbox fatigue without hiding anything.
 
 ## Version 0.1.0: Initial Release
 

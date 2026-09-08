@@ -84,3 +84,80 @@ describe("monitoring deployment wiring", () => {
     expect(documented).toHaveLength(policies.length);
   });
 });
+
+/**
+ * WAL-119 — tier 2, charted. These pin the reasoning that is cheap to undo by accident, not the
+ * dashboard's appearance: which signals are on it, that each chart is fed by a metric type that
+ * actually exists, and that the two log-based metrics are referenced through their resources
+ * rather than by a copied string.
+ *
+ * The JSON's *syntax* is `terraform validate`'s job, not this file's — the dashboard is built by
+ * `jsonencode()` from an HCL object, so there is no literal JSON here to parse.
+ */
+describe("operations dashboard", () => {
+  const dashboard = monitoring.slice(
+    monitoring.indexOf('resource "google_monitoring_dashboard" "walrus"'),
+  );
+
+  it("declares the dashboard in Terraform rather than leaving it a console artefact", () => {
+    // A console-built dashboard is invisible to review, absent from a fresh project, and
+    // divergent the moment someone drags a widget — the drift WAL-96 removed from the service.
+    expect(monitoring).toContain('resource "google_monitoring_dashboard" "walrus"');
+    expect(dashboard).toContain("dashboard_json");
+  });
+
+  it("charts all four signals the runbook promises", () => {
+    for (const metricType of [
+      "logging.googleapis.com/user/${google_logging_metric.vuln_sync_failed.name}",
+      "logging.googleapis.com/user/${google_logging_metric.scheduler_job_failed.name}",
+      "run.googleapis.com/request_count",
+      "run.googleapis.com/job/completed_execution_count",
+    ]) {
+      expect(dashboard).toContain(metricType);
+    }
+  });
+
+  it("references log-based metrics through their resources, so a rename cannot orphan a chart", () => {
+    // The interpolation is the graph edge. A copied literal would keep planning cleanly while
+    // charting a metric that no longer exists, which renders as an empty panel — indistinguishable
+    // from "nothing has failed".
+    expect(dashboard).not.toContain('user/walrus/vuln_sync_failed"');
+    expect(dashboard).not.toContain('user/walrus/scheduler_job_failed"');
+  });
+
+  it("breaks the vuln-sync chart out by source instead of summing the sources together", () => {
+    // The one distinction `label_extractors` exists to provide: "nvd is failing" and "everything
+    // is failing" want different responses, and a single total cannot tell them apart.
+    expect(dashboard).toMatch(/groupByFields\s*=\s*\["metric\.label\.source"\]/);
+  });
+
+  it("splits Job executions by result, not merely by job", () => {
+    // A job that has silently stopped succeeding looks identical to one nobody triggered unless
+    // the result is on the axis.
+    expect(dashboard).toMatch(
+      /groupByFields\s*=\s*\["resource\.label\.job_name",\s*"metric\.label\.result"\]/,
+    );
+  });
+
+  it("feeds the scheduler chart from a log-based metric, because Cloud Scheduler publishes none", () => {
+    // Verified against the deployed project: `cloudscheduler.googleapis.com/*` has no metric
+    // descriptors at all, though the `cloud_scheduler_job` resource type is known. Anything
+    // scheduler-shaped has to be counted from its log.
+    expect(monitoring).toContain('resource "google_logging_metric" "scheduler_job_failed"');
+    expect(dashboard).not.toContain("cloudscheduler.googleapis.com/");
+
+    const metric = monitoring.slice(
+      monitoring.indexOf('resource "google_logging_metric" "scheduler_job_failed"'),
+    );
+    const body = metric.slice(0, metric.indexOf("\n}\n"));
+    expect(body).toContain('"job" = "EXTRACT(resource.labels.job_id)"');
+    // Same breadth as the policy it mirrors: a seventh scheduler job counts the moment it exists.
+    expect(body).toContain('resource.type="cloud_scheduler_job"');
+    expect(body).not.toMatch(/job_id="walrus-/);
+  });
+
+  it("adds no notifying resource — tier 2 is looked at, not delivered", () => {
+    // The whole point of the tier. A dashboard that pages is just another alert policy.
+    expect(dashboard).not.toContain("notification_channels");
+  });
+});

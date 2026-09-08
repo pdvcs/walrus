@@ -350,6 +350,26 @@ assert not unrated, f"no severity set on: {unrated}"
    || no "WAL-43" "alert policies missing, disabled, or missing a severity"
 
 # =========================================================================================
+head_ "Operations dashboard — WAL-119"
+# =========================================================================================
+# Tier 2: the surface an operator looks at, as opposed to the policies above, which interrupt.
+# Asserted here for the same reason the policies are — it is applied by Terraform, so its absence
+# means the apply did not reach it, not that nobody made one.
+gcloud monitoring dashboards list --project="$PROJECT" --format=json 2>/dev/null | python3 -c '
+import json, sys
+names = {d.get("displayName") for d in json.load(sys.stdin)}
+assert "Walrus operations" in names, f"dashboard missing; found {sorted(names)}"
+' && ok "WAL-119" "the Walrus operations dashboard exists" \
+   || no "WAL-119" "the Walrus operations dashboard is missing"
+
+# Cloud Scheduler publishes no metric to Cloud Monitoring at all, so the scheduler chart is fed
+# from a log-based metric. Absent, that chart renders empty — which reads as "nothing failed".
+gcloud logging metrics list --project="$PROJECT" --format='value(name)' 2>/dev/null \
+  | grep -qx "walrus/scheduler_job_failed" \
+  && ok "WAL-119" "walrus/scheduler_job_failed log metric exists" \
+  || no "WAL-119" "walrus/scheduler_job_failed log metric is missing"
+
+# =========================================================================================
 head_ "Machine-tier auth — WAL-86"
 # =========================================================================================
 code=$(curl -s -o /dev/null -w '%{http_code}' -m 30 -X POST "$SERVICE_URL/internal/vuln-backfill/auto")

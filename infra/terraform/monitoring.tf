@@ -265,3 +265,160 @@ resource "google_monitoring_alert_policy" "versions_newly_blocked" {
     auto_close = "86400s"
   }
 }
+
+# ---------------------------------------------------------------------------------------------
+# WAL-119 — tier 2, charted.
+#
+# The five policies above are tier 1: they send email, and they are deliberately narrow, because
+# `vuln_sync_degraded` is right that paging for a transient failure teaches people to ignore the
+# channel. Tier 2 is the surface you *look at* rather than one that interrupts you: Cloud Error
+# Reporting, which has grouped every stack-carrying error in this project since the first
+# deployment at zero configuration, plus the dashboard below for the counts and trends Error
+# Reporting does not chart.
+#
+# Nothing here notifies. That is the point of it.
+# ---------------------------------------------------------------------------------------------
+
+# Cloud Scheduler publishes **no** metric to Cloud Monitoring — verified against this project,
+# where `cloudscheduler.googleapis.com/*` returns nothing at all while the `cloud_scheduler_job`
+# monitored-resource type is perfectly well known. So a scheduler failure is chartable only from
+# its log, the same way a vuln sync failure is.
+#
+# The filter is deliberately identical to `scheduler_job_failure`'s above, including its
+# resource-type-not-job-name breadth: a seventh scheduler job is counted the moment it exists.
+# The policy is left as a log-match policy rather than re-pointed at this metric — it should
+# alert on the event, not on a threshold over an alignment window.
+resource "google_logging_metric" "scheduler_job_failed" {
+  name   = "walrus/scheduler_job_failed"
+  filter = <<-EOT
+    resource.type="cloud_scheduler_job"
+    AND severity>=ERROR
+  EOT
+
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+    unit        = "1"
+    labels {
+      key         = "job"
+      value_type  = "STRING"
+      description = "Cloud Scheduler job whose invocation failed"
+    }
+  }
+
+  # Which job failed is the whole question — one chart line per job rather than a single total,
+  # for the same reason vuln_sync_failed extracts its source.
+  label_extractors = {
+    "job" = "EXTRACT(resource.labels.job_id)"
+  }
+}
+
+# The project's first dashboard, and it is Terraform like the policies are. A console-built
+# dashboard is invisible to review, absent from a fresh project, and silently divergent from the
+# moment someone drags a widget — which is the drift WAL-96 spent a ticket eliminating on the
+# service. Do not hand-edit this in the console.
+#
+# Metric types below were each verified to exist in this project with the labels used here,
+# rather than recalled: run.googleapis.com/request_count (response_code_class),
+# run.googleapis.com/job/completed_execution_count (result), and the two log-based metrics. A
+# chart built on a metric type that does not exist renders empty and looks like good news.
+resource "google_monitoring_dashboard" "walrus" {
+  dashboard_json = jsonencode({
+    displayName = "Walrus operations"
+    gridLayout = {
+      columns = "2"
+      widgets = [
+        {
+          # Per source, not a total: the alert next door groups by source for the same reason,
+          # and "nvd is failing" and "everything is failing" want different responses.
+          title = "Vulnerability sync failures by source"
+          xyChart = {
+            dataSets = [{
+              timeSeriesQuery = {
+                timeSeriesFilter = {
+                  filter = "metric.type=\"logging.googleapis.com/user/${google_logging_metric.vuln_sync_failed.name}\" resource.type=\"cloud_run_revision\""
+                  aggregation = {
+                    alignmentPeriod    = "3600s"
+                    perSeriesAligner   = "ALIGN_SUM"
+                    crossSeriesReducer = "REDUCE_SUM"
+                    groupByFields      = ["metric.label.source"]
+                  }
+                }
+              }
+              plotType   = "STACKED_BAR"
+              targetAxis = "Y1"
+            }]
+            yAxis = { label = "failures", scale = "LINEAR" }
+          }
+        },
+        {
+          title = "Cloud Scheduler invocation failures by job"
+          xyChart = {
+            dataSets = [{
+              timeSeriesQuery = {
+                timeSeriesFilter = {
+                  filter = "metric.type=\"logging.googleapis.com/user/${google_logging_metric.scheduler_job_failed.name}\" resource.type=\"cloud_scheduler_job\""
+                  aggregation = {
+                    alignmentPeriod    = "3600s"
+                    perSeriesAligner   = "ALIGN_SUM"
+                    crossSeriesReducer = "REDUCE_SUM"
+                    groupByFields      = ["metric.label.job"]
+                  }
+                }
+              }
+              plotType   = "STACKED_BAR"
+              targetAxis = "Y1"
+            }]
+            yAxis = { label = "failed attempts", scale = "LINEAR" }
+          }
+        },
+        {
+          # By class rather than by code: the question this answers is "is walrus serving", and a
+          # 5xx rate is that. A specific status belongs in Logs Explorer.
+          title = "walrus-api requests by response class"
+          xyChart = {
+            dataSets = [{
+              timeSeriesQuery = {
+                timeSeriesFilter = {
+                  filter = "metric.type=\"run.googleapis.com/request_count\" resource.type=\"cloud_run_revision\" resource.label.service_name=\"${google_cloud_run_v2_service.walrus.name}\""
+                  aggregation = {
+                    alignmentPeriod    = "300s"
+                    perSeriesAligner   = "ALIGN_SUM"
+                    crossSeriesReducer = "REDUCE_SUM"
+                    groupByFields      = ["metric.label.response_code_class"]
+                  }
+                }
+              }
+              plotType   = "STACKED_BAR"
+              targetAxis = "Y1"
+            }]
+            yAxis = { label = "requests", scale = "LINEAR" }
+          }
+        },
+        {
+          # Both Jobs on one chart, split by job and result. A sync job that silently stops
+          # succeeding looks identical to one nobody triggered unless the result is on the axis.
+          title = "Cloud Run Job executions by result"
+          xyChart = {
+            dataSets = [{
+              timeSeriesQuery = {
+                timeSeriesFilter = {
+                  filter = "metric.type=\"run.googleapis.com/job/completed_execution_count\" resource.type=\"cloud_run_job\""
+                  aggregation = {
+                    alignmentPeriod    = "3600s"
+                    perSeriesAligner   = "ALIGN_SUM"
+                    crossSeriesReducer = "REDUCE_SUM"
+                    groupByFields      = ["resource.label.job_name", "metric.label.result"]
+                  }
+                }
+              }
+              plotType   = "STACKED_BAR"
+              targetAxis = "Y1"
+            }]
+            yAxis = { label = "executions", scale = "LINEAR" }
+          }
+        },
+      ]
+    }
+  })
+}
