@@ -769,6 +769,34 @@ Layer 2 extension module remain deferred — [WAL-72](engineering/tasks/WAL-72.m
   `headers` are validated by hand with `Object.entries()` instead — worth remembering before
   reaching for `z.record()` on any other `@iarna/toml` output in this codebase.
 
+**Wave 20 — Operator error visibility**
+
+Investigating the Cloud Monitoring alerts of 7 September 2026 found that walrus already has a
+working error surface nobody had been told about — Cloud Error Reporting has grouped every
+stack-carrying error since the first deployment, at zero configuration — and three faults around
+it. See [plans/operator-error-visibility.md](engineering/plans/operator-error-visibility.md) for
+the full picture; this is the first of them.
+
+- **WAL-120 (Fixed):** pino runs its error serializer on the `err` key and no other, so
+  `log.error({ error }, "…")` emitted `"error": {}` — `message` and `stack` are non-enumerable on
+  `Error`, and the exception was silently dropped while the line still looked like it had logged
+  something. Four sites did this, all in `src/authn/`, including **both audit-failure logs**
+  (`"Failed to audit operator action"`, `"Failed to audit machine invocation"`), where the record
+  written to note a lost audit entry itself carried nothing. The cost went beyond the missing
+  field: Cloud Error Reporting groups by stack trace, so a record with no stack enters no group
+  and appears in no count — these four faults were the only errors in the project invisible to
+  it. Now logged under `err`, with `tests/common/log.test.ts` pinning the mechanism.
+- **WAL-120 (Added):** a `no-restricted-syntax` lint rule catching an identifier logged under an
+  `error` key, so the pattern fails at author time rather than in production. Its first draft
+  matched 11 sites and 7 were false positives — a key built from an error (`String(err)`,
+  `err.message`) is already a string and loses nothing — so it is narrowed to identifier values,
+  which is the shape that carries a live `Error`.
+- **WAL-120 (Changed):** three log keys holding an already-extracted string renamed `error` →
+  `reason` (`common/http.ts`, `services/package-registry.ts`, `services/sync-service.ts`). No
+  monitoring filter or metric reads them; the point is that a log key named `error` now always
+  holds an `Error`, which is what makes the lint rule above honest rather than a source of
+  suppression comments.
+
 ## Version 0.1.0: Initial Release
 
 Initial Walrus release: a configuration-driven package ingress engine that discovers, caches, and

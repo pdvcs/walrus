@@ -44,8 +44,8 @@ export function installOperatorAuth(router: Router, runtime: OperatorAuthRuntime
       let result: AuthnResult;
       try {
         result = await runtime.provider.authenticate({ username, password });
-      } catch (error) {
-        log.error({ error, provider: runtime.provider.name }, "Authentication provider failed");
+      } catch (err) {
+        log.error({ err, provider: runtime.provider.name }, "Authentication provider failed");
         await runtime.auditLogin?.({
           outcome: "unavailable",
           username,
@@ -241,7 +241,7 @@ function createOperatorAudit(runtime: OperatorAuthRuntime): RequestHandler {
         method: req.method,
         path: req.originalUrl,
         status: res.statusCode,
-      }).catch((error) => log.error({ error }, "Failed to audit operator action"));
+      }).catch((err) => log.error({ err }, "Failed to audit operator action"));
     });
     next();
   };

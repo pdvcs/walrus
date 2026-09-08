@@ -66,8 +66,8 @@ export class GoogleOidcVerifier {
     let key: JsonWebKey | undefined;
     try {
       key = await this.key(header.kid);
-    } catch (error) {
-      log.error({ error }, "Unable to refresh Google OIDC signing keys");
+    } catch (err) {
+      log.error({ err }, "Unable to refresh Google OIDC signing keys");
       return unauthorized("OIDC signing keys unavailable");
     }
     if (!key) return unauthorized("Unknown OIDC signing key");
@@ -179,7 +179,7 @@ export function createMachineAuth(
           method: req.method,
           path: req.originalUrl,
           status: res.statusCode,
-        }).catch((error) => log.error({ error }, "Failed to audit machine invocation"));
+        }).catch((err) => log.error({ err }, "Failed to audit machine invocation"));
       });
     }
     next();

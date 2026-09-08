@@ -150,7 +150,7 @@ export async function fetchWithRetry(
         log.warn(
           {
             url,
-            error: message,
+            reason: message,
             attempt: attempt + 1,
             maxAttempts: maxRetries + 1,
           },

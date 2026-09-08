@@ -347,7 +347,7 @@ export class SyncService {
         {
           package: this.packageConfig.name,
           jobId: job.id,
-          error: message,
+          reason: message,
         },
         "Package sync failed",
       );
