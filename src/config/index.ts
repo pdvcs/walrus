@@ -109,9 +109,27 @@ const configSchema = z.object({
   // scale-up becomes the outage. Terraform sets this per workload -- see cloudrun.tf, which does
   // the arithmetic. Raising it without re-reading that comment is the way to starve the fleet.
   DB_POOL_MAX: z.coerce.number().int().positive().default(5),
-  // Optional upstream credential for the NVD API 2.0 (raises the rate limit from
-  // 5 to 50 req/30s). Unrelated to walrus authn/authz. Lives in .env.secrets.
-  NVD_API_KEY: z.string().optional(),
+  // Optional upstream credentials. Each raises a rate limit and does nothing else: NVD from 5 to
+  // 50 req/30s, GitHub from 60 to 5,000 req/hour. Unrelated to walrus authn/authz; both live in
+  // Secret Manager. walrus runs without either, which is what makes local work and CI possible
+  // with nothing provisioned.
+  //
+  // `.transform(v => v || undefined)` because Secret Manager can mount a version holding an
+  // empty string: "set to empty" has to mean the same as "not set", and settling that here beats
+  // trusting every call site to use a truthy check. Not `.min(1)` -- that would fail the parse
+  // and take the process down over a credential whose whole point is being optional.
+  NVD_API_KEY: z
+    .string()
+    .optional()
+    .transform((v) => v || undefined),
+  // Read through the schema rather than `process.env` at import time, which is where this lived
+  // from the first commit -- before this schema existed. That capture was never a decision, and
+  // it left the value untestable and gave one fact two sources: a module-load const for the
+  // request header, and a call-time read for the startup warning.
+  GITHUB_TOKEN: z
+    .string()
+    .optional()
+    .transform((v) => v || undefined),
   // Autonomous per-package CVE backfill (WAL-37, ADR-003). On by default: a package added
   // without it is served with CVE history that was never ingested. Set "false" to disable
   // the autostart sweep only — scheduled NVD/KEV/OSV/CVSS ingestion is unaffected.

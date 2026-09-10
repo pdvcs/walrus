@@ -11,6 +11,7 @@ import { applyTagPattern, parseVersion, extractVersionGroup } from "../common/ve
 import { RetainableVersion, selectRetentionWindow } from "../common/retention-window.js";
 import { log } from "../common/log.js";
 import { fetchJsonWithRetry } from "../common/http.js";
+import { config as appConfig } from "../config/index.js";
 
 interface GitHubRelease {
   tag_name: string;
@@ -28,7 +29,6 @@ interface GitHubAsset {
 }
 
 const GITHUB_API_BASE = "https://api.github.com";
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 
 export class GitHubReleasesStrategy implements DiscoveryStrategy {
   async discoverVersions(
@@ -261,8 +261,10 @@ export class GitHubReleasesStrategy implements DiscoveryStrategy {
       Accept: "application/vnd.github.v3+json",
       "User-Agent": "walrus/1.0",
     };
-    if (GITHUB_TOKEN) {
-      headers["Authorization"] = `Bearer ${GITHUB_TOKEN}`;
+    // Read per request, not captured at module load: the schema normalises an empty secret to
+    // undefined, and a value fixed at import time cannot be exercised by a test.
+    if (appConfig.GITHUB_TOKEN) {
+      headers["Authorization"] = `Bearer ${appConfig.GITHUB_TOKEN}`;
     }
 
     const perPage = Math.min(maxReleases ?? 100, 100);

@@ -1,6 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { GitHubReleasesStrategy } from "../../src/discovery/github-releases.js";
 import { PackageConfig } from "../../src/types/package-config.js";
+import { config as appConfig } from "../../src/config/index.js";
 
 const UV_CONFIG: PackageConfig = {
   name: "uv",
@@ -781,5 +782,42 @@ describe("GitHubReleasesStrategy — gitwindows (WAL-60)", () => {
         expect(art.filename).not.toMatch(/MinGit|PortableGit|\.exe$/);
       }
     }
+  });
+});
+
+// ── Upstream authentication ────────────────────────────────────────────────
+//
+// This was unreachable from a test until the token moved into the config schema: it was captured
+// into a module-level const at import time, so nothing a test set could change it. The header is
+// the whole point of the credential — unauthenticated discovery gets 60 requests/hour against a
+// Cloud Run egress address shared with other tenants.
+
+describe("GitHubReleasesStrategy — upstream authentication", () => {
+  const original = appConfig.GITHUB_TOKEN;
+  afterEach(() => {
+    appConfig.GITHUB_TOKEN = original;
+  });
+
+  function headersOf(): Record<string, string> {
+    const mock = fetch as unknown as ReturnType<typeof vi.fn>;
+    return (mock.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
+  }
+
+  it("sends a bearer token when one is configured", async () => {
+    appConfig.GITHUB_TOKEN = "ghp_example";
+    await new GitHubReleasesStrategy().discoverVersions(UV_CONFIG);
+    expect(headersOf()["Authorization"]).toBe("Bearer ghp_example");
+  });
+
+  it("sends no Authorization header when the token is unset", async () => {
+    appConfig.GITHUB_TOKEN = undefined;
+    await new GitHubReleasesStrategy().discoverVersions(UV_CONFIG);
+    expect(headersOf()).not.toHaveProperty("Authorization");
+  });
+
+  it("treats an empty token as unset rather than sending an empty bearer", async () => {
+    appConfig.GITHUB_TOKEN = "";
+    await new GitHubReleasesStrategy().discoverVersions(UV_CONFIG);
+    expect(headersOf()).not.toHaveProperty("Authorization");
   });
 });

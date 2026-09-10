@@ -17,22 +17,17 @@ Two consequences worth knowing:
 
 ### The `Zod` column
 
-It says how much the schema actually checks, which is not the same question as whether the
-variable appears in it:
+Every variable below is declared in the schema, so the column says how much the schema
+actually checks — which is a different question:
 
-| Mark | Meaning                                                                                                                                                  |
-| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `✓`  | Declared with a type, enum, or range. A malformed value fails the parse and stops the process.                                                           |
-| `~`  | Declared, but as a free-form string (`z.string()`): it is read and defaulted, and **every** value passes, including an empty one. A typo here is silent. |
-| `✗`  | Not in the schema at all. Read straight from `process.env`, so nothing validates or defaults it.                                                         |
+| Mark | Meaning                                                                                                                                                                                              |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `✓`  | Declared with a type, enum, or range. A malformed value fails the parse and stops the process.                                                                                                       |
+| `~`  | Declared, but as a free-form string (`z.string()`): it is read and defaulted, and **every** value passes. A typo here is silent. The two credentials additionally normalise an empty value to unset. |
 
-26 variables are `✓`, 15 are `~`, and one is `✗`. Several `~` entries do have real constraints —
-a session key must be 32 bytes, `GCS_BUCKET` must exist when the backend is GCS — but those are
-enforced by hand after the parse, not by Zod; see [Boot-time validation](#boot-time-validation).
-
-`GITHUB_TOKEN` is the sole `✗`: it is read directly in `src/discovery/github-releases.ts`.
-Secrets arrive from Secret Manager, whose ordinary failure mode is "no version mounted", so
-absence is a runtime state to report rather than a schema violation to reject at boot.
+26 variables are `✓` and 16 are `~`. Several `~` entries do have real constraints — a session
+key must be 32 bytes, `GCS_BUCKET` must exist when the backend is GCS — but those are enforced
+by hand after the parse, not by Zod; see [Boot-time validation](#boot-time-validation).
 
 ## Process and logging
 
@@ -101,10 +96,10 @@ Both are optional. walrus runs without them, which is what makes local developme
 possible with nothing provisioned. In a deployment their absence is almost always an oversight,
 and the only symptom is reduced throughput.
 
-| Variable       | Zod | Default | Description                                                                                                                                                                                                                                                                                          |
-| -------------- | --- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `NVD_API_KEY`  | ~   | —       | Raises NVD's published rate limit from 5 to 50 requests per 30s (walrus uses 4 and 45, staying one under). Unset, ingestion runs roughly ten times longer and is far likelier to be cut off by the scheduler's attempt deadline — and a cut-off run ingests nothing.                                 |
-| `GITHUB_TOKEN` | ✗   | —       | Raises api.github.com from 60 to 5,000 requests per hour. Unset, discovery for `github-releases` packages is throttled per IP, and Cloud Run's egress address is shared with other tenants, so that budget can be exhausted by strangers. A fine-grained PAT with public read-only access is enough. |
+| Variable       | Zod | Default | Description                                                                                                                                                                                                                                                                                                                        |
+| -------------- | --- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NVD_API_KEY`  | ~   | —       | Raises NVD's published rate limit from 5 to 50 requests per 30s (walrus uses 4 and 45, staying one under). Unset, ingestion runs roughly ten times longer and is far likelier to be cut off by the scheduler's attempt deadline — and a cut-off run ingests nothing. Empty is normalised to unset.                                 |
+| `GITHUB_TOKEN` | ~   | —       | Raises api.github.com from 60 to 5,000 requests per hour. Unset, discovery for `github-releases` packages is throttled per IP, and Cloud Run's egress address is shared with other tenants, so that budget can be exhausted by strangers. A fine-grained PAT with public read-only access is enough. Empty is normalised to unset. |
 
 Neither is reported as a degradation: a standing configuration choice is not machinery that has
 stopped, so it would leave the admin banner permanently visible. Instead each process logs a

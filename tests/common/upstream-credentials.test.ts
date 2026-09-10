@@ -15,12 +15,11 @@ function collect(): { warn: (msg: string) => void; msgs: string[] } {
 
 describe("upstream credentials", () => {
   const originalNvd = config.NVD_API_KEY;
-  const originalGithub = process.env.GITHUB_TOKEN;
+  const originalGithub = config.GITHUB_TOKEN;
 
   afterEach(() => {
     config.NVD_API_KEY = originalNvd;
-    if (originalGithub === undefined) delete process.env.GITHUB_TOKEN;
-    else process.env.GITHUB_TOKEN = originalGithub;
+    config.GITHUB_TOKEN = originalGithub;
   });
 
   it("reports presence only, never the credential", () => {
@@ -33,11 +32,12 @@ describe("upstream credentials", () => {
   });
 
   it("treats an empty value as absent", () => {
-    // Secret Manager can mount a version holding an empty string, and every consumer of these
-    // reads falsy-or-not. A status saying "configured" over an empty key would be worse than
-    // saying nothing, because it argues against the operator's own suspicion.
+    // The schema transform normalises an empty secret to undefined, so this should be
+    // unreachable from the environment. Asserted anyway, one layer in: a status saying
+    // "configured" over an empty key would be worse than saying nothing, because it argues
+    // against the operator's own suspicion.
     config.NVD_API_KEY = "";
-    process.env.GITHUB_TOKEN = "";
+    config.GITHUB_TOKEN = "";
 
     expect(getUpstreamCredentialStatus().nvd_api_key).toBe(false);
     const nvd = collect();
@@ -50,14 +50,14 @@ describe("upstream credentials", () => {
 
   it("warns at boot only when the credential this process needs is missing", () => {
     config.NVD_API_KEY = undefined;
-    delete process.env.GITHUB_TOKEN;
+    config.GITHUB_TOKEN = undefined;
     const missing = collect();
     warnIfNvdKeyless(missing);
     warnIfGithubAnonymous(missing);
     expect(missing.msgs).toEqual([NVD_KEYLESS_WARNING, GITHUB_ANONYMOUS_WARNING]);
 
     config.NVD_API_KEY = "k";
-    process.env.GITHUB_TOKEN = "t";
+    config.GITHUB_TOKEN = "t";
     const configured = collect();
     warnIfNvdKeyless(configured);
     warnIfGithubAnonymous(configured);
@@ -68,9 +68,9 @@ describe("upstream credentials", () => {
     // Not an oversight: the token is mounted only into the walrus-sync job, so the API service
     // answering /app/status legitimately lacks it. Reporting it here would read as a fault on a
     // correctly configured deployment, which is the cry-wolf this whole surface exists to avoid.
-    process.env.GITHUB_TOKEN = "t";
+    config.GITHUB_TOKEN = "t";
     expect(getUpstreamCredentialStatus()).not.toHaveProperty("github_token");
-    delete process.env.GITHUB_TOKEN;
+    config.GITHUB_TOKEN = undefined;
     expect(getUpstreamCredentialStatus()).not.toHaveProperty("github_token");
   });
 

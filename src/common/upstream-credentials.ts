@@ -16,6 +16,10 @@ import { log } from "./log.js";
  * is the reasoning that already keeps CVE suppressions out (see services/degradations.ts). It is
  * surfaced the way suppressions and egress are: as its own /app/status object, plus a warning
  * each process logs once at boot, which is the surface a developer actually reads.
+ *
+ * Both come from the config schema, which normalises an empty value to undefined -- Secret
+ * Manager can mount a version holding an empty string, and "set to empty" must mean "not set"
+ * at one boundary rather than at every call site.
  */
 
 /**
@@ -37,10 +41,9 @@ function present(value: string | undefined): boolean {
 }
 
 /**
- * Read through `config` for NVD and `process.env` for GitHub, matching where each consumer
- * actually reads it — `NvdClient` takes `config.NVD_API_KEY`, `GitHubReleasesStrategy` takes
- * `process.env.GITHUB_TOKEN`. A status that consulted a different source than the code it
- * describes would eventually disagree with it.
+ * Read from `config`, the same source the consumers use — `NvdClient` takes
+ * `config.NVD_API_KEY`, `GitHubReleasesStrategy` takes `config.GITHUB_TOKEN`. A status that
+ * consulted a different source than the code it describes would eventually disagree with it.
  */
 export function getUpstreamCredentialStatus(): UpstreamCredentialStatus {
   return { nvd_api_key: present(config.NVD_API_KEY) };
@@ -71,6 +74,6 @@ export function warnIfNvdKeyless(logger: Warner = log): void {
 
 /** Call at sync-job boot: this process runs package discovery against api.github.com. */
 export function warnIfGithubAnonymous(logger: Warner = log): void {
-  if (present(process.env.GITHUB_TOKEN)) return;
+  if (present(config.GITHUB_TOKEN)) return;
   logger.warn(GITHUB_ANONYMOUS_WARNING);
 }
