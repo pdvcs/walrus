@@ -75,6 +75,7 @@ Choose one `type`. The strategies in preference order:
 2. `json-api` — there is a structured JSON API
 3. `xml-api` — there is a Maven/XML metadata endpoint
 4. `directory-listing` — there is a browsable directory of files (rarely needed)
+5. `rust-channel` — the upstream publishes Rust-style TOML channel manifests (currently only Rust)
 
 ### `github-releases`
 
@@ -366,6 +367,45 @@ release_date_path = "$.response.docs[0].timestamp"         # JSONPath → Unix m
 type = "directory-listing"
 url = "https://example.com/downloads/"
 pattern = "mytool-\\d+\\.\\d+\\.\\d+-linux-amd64\\.tar\\.gz"  # regex matching filenames to consider
+```
+
+---
+
+### `rust-channel`
+
+**When to use:** The upstream publishes TOML channel manifests rather than a JSON API or GitHub
+release assets. This exists for **Rust**, whose `channel-rust-{version}.toml` manifests are the
+only machine-readable source of artifact URLs and hashes.
+
+**What to gather:**
+
+- The S3 `ListObjectsV2` URL that enumerates the archived manifests
+- The per-version manifest URL template
+- Which `[pkg.<name>]` table holds the artifacts (`rust` is the full toolchain: rustc, cargo, std)
+
+```toml
+[discovery]
+type = "rust-channel"
+listing_url = "https://static.rust-lang.org/?list-type=2&prefix=dist/channel-rust-"
+manifest_url_template = "https://static.rust-lang.org/dist/channel-rust-{version}.toml"
+max_versions = 10   # optional; only fetch the newest N manifests (default 10)
+package = "rust"    # optional; the [pkg.<name>] table (default "rust")
+```
+
+For each `[[platforms]]` block the strategy reads the Rust target triple named by
+`{arch_upstream}-{os_upstream}` (arch first), e.g. `x86_64` + `unknown-linux-gnu` →
+`x86_64-unknown-linux-gnu`, and takes the artifact URL and inline SHA256 from that target's
+manifest entry. `extension` selects the format: `tar.gz` uses the `url`/`hash` fields, `tar.xz`
+uses `xz_url`/`xz_hash`. No `[checksum]` section and no `filename_template` are needed — the
+checksum is inline and the filename is the URL's tail.
+
+```toml
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "unknown-linux-gnu"   # the OS half of the Rust target triple
+arch_upstream = "x86_64"            # the arch half
+extension = "tar.gz"                # "tar.gz" or "tar.xz"
 ```
 
 ---
@@ -692,12 +732,12 @@ If the schema check fails, the first output line will be:
 
 Common schema errors and what they mean:
 
-| Error                                                    | Fix                                                                          |
-| -------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `name: Name must be lowercase alphanumeric with hyphens` | Rename — no uppercase, no underscores                                        |
-| `discovery.type: Invalid discriminator value`            | Must be one of `github-releases`, `json-api`, `xml-api`, `directory-listing` |
-| `platforms: Array must contain at least 1 element(s)`    | Need at least one `[[platforms]]` block                                      |
-| `versioning.type: Invalid enum value`                    | Must be `semver`, `major-minor`, or `calver`                                 |
+| Error                                                    | Fix                                                                                          |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `name: Name must be lowercase alphanumeric with hyphens` | Rename — no uppercase, no underscores                                                        |
+| `discovery.type: Invalid discriminator value`            | Must be one of `github-releases`, `json-api`, `xml-api`, `directory-listing`, `rust-channel` |
+| `platforms: Array must contain at least 1 element(s)`    | Need at least one `[[platforms]]` block                                                      |
+| `versioning.type: Invalid enum value`                    | Must be `semver`, `major-minor`, or `calver`                                                 |
 
 ### Verifying CPE pairs against NVD
 

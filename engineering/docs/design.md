@@ -99,6 +99,8 @@ Version discovery is implemented as a strategy pattern (`src/discovery/`). Each 
 
 **`directory-listing`** — Fetches a directory listing page and matches filenames by pattern. Used when no structured API exists but files are served from a browsable directory.
 
+**`rust-channel`** — Reads Rust's TOML channel manifests (`channel-rust-{version}.toml`), enumerated from the project's S3 list API. Needed because Rust publishes no binary GitHub release assets and no JSON manifest; the manifest is the only source of artifact URLs and inline SHA256 hashes.
+
 **`html-scrape`** — Regex extraction from HTML. Last resort only; HTML structure changes without notice and makes configs brittle. Not implemented in the initial phases.
 
 ### Why a Strategy Pattern?
@@ -368,7 +370,7 @@ src/
   config/              # Environment variable loading and validation
   routes/              # Express route handlers (packages, download, admin, internal)
   services/            # Business logic (sync, version queries, download, retention, admin)
-  discovery/           # Strategy implementations (github-releases, json-api, xml-api, directory-listing)
+  discovery/           # Strategy implementations (github-releases, json-api, xml-api, directory-listing, rust-channel)
   db/
     client.ts          # Postgres connection pool + migration runner
     migrations/        # SQL migration files (0001_initial.sql, ...)

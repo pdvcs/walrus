@@ -151,6 +151,23 @@ const DiscoverySchema = z.discriminatedUnion("type", [
     release_date_url_template: z.string().optional(), // per-version URL, {version} substituted
     release_date_path: z.string().optional(), // JSONPath into that response → timestamp (ms or ISO)
   }),
+  z.object({
+    type: z.literal("rust-channel"),
+    // S3 ListObjectsV2 endpoint (XML) used to enumerate archived per-version manifests, e.g.
+    // "https://static.rust-lang.org/?list-type=2&prefix=dist/channel-rust-". Rust ships no binary
+    // assets on GitHub Releases and no JSON manifest, so its TOML channel manifests are the only
+    // source; the bucket's list API enumerates them without scraping or GitHub rate limits.
+    listing_url: z.string(),
+    // One archived manifest per version; {version} is substituted. e.g.
+    // "https://static.rust-lang.org/dist/channel-rust-{version}.toml".
+    manifest_url_template: z.string(),
+    // Only fetch manifests for the newest N versions after min_version is applied. Each manifest
+    // is ~0.9 MB, so this bounds discovery work; retention prunes further downstream.
+    max_versions: z.number().int().positive().optional(),
+    // Which [pkg.<name>] table holds the toolchain artifacts. "rust" is the full rustup component
+    // (rustc + cargo + rust-std + rust-docs).
+    package: z.string().default("rust"),
+  }),
 ]);
 
 const VersioningSchema = z.object({

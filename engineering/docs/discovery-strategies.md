@@ -288,6 +288,39 @@ Last-resort strategy for servers that expose a browsable HTTP directory with no 
 
 ---
 
+## `rust-channel`
+
+**Implementation:** `src/discovery/rust-channel.ts`
+
+**Packages:** `rust`
+
+Rust publishes no binary assets on GitHub Releases and no JSON manifest, so none of the strategies above can consume it. The authoritative source is the **TOML channel manifest**, one file per release (`channel-rust-{version}.toml`, plus a `channel-rust-stable.toml` that is overwritten in place). The manifest's shape:
+
+```toml
+date = "2026-09-03"
+
+[pkg.rust]
+version = "1.98.1 (48a229cea 2026-09-01)"
+
+[pkg.rust.target.x86_64-unknown-linux-gnu]
+available = true
+url     = "https://static.rust-lang.org/dist/2026-09-03/rust-1.98.1-x86_64-unknown-linux-gnu.tar.gz"
+hash    = "24ba1338a2d35c5a3247936546429e163fa674d726102af18bdf624582c57aea"
+xz_url  = "https://static.rust-lang.org/dist/2026-09-03/rust-1.98.1-x86_64-unknown-linux-gnu.tar.xz"
+xz_hash = "5326b36c53de11d148c8f8dab6553a3d1006c2cfd32123683073fad3c302605b"
+```
+
+The strategy:
+
+1. `GET listing_url`, parse the S3 `ListBucketResult` XML, and collect every key matching `dist/channel-rust-<version>.toml` — following `NextContinuationToken` while `IsTruncated`. This avoids scraping and GitHub rate limits.
+2. Filter by `min_version`, sort semver-descending, and keep the newest `max_versions` (default 10) so discovery fetches a bounded number of ~0.9 MB manifests.
+3. Fetch and TOML-parse each manifest. `releasedAt` comes from the top-level `date`, and the version from `[pkg.<package>].version` after stripping its ` (hash date)` suffix.
+4. For each `[[platforms]]` block, build the Rust target triple as `{arch_upstream}-{os_upstream}` (arch first, e.g. `x86_64` + `unknown-linux-gnu`) and read that `[pkg.<package>.target.<triple>]` block. `extension` chooses the gzip (`url`/`hash`) or xz (`xz_url`/`xz_hash`) artifact. Both are returned as inline SHA256 checksums, so no `[checksum]` section is needed.
+
+There is no `filename_template`: the served filename is the artifact URL's tail, which already carries the version and triple. Walrus streams whichever format it stores and never decompresses either, so serving xz requires no walrus-side xz decoder.
+
+---
+
 ## Checksum strategies
 
 Checksums are resolved separately from discovery, but the discovery strategy sets up how they'll be fetched by populating `ArtifactInfo.checksum` (known now) or `ArtifactInfo.checksumUrl` (fetch later).
