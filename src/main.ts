@@ -107,6 +107,7 @@ import { loadOperatorAuthRuntime, type OperatorAuthRuntime } from "./authn/runti
 import { loadMachineAuth } from "./authn/google-oidc.js";
 import { createAuthAuditSinks } from "./authn/audit.js";
 import { loadEgressConfig, getEgressState } from "./common/egress-rules.js";
+import { getUpstreamCredentialStatus, warnIfNvdKeyless } from "./common/upstream-credentials.js";
 
 const storage = createStorageBackend();
 const vulnSyncImpls = createVulnSyncImpls(pool);
@@ -324,7 +325,14 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
           ]);
         const egressState = getEgressState();
         const egress = { mode: egressState.mode, rule_count: egressState.rules.length };
-        return { vuln_data_freshness, vuln_sync_status, cve_suppressions, degradations, egress };
+        return {
+          vuln_data_freshness,
+          vuln_sync_status,
+          cve_suppressions,
+          degradations,
+          egress,
+          upstream_credentials: getUpstreamCredentialStatus(),
+        };
       },
     }),
   );
@@ -655,6 +663,10 @@ async function start(): Promise<void> {
   await reconcileAllPackageVulns(pool, configs);
   const app = createApp({ operatorAuth, internalAuth });
   log.info("Startup recovery complete");
+  // This process runs the scheduled /internal/vuln-sync/* walks, so it is the one that pays
+  // for a missing NVD key. Warned at boot rather than reported as a degradation -- see
+  // common/upstream-credentials.ts.
+  warnIfNvdKeyless();
   app.listen(config.PORT, () => {
     log.info({ port: config.PORT }, "Walrus started");
   });

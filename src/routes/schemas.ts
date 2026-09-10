@@ -408,6 +408,17 @@ export const EgressStatusSchema = z
   })
   .openapi("EgressStatus");
 
+export const UpstreamCredentialsSchema = z
+  .object({
+    nvd_api_key: z.boolean().openapi({
+      description:
+        "Whether NVD_API_KEY is set. False means NVD ingestion is limited to 4 requests/30s " +
+        "instead of 45: runs take far longer and are likelier to be cut off by the scheduler's " +
+        "attempt deadline. Presence only, never the value.",
+    }),
+  })
+  .openapi("UpstreamCredentials");
+
 export const StatusResponseSchema = HealthResponseSchema.extend({
   vuln_data_freshness: DataFreshnessSchema.nullable(),
   vuln_sync_status: VulnSyncStatusSchema.nullable(),
@@ -421,6 +432,14 @@ export const StatusResponseSchema = HealthResponseSchema.extend({
     description:
       "Enterprise egress rewriting state (WAL-113). Mode and rule count only, safe to expose " +
       "publicly; nothing here reveals a rule's match/rewrite targets or header values.",
+  }),
+  upstream_credentials: UpstreamCredentialsSchema.openapi({
+    description:
+      "Optional upstream API credentials this process holds. Absence is a supported " +
+      "configuration (walrus runs keyless) rather than a fault, so it is reported here in its " +
+      "own right and never as a degradation. GITHUB_TOKEN is deliberately not reported: it is " +
+      "mounted only into the walrus-sync job, so its absence here says nothing about the " +
+      "deployment — that job warns about it in its own boot log.",
   }),
   degradations: z.array(DegradationSchema).openapi({
     description:

@@ -206,6 +206,28 @@ describe("application health and status", () => {
     }
   });
 
+  it("reports upstream credential presence as its own object, never as a degradation", async () => {
+    // Running keyless is a supported configuration, not machinery that stopped. Putting it in
+    // `degradations` would stand a permanent banner over an intended state and teach operators
+    // to ignore the banner that reports real ingestion failure -- the same reasoning that keeps
+    // CVE suppressions out. See src/common/upstream-credentials.ts.
+    const app = createApp({
+      health: { startedAt: STARTED, now: () => AFTER_GRACE, checkDatabase: async () => {} },
+    });
+    const res = await request(app).get("/app/status");
+
+    expect(res.status).toBe(200);
+    expect(res.body.upstream_credentials).toHaveProperty("nvd_api_key");
+    expect(typeof res.body.upstream_credentials.nvd_api_key).toBe("boolean");
+    // Presence only: /app/status is public.
+    expect(JSON.stringify(res.body.upstream_credentials)).not.toContain(
+      process.env.NVD_API_KEY ?? "\u0000never",
+    );
+    for (const degradation of res.body.degradations) {
+      expect(degradation.component).not.toContain("credential");
+    }
+  });
+
   it("reports degradations without changing availability", async () => {
     const app = createApp({
       health: { startedAt: STARTED, now: () => AFTER_GRACE, checkDatabase: async () => {} },

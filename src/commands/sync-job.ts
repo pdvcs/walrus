@@ -22,6 +22,7 @@ import { DownloadService } from "../services/download-service.js";
 import { RetentionService } from "../services/retention-service.js";
 import { SyncAlreadyRunningError, SyncService } from "../services/sync-service.js";
 import { getPackage } from "../db/queries/packages.js";
+import { warnIfGithubAnonymous } from "../common/upstream-credentials.js";
 
 export function parsePackageArg(args: string[]): string | undefined {
   const i = args.indexOf("--package");
@@ -33,6 +34,9 @@ export function parsePackageArg(args: string[]): string | undefined {
 
 async function main(): Promise<void> {
   const only = parsePackageArg(process.argv.slice(2));
+  // This job is where package discovery runs, so it is the only process that holds -- and the
+  // only one that can truthfully report on -- GITHUB_TOKEN. See common/upstream-credentials.ts.
+  warnIfGithubAnonymous();
   await runMigrations();
 
   const registry = loadAllPackages();

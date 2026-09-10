@@ -15,6 +15,7 @@ export interface ApplicationStatusDetails {
   cve_suppressions: unknown;
   degradations: unknown[];
   egress: unknown;
+  upstream_credentials: unknown;
 }
 
 export interface HealthRouterDeps {
