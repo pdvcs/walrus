@@ -4,6 +4,7 @@ import { mintSession, renewSession, verifySession, type SessionPayload } from ".
 import type { OperatorAuthRuntime } from "./runtime.js";
 import type { AuthnResult } from "./types.js";
 import { escapeHtml, renderAdminNav, renderPage, renderPublicNav } from "../routes/page-shell.js";
+import { withBase } from "../common/base-path.js";
 
 export const SESSION_COOKIE = "walrus_session";
 
@@ -12,7 +13,11 @@ interface LoginFailureState {
   retryAt: number;
 }
 
-export function installOperatorAuth(router: Router, runtime: OperatorAuthRuntime): void {
+export function installOperatorAuth(
+  router: Router,
+  runtime: OperatorAuthRuntime,
+  basePath: string,
+): void {
   const failures = new Map<string, LoginFailureState>();
   const timing = runtime.loginTiming ?? { now: Date.now, sleep: delay };
 
@@ -25,7 +30,14 @@ export function installOperatorAuth(router: Router, runtime: OperatorAuthRuntime
           : undefined;
     res
       .type("html")
-      .send(renderLoginPage(safeReturnPath(stringValue(req.query.return_to)), undefined, notice));
+      .send(
+        renderLoginPage(
+          safeReturnPath(stringValue(req.query.return_to), basePath),
+          undefined,
+          notice,
+          basePath,
+        ),
+      );
   });
 
   router.post("/login", async (req, res, next) => {
@@ -53,7 +65,7 @@ export function installOperatorAuth(router: Router, runtime: OperatorAuthRuntime
           ip,
         });
         await enforceFloor(started, runtime.minimumLoginMs ?? 250, timing);
-        sendLoginFailure(req, res, 503, "Authentication provider unavailable");
+        sendLoginFailure(req, res, 503, "Authentication provider unavailable", basePath);
         return;
       }
       if (!result.ok) {
@@ -66,7 +78,7 @@ export function installOperatorAuth(router: Router, runtime: OperatorAuthRuntime
             ip,
           });
           await enforceFloor(started, runtime.minimumLoginMs ?? 250, timing);
-          sendLoginFailure(req, res, 401, "Invalid username or password");
+          sendLoginFailure(req, res, 401, "Invalid username or password", basePath);
           return;
         }
         await runtime.auditLogin?.({
@@ -76,7 +88,7 @@ export function installOperatorAuth(router: Router, runtime: OperatorAuthRuntime
           ip,
         });
         await enforceFloor(started, runtime.minimumLoginMs ?? 250, timing);
-        sendLoginFailure(req, res, 503, "Authentication provider unavailable");
+        sendLoginFailure(req, res, 503, "Authentication provider unavailable", basePath);
         return;
       }
 
@@ -90,7 +102,7 @@ export function installOperatorAuth(router: Router, runtime: OperatorAuthRuntime
           subject: result.subject,
         });
         await enforceFloor(started, runtime.minimumLoginMs ?? 250, timing);
-        sendLoginFailure(req, res, 403, "Authenticated subject is not an administrator");
+        sendLoginFailure(req, res, 403, "Authenticated subject is not an administrator", basePath);
         return;
       }
 
@@ -106,8 +118,11 @@ export function installOperatorAuth(router: Router, runtime: OperatorAuthRuntime
       const now = runtime.now?.() ?? new Date();
       if (isFormRequest(req)) {
         const session = mintSession(result.subject, "cookie", runtime.sessions, now);
-        setSessionCookie(res, session.token, session.payload, runtime);
-        res.redirect(303, safeReturnPath(stringValue(body.return_to)) ?? "/admin/v1/");
+        setSessionCookie(res, session.token, session.payload, runtime, basePath);
+        res.redirect(
+          303,
+          safeReturnPath(stringValue(body.return_to), basePath) ?? withBase(basePath, "/admin/v1/"),
+        );
         return;
       }
 
@@ -122,14 +137,14 @@ export function installOperatorAuth(router: Router, runtime: OperatorAuthRuntime
     }
   });
 
-  router.use(createOperatorGuard(runtime));
+  router.use(createOperatorGuard(runtime, basePath));
   router.use(createOriginGuard());
   router.use(createOperatorAudit(runtime));
 
   router.post("/logout", (_req, res) => {
-    clearSessionCookie(res, runtime);
+    clearSessionCookie(res, runtime, basePath);
     if (res.req.headers.accept?.includes("text/html")) {
-      res.redirect(303, "/admin/v1/login?logged_out=1");
+      res.redirect(303, withBase(basePath, "/admin/v1/login?logged_out=1"));
       return;
     }
     res.json({ logged_out: true, message: "Cookie cleared; stateless tokens are not revoked" });
@@ -155,7 +170,7 @@ export function installOperatorAuth(router: Router, runtime: OperatorAuthRuntime
       runtime.now?.() ?? new Date(),
     );
     if (req.headers.accept?.includes("text/html")) {
-      res.type("html").send(renderBearerTokenPage(session.token, session.payload));
+      res.type("html").send(renderBearerTokenPage(session.token, session.payload, basePath));
       return;
     }
     res.json({
@@ -166,7 +181,10 @@ export function installOperatorAuth(router: Router, runtime: OperatorAuthRuntime
   });
 }
 
-export function createOperatorGuard(runtime: OperatorAuthRuntime): RequestHandler {
+export function createOperatorGuard(
+  runtime: OperatorAuthRuntime,
+  basePath: string,
+): RequestHandler {
   return (req, res, next) => {
     const authorization = req.get("authorization");
     const bearer = authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
@@ -174,7 +192,7 @@ export function createOperatorGuard(runtime: OperatorAuthRuntime): RequestHandle
     const token = bearer ?? cookie;
     const expectedKind = bearer ? "bearer" : "cookie";
     if (!token) {
-      sendUnauthenticated(req, res, runtime);
+      sendUnauthenticated(req, res, runtime, basePath);
       return;
     }
 
@@ -183,7 +201,7 @@ export function createOperatorGuard(runtime: OperatorAuthRuntime): RequestHandle
       expectedKind,
     });
     if (!verified.ok) {
-      sendUnauthenticated(req, res, runtime);
+      sendUnauthenticated(req, res, runtime, basePath);
       return;
     }
     if (!runtime.roster.has(verified.payload.sub)) {
@@ -204,7 +222,7 @@ export function createOperatorGuard(runtime: OperatorAuthRuntime): RequestHandle
       );
       if (renewed) {
         req.auth.payload = renewed.payload;
-        setSessionCookie(res, renewed.token, renewed.payload, runtime);
+        setSessionCookie(res, renewed.token, renewed.payload, runtime, basePath);
       }
     }
     next();
@@ -247,12 +265,17 @@ function createOperatorAudit(runtime: OperatorAuthRuntime): RequestHandler {
   };
 }
 
-function sendUnauthenticated(req: Request, res: Response, runtime: OperatorAuthRuntime): void {
+function sendUnauthenticated(
+  req: Request,
+  res: Response,
+  runtime: OperatorAuthRuntime,
+  basePath: string,
+): void {
   const wantsHtml = req.headers.accept?.includes("text/html") ?? false;
   if (req.method === "GET" && wantsHtml) {
-    const returnTo = safeReturnPath(req.originalUrl);
+    const returnTo = safeReturnPath(req.originalUrl, basePath);
     const query = returnTo ? `?return_to=${encodeURIComponent(returnTo)}` : "";
-    res.redirect(303, `/admin/v1/login${query}`);
+    res.redirect(303, `${withBase(basePath, "/admin/v1/login")}${query}`);
     return;
   }
 
@@ -265,11 +288,11 @@ function sendUnauthenticated(req: Request, res: Response, runtime: OperatorAuthR
     if (isLogoutRequest(req)) {
       // Logging out is idempotent and needs no session: clear the stale cookie and report
       // the outcome the operator asked for rather than an authentication error.
-      clearSessionCookie(res, runtime);
-      res.redirect(303, "/admin/v1/login?logged_out=1");
+      clearSessionCookie(res, runtime, basePath);
+      res.redirect(303, withBase(basePath, "/admin/v1/login?logged_out=1"));
       return;
     }
-    res.redirect(303, "/admin/v1/login?expired=1");
+    res.redirect(303, withBase(basePath, "/admin/v1/login?expired=1"));
     return;
   }
 
@@ -280,9 +303,18 @@ function isLogoutRequest(req: Request): boolean {
   return req.method === "POST" && req.originalUrl.split("?")[0].endsWith("/logout");
 }
 
-function sendLoginFailure(req: Request, res: Response, status: number, message: string): void {
+function sendLoginFailure(
+  req: Request,
+  res: Response,
+  status: number,
+  message: string,
+  basePath: string,
+): void {
   if (isFormRequest(req) || req.headers.accept?.includes("text/html")) {
-    res.status(status).type("html").send(renderLoginPage(undefined, message));
+    res
+      .status(status)
+      .type("html")
+      .send(renderLoginPage(undefined, message, undefined, basePath));
     return;
   }
   res.status(status).json({ error: message });
@@ -293,22 +325,23 @@ function setSessionCookie(
   token: string,
   payload: SessionPayload,
   runtime: OperatorAuthRuntime,
+  basePath: string,
 ): void {
   res.cookie(SESSION_COOKIE, token, {
     httpOnly: true,
     secure: runtime.nodeEnv !== "development",
     sameSite: "lax",
-    path: "/admin/v1",
+    path: withBase(basePath, "/admin/v1"),
     expires: new Date(payload.exp * 1000),
   });
 }
 
-function clearSessionCookie(res: Response, runtime: OperatorAuthRuntime): void {
+function clearSessionCookie(res: Response, runtime: OperatorAuthRuntime, basePath: string): void {
   res.clearCookie(SESSION_COOKIE, {
     httpOnly: true,
     secure: runtime.nodeEnv !== "development",
     sameSite: "lax",
-    path: "/admin/v1",
+    path: withBase(basePath, "/admin/v1"),
   });
 }
 
@@ -327,42 +360,47 @@ function parseCookies(header: string | undefined): Record<string, string> {
   return cookies;
 }
 
-export function safeReturnPath(value: string | undefined): string | undefined {
-  if (!value || !value.startsWith("/admin/v1/")) return undefined;
+export function safeReturnPath(value: string | undefined, basePath: string): string | undefined {
+  if (!value || !value.startsWith(withBase(basePath, "/admin/v1/"))) return undefined;
   if (value.startsWith("//") || value.includes("\\")) return undefined;
   return value;
 }
 
-function renderLoginPage(returnTo?: string, error?: string, notice?: string): string {
+function renderLoginPage(
+  returnTo: string | undefined,
+  error: string | undefined,
+  notice: string | undefined,
+  basePath: string,
+): string {
   return renderPage({
     title: "Operator login — Walrus",
-    nav: renderPublicNav(),
+    nav: renderPublicNav(basePath),
     body: `<section class="panel">
       <h1>Operator login</h1>
       <p class="meta">Sign in with the administrator credentials configured for this Walrus instance.</p>
       ${error ? `<p class="alert alert-error" role="alert">${escapeHtml(error)}</p>` : ""}
       ${notice ? `<p class="alert alert-info" role="status">${escapeHtml(notice)}</p>` : ""}
-      <form method="post" action="/admin/v1/login">
+      <form method="post" action="${withBase(basePath, "/admin/v1/login")}">
         <div class="field"><label for="username">Username</label><input id="username" name="username" autocomplete="username" required autofocus></div>
         <div class="field"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required></div>
         ${returnTo ? `<input type="hidden" name="return_to" value="${escapeHtml(returnTo)}">` : ""}
-        <div class="actions"><button class="btn btn-primary" type="submit">Sign in</button><a class="btn btn-secondary" href="/">Back to Walrus</a></div>
+        <div class="actions"><button class="btn btn-primary" type="submit">Sign in</button><a class="btn btn-secondary" href="${withBase(basePath, "/")}">Back to Walrus</a></div>
       </form>
     </section>`,
   });
 }
 
-function renderBearerTokenPage(token: string, payload: SessionPayload): string {
+function renderBearerTokenPage(token: string, payload: SessionPayload, basePath: string): string {
   const expiresAt = escapeHtml(new Date(payload.exp * 1000).toISOString());
   return renderPage({
     title: "New API token — Walrus Admin",
-    nav: renderAdminNav(),
+    nav: renderAdminNav(basePath),
     body: `<section class="panel">
       <h1>New API token</h1>
       <p>This bearer credential is displayed once. It expires at <strong>${expiresAt}</strong>.</p>
       <p class="alert alert-error" role="alert">Treat this token as a password. It cannot be revoked individually and will not be shown again.</p>
       <div class="field"><label for="api-token">Bearer token</label><textarea id="api-token" readonly rows="7" spellcheck="false">${escapeHtml(token)}</textarea></div>
-      <div class="actions"><a class="btn btn-primary" href="/admin/v1/">Return to admin</a><a class="btn btn-secondary" href="/api">API documentation</a></div>
+      <div class="actions"><a class="btn btn-primary" href="${withBase(basePath, "/admin/v1/")}">Return to admin</a><a class="btn btn-secondary" href="${withBase(basePath, "/api")}">API documentation</a></div>
     </section>`,
   });
 }

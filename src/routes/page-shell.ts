@@ -1,3 +1,5 @@
+import { withBase } from "../common/base-path.js";
+
 export type AdminNavItem = "packages" | "jobs" | "validate" | "vulns";
 
 export const BASE_PAGE_STYLES = `
@@ -58,21 +60,21 @@ export const BASE_PAGE_STYLES = `
   }
 `;
 
-export function renderAdminNav(active?: AdminNavItem): string {
+export function renderAdminNav(basePath: string, active?: AdminNavItem): string {
   return `<nav class="nav" aria-label="Admin navigation">
-    <a class="brand" href="/">Walrus</a>
-    <a href="/admin/v1/"${active === "packages" ? ' class="active"' : ""}>Packages</a>
-    <a href="/admin/v1/jobs"${active === "jobs" ? ' class="active"' : ""}>Jobs</a>
-    <a href="/admin/v1/validate"${active === "validate" ? ' class="active"' : ""}>Validate TOML</a>
-    <a href="/admin/v1/vulns"${active === "vulns" ? ' class="active"' : ""}>Vulnerabilities</a>
-    <a href="/api">API Docs</a>
+    <a class="brand" href="${withBase(basePath, "/")}">Walrus</a>
+    <a href="${withBase(basePath, "/admin/v1/")}"${active === "packages" ? ' class="active"' : ""}>Packages</a>
+    <a href="${withBase(basePath, "/admin/v1/jobs")}"${active === "jobs" ? ' class="active"' : ""}>Jobs</a>
+    <a href="${withBase(basePath, "/admin/v1/validate")}"${active === "validate" ? ' class="active"' : ""}>Validate TOML</a>
+    <a href="${withBase(basePath, "/admin/v1/vulns")}"${active === "vulns" ? ' class="active"' : ""}>Vulnerabilities</a>
+    <a href="${withBase(basePath, "/api")}">API Docs</a>
     <span class="nav-status">
-      <a href="/app/status">Status</a>
-      <a class="nav-chip" id="nav-suppressions" href="/admin/v1/vulns#active-suppressions" hidden></a>
+      <a href="${withBase(basePath, "/app/status")}">Status</a>
+      <a class="nav-chip" id="nav-suppressions" href="${withBase(basePath, "/admin/v1/vulns#active-suppressions")}" hidden></a>
     </span>
     <span class="nav-spacer"></span>
-    <form method="post" action="/admin/v1/tokens"><button class="nav-link" type="submit">API token</button></form>
-    <form method="post" action="/admin/v1/logout"><button class="nav-link" type="submit">Log out</button></form>
+    <form method="post" action="${withBase(basePath, "/admin/v1/tokens")}"><button class="nav-link" type="submit">API token</button></form>
+    <form method="post" action="${withBase(basePath, "/admin/v1/logout")}"><button class="nav-link" type="submit">Log out</button></form>
   </nav>
   <script>
 // nav-suppression-chip:start
@@ -84,7 +86,7 @@ export function renderAdminNav(active?: AdminNavItem): string {
   const el = document.getElementById('nav-suppressions');
   if (!el) return;
   try {
-    const r = await fetch('/admin/v1/vuln-suppressions/active-count');
+    const r = await fetch('${withBase(basePath, "/admin/v1/vuln-suppressions/active-count")}');
     if (!r.ok) return;
     const n = (await r.json()).active_count || 0;
     if (n < 1) return;
@@ -100,13 +102,14 @@ export function renderAdminNav(active?: AdminNavItem): string {
   </script>`;
 }
 
-export function renderPublicNav(): string {
+export function renderPublicNav(basePath: string): string {
+  const returnTo = encodeURIComponent(withBase(basePath, "/admin/v1/"));
   return `<nav class="nav" aria-label="Site navigation">
-    <a class="brand" href="/">Walrus</a>
+    <a class="brand" href="${withBase(basePath, "/")}">Walrus</a>
     <span class="nav-spacer"></span>
-    <a href="/api">API Docs</a>
-    <a href="/app/status">Status</a>
-    <a href="/admin/v1/login?return_to=%2Fadmin%2Fv1%2F">Admin login</a>
+    <a href="${withBase(basePath, "/api")}">API Docs</a>
+    <a href="${withBase(basePath, "/app/status")}">Status</a>
+    <a href="${withBase(basePath, "/admin/v1/login")}?return_to=${returnTo}">Admin login</a>
   </nav>`;
 }
 
@@ -131,23 +134,24 @@ export function renderPage(options: {
 </html>`;
 }
 
-export function renderLandingPage(version: string): string {
+export function renderLandingPage(version: string, basePath: string): string {
   const safeVersion = escapeHtml(version);
+  const returnTo = encodeURIComponent(withBase(basePath, "/admin/v1/"));
   return renderPage({
     title: "Walrus",
-    nav: renderPublicNav(),
+    nav: renderPublicNav(basePath),
     body: `<section class="hero">
       <span class="version">v${safeVersion}</span>
       <h1>Walrus</h1>
       <p class="hero-copy">A policy-aware package ingress service for discovering, verifying, retaining, and serving trusted software artifacts.</p>
       <div class="actions">
-        <a class="btn btn-primary" href="/admin/v1/login?return_to=%2Fadmin%2Fv1%2F">Log in as admin</a>
-        <a class="btn btn-secondary" href="/api">Browse API documentation</a>
+        <a class="btn btn-primary" href="${withBase(basePath, "/admin/v1/login")}?return_to=${returnTo}">Log in as admin</a>
+        <a class="btn btn-secondary" href="${withBase(basePath, "/api")}">Browse API documentation</a>
       </div>
       <div class="link-grid">
-        <a class="link-card" href="/health"><strong>Deployment health</strong><span>Minimal availability contract for the deployment platform.</span></a>
-        <a class="link-card" href="/app/status"><strong>Application status</strong><span>Operational details, dependency state, and degradations.</span></a>
-        <a class="link-card" href="/openapi.json"><strong>OpenAPI specification</strong><span>Machine-readable public API contract.</span></a>
+        <a class="link-card" href="${withBase(basePath, "/health")}"><strong>Deployment health</strong><span>Minimal availability contract for the deployment platform.</span></a>
+        <a class="link-card" href="${withBase(basePath, "/app/status")}"><strong>Application status</strong><span>Operational details, dependency state, and degradations.</span></a>
+        <a class="link-card" href="${withBase(basePath, "/openapi.json")}"><strong>OpenAPI specification</strong><span>Machine-readable public API contract.</span></a>
       </div>
     </section>`,
   });

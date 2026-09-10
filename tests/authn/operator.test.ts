@@ -35,7 +35,7 @@ function runtime(overrides: Partial<OperatorAuthRuntime> = {}): OperatorAuthRunt
 
 function app(authRuntime: OperatorAuthRuntime) {
   const router = express.Router();
-  installOperatorAuth(router, authRuntime);
+  installOperatorAuth(router, authRuntime, "");
   router.get("/", (req, res) => res.json({ subject: req.auth?.subject }));
   router.post("/change", (_req, res) => res.status(204).end());
   return express()

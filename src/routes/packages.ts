@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { withBase } from "../common/base-path.js";
 import { ArtifactRow, PackageRow, SyncJobRow, VersionRow } from "../types/db.js";
 import { AffectsWithCveRow } from "../db/queries/cves.js";
 import {
@@ -46,7 +47,7 @@ export interface PackagesRouteDeps {
   transferLimits?: TransferLimits;
 }
 
-export function createPackagesRouter(deps: PackagesRouteDeps): Router {
+export function createPackagesRouter(deps: PackagesRouteDeps, basePath: string): Router {
   const router = Router();
 
   router.get("/", async (_req, res, next) => {
@@ -258,7 +259,10 @@ export function createPackagesRouter(deps: PackagesRouteDeps): Router {
             file_size: artifact.file_size,
             checksum: artifact.checksum,
             checksum_type: artifact.checksum_type,
-            download_url: `/download/${packageName}/${version.version}/${artifact.os}/${artifact.arch}`,
+            download_url: withBase(
+              basePath,
+              `/download/${packageName}/${version.version}/${artifact.os}/${artifact.arch}`,
+            ),
             requires_range: requiresRangedTransfer(artifact.file_size, deps.transferLimits),
             upstream_url: artifact.upstream_url,
             source_checksum: artifact.source_checksum,

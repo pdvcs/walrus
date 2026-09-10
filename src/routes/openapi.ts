@@ -454,23 +454,30 @@ registry.registerPath({
 
 // ── Generate & serve ──────────────────────────────────────────────────────────
 
-const generator = new OpenApiGeneratorV31(registry.definitions);
+// Registered paths above are relative ("/api/v1/packages", not the base-path-prefixed form) by
+// design: `servers[].url` is OpenAPI's own mechanism for expressing a deployment's mount point,
+// so a generated client resolves every relative path against it rather than needing each path
+// string edited per deployment.
+export function buildOpenApiSpec(basePath: string) {
+  const generator = new OpenApiGeneratorV31(registry.definitions);
+  return generator.generateDocument({
+    openapi: "3.1.0",
+    info: {
+      title: "Walrus API",
+      version: "1.0.0",
+      description:
+        "Walrus is a policy- and identity-aware ingress engine for software packages. " +
+        "It discovers, caches, and serves package binaries based on policy expressed in configuration files.",
+    },
+    servers: [{ url: basePath || "/" }],
+  });
+}
 
-export const openApiSpec = generator.generateDocument({
-  openapi: "3.1.0",
-  info: {
-    title: "Walrus API",
-    version: "1.0.0",
-    description:
-      "Walrus is a policy- and identity-aware ingress engine for software packages. " +
-      "It discovers, caches, and serves package binaries based on policy expressed in configuration files.",
-  },
-});
-
-export function createOpenApiRouter(): Router {
+export function createOpenApiRouter(basePath: string): Router {
   const router = Router();
+  const spec = buildOpenApiSpec(basePath);
   router.get("/", (_req, res) => {
-    res.json(openApiSpec);
+    res.json(spec);
   });
   return router;
 }

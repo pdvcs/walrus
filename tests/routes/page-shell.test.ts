@@ -6,7 +6,7 @@ import { renderAdminNav } from "../../src/routes/page-shell.js";
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 function navChipScript(): string {
-  const nav = renderAdminNav();
+  const nav = renderAdminNav("");
   const start = nav.indexOf("// nav-suppression-chip:start");
   const end = nav.indexOf("// nav-suppression-chip:end");
   expect(start).toBeGreaterThan(-1);
@@ -30,7 +30,7 @@ async function runChip(response: { ok: boolean; body?: unknown } | Error) {
 
 describe("admin nav suppression chip", () => {
   it("renders hidden and links to the explorer's suppression list", () => {
-    const nav = renderAdminNav();
+    const nav = renderAdminNav("");
     expect(nav).toContain(
       '<a class="nav-chip" id="nav-suppressions" href="/admin/v1/vulns#active-suppressions" hidden></a>',
     );

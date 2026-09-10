@@ -11,7 +11,7 @@ import { PackageConfig } from "../../src/types/package-config.js";
 function createTestApp(deps: Parameters<typeof createAdminRouter>[0]): express.Express {
   const app = express();
   app.use(express.json());
-  app.use("/admin/v1", createAdminRouter(deps));
+  app.use("/admin/v1", createAdminRouter(deps, ""));
   return app;
 }
 

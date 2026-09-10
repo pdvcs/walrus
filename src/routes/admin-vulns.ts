@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { renderSharedHtml, escHtml } from "./admin.js";
+import { withBase } from "../common/base-path.js";
 import { VulnQueryResult, DataFreshness } from "../services/vuln-query.js";
 import {
   isVulnSyncSource,
@@ -64,7 +65,7 @@ export interface AdminVulnsRouteDeps {
  * /admin/v1 style. Data flows through the shared query service (no duplicate SQL);
  * autocomplete calls the public search endpoint client-side.
  */
-export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
+export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps, basePath: string): Router {
   const router = Router();
 
   router.get("/vulns", async (req, res, next) => {
@@ -85,18 +86,21 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
 
       res.setHeader("Content-Type", "text/html; charset=utf-8");
       res.send(
-        renderExplorer({
-          product,
-          version,
-          synced,
-          syncError,
-          backfillStarted,
-          freshness,
-          syncStatus,
-          hints,
-          activeSuppressions,
-          result,
-        }),
+        renderExplorer(
+          {
+            product,
+            version,
+            synced,
+            syncError,
+            backfillStarted,
+            freshness,
+            syncStatus,
+            hints,
+            activeSuppressions,
+            result,
+          },
+          basePath,
+        ),
       );
     } catch (err) {
       next(err);
@@ -170,8 +174,8 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
       if (wantsHtml) {
         res.redirect(
           alreadyRunning
-            ? `/admin/v1/vulns?sync_error=${encodeURIComponent(`${source} sync is already running`)}`
-            : `/admin/v1/vulns?synced=${encodeURIComponent(source)}`,
+            ? `${withBase(basePath, "/admin/v1/vulns")}?sync_error=${encodeURIComponent(`${source} sync is already running`)}`
+            : `${withBase(basePath, "/admin/v1/vulns")}?synced=${encodeURIComponent(source)}`,
         );
         return;
       }
@@ -305,12 +309,12 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
 
         if (result.alreadyRunning) {
           context.set("sync_error", "A vulnerability backfill is already running");
-          res.redirect(303, `/admin/v1/vulns?${context.toString()}`);
+          res.redirect(303, `${withBase(basePath, "/admin/v1/vulns")}?${context.toString()}`);
           return;
         }
         context.set("backfill_started", String(result.job?.id ?? ""));
         if (since) context.set("backfill_since", since);
-        res.redirect(303, `/admin/v1/vulns?${context.toString()}`);
+        res.redirect(303, `${withBase(basePath, "/admin/v1/vulns")}?${context.toString()}`);
         return;
       }
       if (result.alreadyRunning)
@@ -327,9 +331,10 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
         },
         req.auth?.subject,
       );
-      res
-        .status(202)
-        .json({ job: result.job, status_url: `/admin/v1/vuln-backfill/${result.job.id}` });
+      res.status(202).json({
+        job: result.job,
+        status_url: `${withBase(basePath, "/admin/v1/vuln-backfill/")}${result.job.id}`,
+      });
     } catch (error) {
       if (
         error instanceof Error &&
@@ -338,7 +343,7 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
         if (req.headers.accept?.includes("text/html")) {
           return void res.redirect(
             303,
-            `/admin/v1/vulns?sync_error=${encodeURIComponent(error.message)}`,
+            `${withBase(basePath, "/admin/v1/vulns")}?sync_error=${encodeURIComponent(error.message)}`,
           );
         }
         return void res.status(400).json({ error: error.message });
@@ -368,7 +373,7 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
         if (req.headers.accept?.includes("text/html")) {
           return void res.redirect(
             303,
-            `/admin/v1/vulns?sync_error=${encodeURIComponent(message)}`,
+            `${withBase(basePath, "/admin/v1/vulns")}?sync_error=${encodeURIComponent(message)}`,
           );
         }
         return void res.status(404).json({ error: message });
@@ -394,7 +399,10 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
             ? "No package had exhausted its backfill attempts"
             : `Backfill attempts reset for ${reset.length} package(s): ${reset.join(", ")}`,
         );
-        return void res.redirect(303, `/admin/v1/vulns?${context.toString()}`);
+        return void res.redirect(
+          303,
+          `${withBase(basePath, "/admin/v1/vulns")}?${context.toString()}`,
+        );
       }
       res.status(200).json({ reset_count: reset.length, packages: reset });
     } catch (error) {
@@ -415,18 +423,21 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
   return router;
 }
 
-function renderExplorer(ctx: {
-  product?: string;
-  version?: string;
-  synced?: string;
-  syncError?: string;
-  backfillStarted?: string;
-  freshness: DataFreshness;
-  syncStatus: VulnSyncStatus;
-  hints: string[];
-  activeSuppressions: CveSuppressionRow[];
-  result: VulnQueryResult | null;
-}): string {
+function renderExplorer(
+  ctx: {
+    product?: string;
+    version?: string;
+    synced?: string;
+    syncError?: string;
+    backfillStarted?: string;
+    freshness: DataFreshness;
+    syncStatus: VulnSyncStatus;
+    hints: string[];
+    activeSuppressions: CveSuppressionRow[];
+    result: VulnQueryResult | null;
+  },
+  basePath: string,
+): string {
   const esc = escHtml;
   const product = ctx.product ?? "";
   const version = ctx.version ?? "";
@@ -465,10 +476,10 @@ function renderExplorer(ctx: {
         <strong>Data sources</strong>
         <span class="src-chips">${sourceChips}</span>
         <span class="strip-actions">
-          <form method="post" action="/admin/v1/vuln-sync/nvd"><button class="btn btn-sm btn-secondary">Sync NVD</button></form>
-          <form method="post" action="/admin/v1/vuln-sync/kev"><button class="btn btn-sm btn-secondary">Sync KEV</button></form>
-          <form method="post" action="/admin/v1/vuln-sync/osv"><button class="btn btn-sm btn-secondary">Sync OSV</button></form>
-          <form method="post" action="/admin/v1/vuln-backfill"><button class="btn btn-sm btn-secondary">NVD backfill</button></form>
+          <form method="post" action="${withBase(basePath, "/admin/v1/vuln-sync/nvd")}"><button class="btn btn-sm btn-secondary">Sync NVD</button></form>
+          <form method="post" action="${withBase(basePath, "/admin/v1/vuln-sync/kev")}"><button class="btn btn-sm btn-secondary">Sync KEV</button></form>
+          <form method="post" action="${withBase(basePath, "/admin/v1/vuln-sync/osv")}"><button class="btn btn-sm btn-secondary">Sync OSV</button></form>
+          <form method="post" action="${withBase(basePath, "/admin/v1/vuln-backfill")}"><button class="btn btn-sm btn-secondary">NVD backfill</button></form>
         </span>
       </div>
     </div>`;
@@ -501,7 +512,7 @@ function renderExplorer(ctx: {
     ? `<div class="note note-ok">Triggered ${esc(ctx.synced)} sync. Freshness updates once ingestion completes.</div>`
     : "";
   const backfillBanner = ctx.backfillStarted
-    ? `<div class="note note-ok">NVD backfill job <a href="/admin/v1/vuln-backfill/${esc(ctx.backfillStarted)}">#${esc(ctx.backfillStarted)}</a> queued — it runs in the background; this page's NVD chip updates when it finishes.</div>`
+    ? `<div class="note note-ok">NVD backfill job <a href="${withBase(basePath, "/admin/v1/vuln-backfill/")}${esc(ctx.backfillStarted)}">#${esc(ctx.backfillStarted)}</a> queued — it runs in the background; this page's NVD chip updates when it finishes.</div>`
     : "";
   const syncErrorBanner = ctx.syncError
     ? `<div class="note note-warn">${esc(ctx.syncError)}</div>`
@@ -509,7 +520,7 @@ function renderExplorer(ctx: {
 
   // ── Lookup first: it is the page's primary task; ops panels sit below the fold.
   const form = `
-    <form method="get" action="/admin/v1/vulns" class="vform" autocomplete="off">
+    <form method="get" action="${withBase(basePath, "/admin/v1/vulns")}" class="vform" autocomplete="off">
       <div style="position:relative">
         <input id="product" name="product" value="${esc(product)}" placeholder="Product or alias (e.g. openjdk, npp)" required autofocus>
         <div id="ac" class="ac"></div>
@@ -519,7 +530,7 @@ function renderExplorer(ctx: {
     </form>`;
 
   const results = ctx.result
-    ? renderResult(ctx.result)
+    ? renderResult(ctx.result, basePath)
     : `<p class="empty">Enter a product to look up known CVEs.</p>`;
 
   const suppressionPanel = `
@@ -635,7 +646,7 @@ function renderExplorer(ctx: {
       if (q.length < 2) { clearAc(); return; }
       timer = setTimeout(async () => {
         try {
-          const r = await fetch('/api/v1/vulns/products/search?q=' + encodeURIComponent(q));
+          const r = await fetch('${withBase(basePath, "/api/v1/vulns/products/search")}?q=' + encodeURIComponent(q));
           if (!r.ok) return;
           const d = await r.json();
           ac.innerHTML = d.results.map(x =>
@@ -745,7 +756,7 @@ function renderExplorer(ctx: {
     limitEl.addEventListener('input', () => lockApply('Limit changed — preview again'));
 
     async function post(payload) {
-      const r = await fetch('/admin/v1/vuln-sync/cvss', {
+      const r = await fetch('${withBase(basePath, "/admin/v1/vuln-sync/cvss")}', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(payload),
@@ -881,10 +892,10 @@ function renderExplorer(ctx: {
 
     function suppressionUrl(preview) {
       if (suppressionState.mode === 'revoke') {
-        return '/admin/v1/vuln-suppressions/' + suppressionState.id + '/revoke'
+        return '${withBase(basePath, "/admin/v1/vuln-suppressions/")}' + suppressionState.id + '/revoke'
           + (preview ? '/preview' : '');
       }
-      return '/admin/v1/vuln-suppressions' + (preview ? '/preview' : '');
+      return '${withBase(basePath, "/admin/v1/vuln-suppressions")}' + (preview ? '/preview' : '');
     }
 
     async function postSuppression(preview, payload) {
@@ -1058,7 +1069,7 @@ function renderExplorer(ctx: {
     .pkg-backfill-hint { font-size:0.75rem; color:#6b7280; }
   </style>`;
 
-  return renderSharedHtml("Vulnerabilities", "vulns", body, scripts, styleTail);
+  return renderSharedHtml("Vulnerabilities", "vulns", body, basePath, scripts, styleTail);
 }
 
 /**
@@ -1069,9 +1080,14 @@ function renderExplorer(ctx: {
  * cursor-based and can never reach a newly tracked package's older CVEs. The API has taken a
  * `package` scope since WAL-37; only the UI was missing it (ADR-007).
  */
-function renderPackageBackfill(slug: string, displayName: string, version?: string | null): string {
+function renderPackageBackfill(
+  slug: string,
+  displayName: string,
+  version: string | null | undefined,
+  basePath: string,
+): string {
   if (!slug) return "";
-  return `<form class="pkg-backfill" method="post" action="/admin/v1/vuln-backfill">
+  return `<form class="pkg-backfill" method="post" action="${withBase(basePath, "/admin/v1/vuln-backfill")}">
     <input type="hidden" name="package" value="${escHtml(slug)}">
     ${version ? `<input type="hidden" name="return_version" value="${escHtml(version)}">` : ""}
     <label for="pkg-backfill-since">Backfill ${escHtml(displayName)} from</label>
@@ -1081,7 +1097,7 @@ function renderPackageBackfill(slug: string, displayName: string, version?: stri
   </form>`;
 }
 
-function renderResult(r: VulnQueryResult): string {
+function renderResult(r: VulnQueryResult, basePath: string): string {
   const esc = escHtml;
   const m = r.match;
 
@@ -1090,7 +1106,7 @@ function renderResult(r: VulnQueryResult): string {
       ? `<p>Did you mean:</p><ul>${m.candidates
           .map(
             (c) =>
-              `<li><a href="/admin/v1/vulns?product=${encodeURIComponent(c.slug)}">${esc(c.display_name)}</a> <span class="ac-slug">${esc(c.slug)}</span></li>`,
+              `<li><a href="${withBase(basePath, "/admin/v1/vulns")}?product=${encodeURIComponent(c.slug)}">${esc(c.display_name)}</a> <span class="ac-slug">${esc(c.slug)}</span></li>`,
           )
           .join("")}</ul>`
       : "<p>No similar products found.</p>";
@@ -1100,10 +1116,10 @@ function renderResult(r: VulnQueryResult): string {
   const header = `<p class="meta">Resolved to <strong>${esc(m.display_name ?? m.product_slug ?? "")}</strong>
     (<code>${esc(m.product_slug ?? "")}</code>, ${esc(m.method ?? "")}, confidence ${m.confidence ?? "—"})
     · ${r.counts.total} CVE(s)${r.counts.kev > 0 ? ` · <span class="badge badge-kev">${r.counts.kev} KEV</span>` : ""}
-    · <a class="hist-link" href="/api/v1/packages/${esc(m.product_slug ?? "")}/availability${
+    · <a class="hist-link" href="${withBase(basePath, "/api/v1/packages/")}${esc(m.product_slug ?? "")}/availability${
       r.query.version ? `?version=${encodeURIComponent(r.query.version)}` : ""
     }">availability history</a></p>
-    ${renderPackageBackfill(m.product_slug ?? "", m.display_name ?? m.product_slug ?? "", r.query.version)}`;
+    ${renderPackageBackfill(m.product_slug ?? "", m.display_name ?? m.product_slug ?? "", r.query.version, basePath)}`;
 
   const warn = r.version_parse_warning
     ? `<div class="note note-warn">${esc(r.version_parse_warning)}</div>`

@@ -447,6 +447,13 @@ export const StatusResponseSchema = HealthResponseSchema.extend({
       "vulnerability ingestion, stuck or disabled autonomous backfills. Empty means " +
       "self-healing is healthy. Shown as a banner on the admin UI.",
   }),
+  base_path: z.string().openapi({
+    description:
+      "Effective WALRUS_BASE_PATH (WAL-117). Empty string means walrus is mounted at root, " +
+      "today's default. Every link this response's own request reached — including this one " +
+      "— already carries it.",
+    example: "",
+  }),
 }).openapi("StatusResponse");
 
 // ── GET /api/v1/packages/:name/availability ──────────────────────────────────

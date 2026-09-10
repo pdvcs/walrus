@@ -188,6 +188,16 @@ describe("application health and status", () => {
     expect(res.body).not.toHaveProperty("service");
   });
 
+  it("reports an empty base_path when WALRUS_BASE_PATH is unset (WAL-117)", async () => {
+    const app = createApp({
+      health: { startedAt: STARTED, now: () => AFTER_GRACE, checkDatabase: async () => {} },
+    });
+    const res = await request(app).get("/app/status");
+
+    expect(res.status).toBe(200);
+    expect(res.body.base_path).toBe("");
+  });
+
   it("reports the effective egress mode and rule count on /app/status", async () => {
     configureEgress({
       mode: "strict",

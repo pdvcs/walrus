@@ -9,7 +9,9 @@ design and rationale; this doc is the operational reference.
 
 Status: the chokepoint and declarative rewrite rules below are shipped (WAL-112, WAL-113,
 WAL-115). CONNECT proxying and an adopter extension module are designed but not yet built —
-see [WAL-72](../tasks/WAL-72.md), still deferred.
+see [WAL-72](../tasks/WAL-72.md), still deferred. Serving under a path prefix
+(`WALRUS_BASE_PATH`, WAL-117) is a separate, unrelated capability documented further down; see
+[plans/base-path-serving.md](../plans/base-path-serving.md) for its own design and rationale.
 
 ## The egress chokepoint
 
@@ -175,6 +177,36 @@ under _any_ configured rule, which is enough to answer "is this working at all" 
 the caller to also know which traffic class they're debugging.
 
 Walrus also logs its effective egress configuration (mode and rule count) once at boot.
+
+## Serving under a path prefix (`WALRUS_BASE_PATH`)
+
+Walrus is mounted at `/` by default. Set `WALRUS_BASE_PATH` to serve it under a prefix of an
+adopter's own domain instead — `WALRUS_BASE_PATH=/foo` makes walrus reachable at `/foo/...`
+rather than `/...`. The priority case is a single path segment (`/foo`); a multi-segment prefix
+(`/corp/walrus`) is accepted by the same validation, though it isn't the case most requests are
+about. Default is empty (`""`), which is today's behaviour — mounted at root, nothing prefixed.
+
+```
+WALRUS_BASE_PATH=/foo
+```
+
+A malformed value — no leading `/`, a trailing `/`, `/` alone, a doubled `/` — fails boot with a
+clear error, the same fail-fast contract `WALRUS_EGRESS_RULES` already has.
+
+Every self-referential path walrus emits — redirects, admin-UI links and forms, the session
+cookie's path, the `download_url` field in package/version API responses, and the OpenAPI
+document's `servers[]` entry — carries the configured prefix automatically. `GET /health` and
+`GET /app/health` additionally stay reachable **unprefixed**, since Cloud Run's own startup probe
+(`infra/terraform/cloudrun.tf`) hits the container directly and needs no Terraform change when a
+base path is configured. The effective value is also visible at runtime as `base_path` on
+`GET /app/status`, the same way `GET /admin/v1/egress` and the `egress` status field answer "is
+this working" for the egress rewriting feature above.
+
+**Out of scope here:** how traffic actually reaches walrus under that path — a reverse proxy,
+gateway path rule, or other mechanism in front of the deployment — is the adopter's own topology
+and isn't documented or designed by this feature. Whatever fronts walrus does need to forward the
+configured prefix rather than strip it, since walrus itself now expects to see it on every
+incoming request; guidance for setting that up is deferred to a follow-up.
 
 ## What's not here yet
 

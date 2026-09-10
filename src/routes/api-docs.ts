@@ -1,10 +1,11 @@
 import { readFileSync } from "fs";
 import { join } from "path";
 import { Router, Request, Response } from "express";
+import { withBase } from "../common/base-path.js";
 
 const API_DOCS_MARKDOWN = readFileSync(join(__dirname, "api-docs.md"), "utf8");
 
-function renderMarkdownToHtml(md: string): string {
+function renderMarkdownToHtml(md: string, basePath: string): string {
   const lines = md.split("\n");
   const out: string[] = [];
   let inCodeBlock = false;
@@ -20,11 +21,18 @@ function renderMarkdownToHtml(md: string): string {
       .replace(/>/g, "&gt;")
       .replace(/`([^`]+)`/g, "<code>$1</code>")
       .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, text: string, href: string) =>
-        href.startsWith("#")
-          ? `<a href="${href}">${text}</a>`
-          : `<a href="${href}" target="_blank" rel="noopener noreferrer">${text}</a>`,
-      );
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, text: string, href: string) => {
+        // Site-relative links (the docs' own "Try it" examples) must carry the base path so
+        // they work when this page is reached through an adopter's prefixed proxy; in-page
+        // anchors and external links are untouched.
+        if (href.startsWith("#") || /^[a-z][a-z0-9+.-]*:/i.test(href)) {
+          const external = !href.startsWith("#");
+          return external
+            ? `<a href="${href}" target="_blank" rel="noopener noreferrer">${text}</a>`
+            : `<a href="${href}">${text}</a>`;
+        }
+        return `<a href="${withBase(basePath, href)}">${text}</a>`;
+      });
 
   // GitHub-style heading slug, so in-page #anchors written in the markdown resolve.
   const slug = (s: string) =>
@@ -148,8 +156,8 @@ function renderMarkdownToHtml(md: string): string {
   return out.join("\n");
 }
 
-function renderApiDocsHtml(markdown: string): string {
-  const body = renderMarkdownToHtml(markdown);
+function renderApiDocsHtml(markdown: string, basePath: string): string {
+  const body = renderMarkdownToHtml(markdown, basePath);
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -186,9 +194,9 @@ function renderApiDocsHtml(markdown: string): string {
 <body>
   <nav class="nav">
     <span class="brand">Walrus</span>
-    <a href="/api" style="color:#111;font-weight:700">API Docs</a>
-    <a href="/admin/v1/">Admin UI</a>
-    <a href="/app/status">Status</a>
+    <a href="${withBase(basePath, "/api")}" style="color:#111;font-weight:700">API Docs</a>
+    <a href="${withBase(basePath, "/admin/v1/")}">Admin UI</a>
+    <a href="${withBase(basePath, "/app/status")}">Status</a>
   </nav>
   <div class="content">
     ${body}
@@ -197,12 +205,12 @@ function renderApiDocsHtml(markdown: string): string {
 </html>`;
 }
 
-export function createApiDocsRouter(): Router {
+export function createApiDocsRouter(basePath: string): Router {
   const router = Router();
   router.get("/", (req: Request, res: Response) => {
     if (req.headers.accept?.includes("text/html")) {
       res.setHeader("Content-Type", "text/html; charset=utf-8");
-      res.send(renderApiDocsHtml(API_DOCS_MARKDOWN));
+      res.send(renderApiDocsHtml(API_DOCS_MARKDOWN, basePath));
     } else {
       res.setHeader("Content-Type", "text/markdown; charset=utf-8");
       res.send(API_DOCS_MARKDOWN);

@@ -57,17 +57,22 @@ describe("application security tier mounts", () => {
     expect(new Set(mounts.map(({ prefix }) => prefix)).size).toBe(mounts.length);
     expect(mounts.every(({ router }) => discoverRoutes(router).length > 0)).toBe(true);
 
+    // The three tiers mount on one base-path wrapper router (WAL-117), not directly on `app` —
+    // with no base path configured here, that wrapper sits at "/" and is otherwise invisible.
     const applicationLayers = (app as unknown as { _router: { stack: ExpressLayer[] } })._router
       .stack;
     expect(applicationLayers.filter(({ route }) => route)).toHaveLength(0);
-    const routeBearingRouters = applicationLayers.filter(
+    const topLevelRouters = applicationLayers.filter(
       ({ handle }) => handle?.stack && discoverRoutes(handle as express.Router).length > 0,
     );
-    expect(routeBearingRouters.map(({ handle }) => handle)).toEqual(
-      mounts.map(({ router }) => router),
+    expect(topLevelRouters).toHaveLength(1);
+    const [baseLayer] = topLevelRouters;
+    const tierLayers = (baseLayer.handle as unknown as { stack: ExpressLayer[] }).stack.filter(
+      ({ handle }) => handle?.stack && discoverRoutes(handle as express.Router).length > 0,
     );
+    expect(tierLayers.map(({ handle }) => handle)).toEqual(mounts.map(({ router }) => router));
     for (const mount of mounts) {
-      const layer = routeBearingRouters.find(({ handle }) => handle === mount.router)!;
+      const layer = tierLayers.find(({ handle }) => handle === mount.router)!;
       expect(layer.regexp?.test(mount.prefix), mount.prefix).toBe(true);
     }
   });

@@ -16,6 +16,7 @@ import { sortVersionsDesc } from "../common/version-utils.js";
 import { defaultCpeProbe, CpeVerifyResult } from "../vuln/cpe-verify.js";
 import { BASE_PAGE_STYLES, renderAdminNav, type AdminNavItem } from "./page-shell.js";
 import { getEgressState, matchEgressRule } from "../common/egress-rules.js";
+import { withBase } from "../common/base-path.js";
 
 interface VersionDetail {
   version: string;
@@ -127,7 +128,7 @@ export interface VersionVulnBadge {
   blocked: boolean;
 }
 
-export function createAdminRouter(deps: AdminRouteDeps): Router {
+export function createAdminRouter(deps: AdminRouteDeps, basePath: string): Router {
   const router = Router();
 
   router.post("/sync/:package", async (req, res, next) => {
@@ -425,7 +426,13 @@ export function createAdminRouter(deps: AdminRouteDeps): Router {
 
       if (wantsHtml) {
         res.setHeader("Content-Type", "text/html; charset=utf-8");
-        res.send(renderJobsListPage(jobs, { page: page ?? 1, pageSize: 100, packageName, status }));
+        res.send(
+          renderJobsListPage(
+            jobs,
+            { page: page ?? 1, pageSize: 100, packageName, status },
+            basePath,
+          ),
+        );
         return;
       }
 
@@ -451,7 +458,7 @@ export function createAdminRouter(deps: AdminRouteDeps): Router {
 
       if (req.headers.accept?.includes("text/html")) {
         res.setHeader("Content-Type", "text/html; charset=utf-8");
-        res.send(renderJobStatusPage(detail));
+        res.send(renderJobStatusPage(detail, basePath));
       } else {
         res.json(buildJobResponse(detail));
       }
@@ -538,7 +545,9 @@ export function createAdminRouter(deps: AdminRouteDeps): Router {
         }
       }
       res.setHeader("Content-Type", "text/html; charset=utf-8");
-      res.send(renderDashboardPage(configuredPackages, packageMap, lastJobByPackage, configMeta));
+      res.send(
+        renderDashboardPage(configuredPackages, packageMap, lastJobByPackage, configMeta, basePath),
+      );
     } catch (err) {
       next(err);
     }
@@ -548,7 +557,7 @@ export function createAdminRouter(deps: AdminRouteDeps): Router {
     try {
       const configuredPackages = deps.listConfiguredPackages();
       res.setHeader("Content-Type", "text/html; charset=utf-8");
-      res.send(renderValidatePage(configuredPackages));
+      res.send(renderValidatePage(configuredPackages, basePath));
     } catch (err) {
       next(err);
     }
@@ -804,6 +813,7 @@ export function createAdminRouter(deps: AdminRouteDeps): Router {
             "Not Found",
             "packages",
             `<p>Package not found: ${escHtml(packageName)}</p>`,
+            basePath,
           ),
         );
         return;
@@ -837,7 +847,7 @@ export function createAdminRouter(deps: AdminRouteDeps): Router {
       const vulnBadges = await deps.getPackageVulnBadges(packageName);
 
       res.setHeader("Content-Type", "text/html; charset=utf-8");
-      res.send(renderPackageDetailPage(packageName, pkg, lastJob, groups, vulnBadges));
+      res.send(renderPackageDetailPage(packageName, pkg, lastJob, groups, vulnBadges, basePath));
     } catch (err) {
       next(err);
     }
@@ -892,7 +902,7 @@ function buildJobResponse(detail: JobDetail): Record<string, unknown> {
   };
 }
 
-function renderJobStatusPage(detail: JobDetail): string {
+function renderJobStatusPage(detail: JobDetail, basePath: string): string {
   const { job } = detail;
   const initialJson = JSON.stringify(buildJobResponse(detail)).replace(
     /<\/script>/gi,
@@ -945,7 +955,7 @@ function renderJobStatusPage(detail: JobDetail): string {
   </style>
 </head>
 <body>
-  ${renderAdminNav("jobs")}
+  ${renderAdminNav(basePath, "jobs")}
   <div class="job-content">
   <h1 id="page-title">${title}</h1>
   <div id="status-badge"></div>
@@ -1058,6 +1068,7 @@ export function renderSharedHtml(
   title: string,
   activeNav: AdminNavItem,
   body: string,
+  basePath: string,
   scripts = "",
   rawTail = "",
 ): string {
@@ -1128,7 +1139,7 @@ export function renderSharedHtml(
   </style>
 </head>
 <body>
-  ${renderAdminNav(activeNav)}
+  ${renderAdminNav(basePath, activeNav)}
   <div id="degraded-banner"></div>
   <div class="wrap">
     ${body}
@@ -1143,7 +1154,7 @@ ${scripts}
 // Fed by /app/status's degradations array; degradations do not change isAvailable.
 (async () => {
   try {
-    const r = await fetch('/app/status');
+    const r = await fetch('${withBase(basePath, "/app/status")}');
     if (!r.ok) return;
     const d = await r.json();
     const degradations = d.degradations || [];
@@ -1191,7 +1202,7 @@ function computeRetentionPlan(
   return { kept, pruned };
 }
 
-function renderValidatePage(configuredPackages: string[]): string {
+function renderValidatePage(configuredPackages: string[], basePath: string): string {
   const esc = escHtml;
   const packageOptions = configuredPackages
     .map((p) => `<option value="${esc(p)}">${esc(p)}</option>`)
@@ -1216,7 +1227,7 @@ function renderValidatePage(configuredPackages: string[]): string {
     <div id="results" style="margin-top:20px;display:none"></div>`;
 
   const rawTail = `
-<script src="/static/editor-bundle.js"></script>
+<script src="${withBase(basePath, "/static/editor-bundle.js")}"></script>
 <script>
   const { basicSetup, EditorView, StreamLanguage, toml } = window.WalrusEditor;
 
@@ -1239,7 +1250,7 @@ function renderValidatePage(configuredPackages: string[]): string {
     const statusEl = document.getElementById("load-status");
     statusEl.textContent = "Loading…";
     try {
-      const r = await fetch("/admin/v1/packages/" + encodeURIComponent(name) + "/toml-source");
+      const r = await fetch("${withBase(basePath, "/admin/v1/packages/")}" + encodeURIComponent(name) + "/toml-source");
       if (!r.ok) { statusEl.textContent = "Failed to load"; return; }
       const text = await r.text();
       setEditorContent(text);
@@ -1330,7 +1341,7 @@ function renderValidatePage(configuredPackages: string[]): string {
     statusEl.textContent = "";
     resultsEl.style.display = "none";
     try {
-      const r = await fetch("/admin/v1/validate-toml", {
+      const r = await fetch("${withBase(basePath, "/admin/v1/validate-toml")}", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ toml }),
@@ -1354,7 +1365,7 @@ function renderValidatePage(configuredPackages: string[]): string {
   };
 </script>`;
 
-  return renderSharedHtml("Validate TOML", "validate", body, "", rawTail);
+  return renderSharedHtml("Validate TOML", "validate", body, basePath, "", rawTail);
 }
 
 function renderDashboardPage(
@@ -1362,6 +1373,7 @@ function renderDashboardPage(
   packageMap: Map<string, PackageRow>,
   lastJobByPackage: Map<string, SyncJobRow>,
   configMeta: Map<string, { display_name: string; vendor: string }>,
+  basePath: string,
 ): string {
   const esc = escHtml;
 
@@ -1375,7 +1387,7 @@ function renderDashboardPage(
       const enabled = pkg?.enabled ?? true;
       const enabledBadge = `<span class="badge badge-${enabled ? "enabled" : "disabled"}">${enabled ? "enabled" : "disabled"}</span>`;
       const jobHtml = lastJob
-        ? `<a href="/admin/v1/jobs/${lastJob.id}" class="badge badge-${esc(lastJob.status)}">${esc(lastJob.status)}</a> <span style="color:#9ca3af;font-size:0.78rem">${fmtAge(lastJob.started_at)}</span>`
+        ? `<a href="${withBase(basePath, "/admin/v1/jobs/")}${lastJob.id}" class="badge badge-${esc(lastJob.status)}">${esc(lastJob.status)}</a> <span style="color:#9ca3af;font-size:0.78rem">${fmtAge(lastJob.started_at)}</span>`
         : `<span style="color:#9ca3af;font-size:0.78rem">never</span>`;
       const isRunning = lastJob?.status === "running";
       const syncBtn = isRunning
@@ -1383,7 +1395,7 @@ function renderDashboardPage(
         : `<button class="btn btn-sm btn-primary" onclick="syncPkg('${esc(name)}')">Sync</button>`;
       const toggleBtn = `<button class="btn btn-sm btn-secondary" onclick="toggleEnabled('${esc(name)}',${enabled})">${enabled ? "Disable" : "Enable"}</button>`;
       return `<tr>
-        <td><a href="/admin/v1/packages/${esc(name)}">${displayName}</a></td>
+        <td><a href="${withBase(basePath, "/admin/v1/packages/")}${esc(name)}">${displayName}</a></td>
         <td>${vendor}</td>
         <td>${enabledBadge}</td>
         <td>${jobHtml}</td>
@@ -1414,9 +1426,9 @@ function renderDashboardPage(
     async function syncPkg(name) {
       document.getElementById('msg').textContent = 'Starting sync for ' + name + '…';
       try {
-        const r = await fetch('/admin/v1/sync/' + name, {method: 'POST'});
+        const r = await fetch('${withBase(basePath, "/admin/v1/sync/")}' + name, {method: 'POST'});
         const d = await r.json();
-        if (r.ok) window.location = '/admin/v1/jobs/' + d.job_id;
+        if (r.ok) window.location = '${withBase(basePath, "/admin/v1/jobs/")}' + d.job_id;
         else document.getElementById('msg').textContent = 'Error: ' + (d.error || r.status);
       } catch(e) { document.getElementById('msg').textContent = 'Error: ' + e.message; }
     }
@@ -1424,15 +1436,15 @@ function renderDashboardPage(
       if (!confirm('Sync all packages?')) return;
       document.getElementById('msg').textContent = 'Starting sync for all packages…';
       try {
-        const r = await fetch('/admin/v1/sync', {method: 'POST'});
-        if (r.ok) window.location = '/admin/v1/jobs';
+        const r = await fetch('${withBase(basePath, "/admin/v1/sync")}', {method: 'POST'});
+        if (r.ok) window.location = '${withBase(basePath, "/admin/v1/jobs")}';
         else { const d = await r.json(); document.getElementById('msg').textContent = 'Error: ' + (d.error || r.status); }
       } catch(e) { document.getElementById('msg').textContent = 'Error: ' + e.message; }
     }
     async function toggleEnabled(name, enabled) {
       if (!confirm((enabled ? 'Disable' : 'Enable') + ' ' + name + '?')) return;
       try {
-        const r = await fetch('/admin/v1/packages/' + name, {
+        const r = await fetch('${withBase(basePath, "/admin/v1/packages/")}' + name, {
           method: 'PATCH', headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({enabled: !enabled})
         });
@@ -1442,7 +1454,7 @@ function renderDashboardPage(
     }
     ${hasRunning ? "setInterval(() => location.reload(), 5000);" : ""}`;
 
-  return renderSharedHtml("Packages", "packages", body, scripts);
+  return renderSharedHtml("Packages", "packages", body, basePath, scripts);
 }
 
 function renderPackageDetailPage(
@@ -1451,6 +1463,7 @@ function renderPackageDetailPage(
   lastJob: SyncJobRow | null,
   groups: GroupDetail[],
   vulnBadges: { tracked: boolean; byVersion: Record<string, VersionVulnBadge> },
+  basePath: string,
 ): string {
   const esc = escHtml;
   const displayName = pkg ? esc(pkg.display_name) : esc(packageName);
@@ -1459,7 +1472,7 @@ function renderPackageDetailPage(
   const isRunning = lastJob?.status === "running";
 
   const lastSyncHtml = lastJob
-    ? `Last sync: <a href="/admin/v1/jobs/${lastJob.id}"><span class="badge badge-${esc(lastJob.status)}">${esc(lastJob.status)}</span></a> ${fmtAge(lastJob.started_at)}`
+    ? `Last sync: <a href="${withBase(basePath, "/admin/v1/jobs/")}${lastJob.id}"><span class="badge badge-${esc(lastJob.status)}">${esc(lastJob.status)}</span></a> ${fmtAge(lastJob.started_at)}`
     : "Never synced";
 
   const headerHtml = `
@@ -1485,10 +1498,10 @@ function renderPackageDetailPage(
   const groupsHtml =
     groups.length === 0
       ? `<p class="empty">No versions synced yet. Run a sync to discover versions.</p>`
-      : groups.map((g) => renderGroupSection(packageName, g, vulnBadges)).join("");
+      : groups.map((g) => renderGroupSection(packageName, g, vulnBadges, basePath)).join("");
 
   const body = `
-    <div style="margin-bottom:16px"><a href="/admin/v1/">← Back to packages</a></div>
+    <div style="margin-bottom:16px"><a href="${withBase(basePath, "/admin/v1/")}">← Back to packages</a></div>
     ${headerHtml}
     <div id="msg"></div>
     ${groupsHtml}`;
@@ -1497,16 +1510,16 @@ function renderPackageDetailPage(
     async function syncPkg(name) {
       document.getElementById('msg').textContent = 'Starting sync…';
       try {
-        const r = await fetch('/admin/v1/sync/' + name, {method: 'POST'});
+        const r = await fetch('${withBase(basePath, "/admin/v1/sync/")}' + name, {method: 'POST'});
         const d = await r.json();
-        if (r.ok) window.location = '/admin/v1/jobs/' + d.job_id;
+        if (r.ok) window.location = '${withBase(basePath, "/admin/v1/jobs/")}' + d.job_id;
         else document.getElementById('msg').textContent = 'Error: ' + (d.error || r.status);
       } catch(e) { document.getElementById('msg').textContent = 'Error: ' + e.message; }
     }
     async function toggleEnabled(name, enabled) {
       if (!confirm((enabled ? 'Disable' : 'Enable') + ' ' + name + '?')) return;
       try {
-        const r = await fetch('/admin/v1/packages/' + name, {
+        const r = await fetch('${withBase(basePath, "/admin/v1/packages/")}' + name, {
           method: 'PATCH', headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({enabled: !enabled})
         });
@@ -1518,7 +1531,7 @@ function renderPackageDetailPage(
       if (!confirm('Delete all versions in group "' + group + '" for ' + pkg + '? This cannot be undone.')) return;
       document.getElementById('msg').textContent = 'Deleting group ' + group + '…';
       try {
-        const r = await fetch('/admin/v1/groups/' + pkg + '/' + encodeURIComponent(group), {method: 'DELETE'});
+        const r = await fetch('${withBase(basePath, "/admin/v1/groups/")}' + pkg + '/' + encodeURIComponent(group), {method: 'DELETE'});
         if (r.ok) location.reload();
         else { const d = await r.json(); alert('Error: ' + (d.error || r.status)); }
       } catch(e) { alert('Error: ' + e.message); }
@@ -1527,7 +1540,7 @@ function renderPackageDetailPage(
       if (!confirm('Delete ALL versions and artifacts for ' + pkg + '? This cannot be undone.')) return;
       document.getElementById('msg').textContent = 'Deleting all data for ' + pkg + '…';
       try {
-        const r = await fetch('/admin/v1/groups/' + pkg, {method: 'DELETE'});
+        const r = await fetch('${withBase(basePath, "/admin/v1/groups/")}' + pkg, {method: 'DELETE'});
         if (r.ok) location.reload();
         else { const d = await r.json(); alert('Error: ' + (d.error || r.status)); }
       } catch(e) { alert('Error: ' + e.message); }
@@ -1536,24 +1549,25 @@ function renderPackageDetailPage(
       if (!confirm('Re-download ' + version + ' ' + os + '/' + arch + '?')) return;
       document.getElementById('msg').textContent = 'Re-downloading…';
       try {
-        const r = await fetch('/admin/v1/redownload/' + pkg + '/' + version + '/' + os + '/' + arch, {method: 'POST'});
+        const r = await fetch('${withBase(basePath, "/admin/v1/redownload/")}' + pkg + '/' + version + '/' + os + '/' + arch, {method: 'POST'});
         const d = await r.json();
         if (r.ok) { document.getElementById('msg').textContent = 'Done: ' + d.status; location.reload(); }
         else { alert('Error: ' + (d.error || r.status)); }
       } catch(e) { alert('Error: ' + e.message); }
     }`;
 
-  return renderSharedHtml(displayName, "packages", body, scripts);
+  return renderSharedHtml(displayName, "packages", body, basePath, scripts);
 }
 
-function vulnsHref(packageName: string, version: string): string {
-  return `/admin/v1/vulns?product=${encodeURIComponent(packageName)}&version=${encodeURIComponent(version)}`;
+function vulnsHref(packageName: string, version: string, basePath: string): string {
+  return `${withBase(basePath, "/admin/v1/vulns")}?product=${encodeURIComponent(packageName)}&version=${encodeURIComponent(version)}`;
 }
 
 function renderVulnBadge(
   packageName: string,
   version: string,
   counts: VersionVulnBadge | undefined,
+  basePath: string,
 ): string {
   if (!counts || counts.total === 0) return "";
   const cls =
@@ -1563,7 +1577,7 @@ function renderVulnBadge(
         ? "badge-vuln-high"
         : "badge-vuln-none";
   const label = counts.kev > 0 ? `${counts.total} CVE · KEV` : `${counts.total} CVE`;
-  return ` <a href="${vulnsHref(packageName, version)}" title="${counts.critical} critical, ${counts.high} high${counts.kev > 0 ? `, ${counts.kev} KEV` : ""}" class="badge ${cls}" style="text-decoration:none">${label}</a>`;
+  return ` <a href="${vulnsHref(packageName, version, basePath)}" title="${counts.critical} critical, ${counts.high} high${counts.kev > 0 ? `, ${counts.kev} KEV` : ""}" class="badge ${cls}" style="text-decoration:none">${label}</a>`;
 }
 
 /**
@@ -1574,15 +1588,17 @@ function renderBlockedBadge(
   packageName: string,
   version: string,
   badge: VersionVulnBadge | undefined,
+  basePath: string,
 ): string {
   if (!badge?.blocked) return "";
-  return ` <a href="${vulnsHref(packageName, version)}" title="Downloads return 403 — critical CVE affects this version" class="badge badge-blocked" style="text-decoration:none">blocked</a>`;
+  return ` <a href="${vulnsHref(packageName, version, basePath)}" title="Downloads return 403 — critical CVE affects this version" class="badge badge-blocked" style="text-decoration:none">blocked</a>`;
 }
 
 function renderGroupSection(
   packageName: string,
   g: GroupDetail,
   vulnBadges: { tracked: boolean; byVersion: Record<string, VersionVulnBadge> },
+  basePath: string,
 ): string {
   const esc = escHtml;
   const hasLts = g.versions.some((v) => v.isLts);
@@ -1640,8 +1656,8 @@ function renderGroupSection(
         })
         .join("");
       const badges =
-        renderBlockedBadge(packageName, v.version, vuln) +
-        renderVulnBadge(packageName, v.version, vuln);
+        renderBlockedBadge(packageName, v.version, vuln, basePath) +
+        renderVulnBadge(packageName, v.version, vuln, basePath);
       return `<tr><td><strong>${esc(v.version)}</strong>${badges}</td>${cells}</tr>`;
     })
     .join("");
@@ -1658,6 +1674,7 @@ function renderGroupSection(
 function renderJobsListPage(
   jobs: SyncJobRow[],
   paging: { page: number; pageSize: number; packageName?: string; status?: string },
+  basePath: string,
 ): string {
   const esc = escHtml;
   const rows = jobs
@@ -1666,8 +1683,8 @@ function renderJobsListPage(
       const failedCell =
         j.artifacts_failed > 0 ? `<span class="status-failed">${j.artifacts_failed}</span>` : "0";
       return `<tr>
-        <td><a href="/admin/v1/jobs/${j.id}">#${j.id}</a></td>
-        <td><a href="/admin/v1/packages/${esc(j.package_name)}">${esc(j.package_name)}</a></td>
+        <td><a href="${withBase(basePath, "/admin/v1/jobs/")}${j.id}">#${j.id}</a></td>
+        <td><a href="${withBase(basePath, "/admin/v1/packages/")}${esc(j.package_name)}">${esc(j.package_name)}</a></td>
         <td>${esc(j.trigger_type)}</td>
         <td><span class="badge badge-${esc(j.status)}">${esc(j.status)}</span></td>
         <td>${j.versions_found}</td>
@@ -1699,7 +1716,7 @@ function renderJobsListPage(
     const params = new URLSearchParams({ page: String(p) });
     if (paging.packageName) params.set("package", paging.packageName);
     if (paging.status) params.set("status", paging.status);
-    return `/admin/v1/jobs?${params.toString()}`;
+    return `${withBase(basePath, "/admin/v1/jobs")}?${params.toString()}`;
   };
   const pager =
     jobs.length === 0 && paging.page === 1
@@ -1727,7 +1744,7 @@ function renderJobsListPage(
     .pager-state { color:#6b7280; font-size:0.8rem; }
   </style>`;
 
-  return renderSharedHtml("Sync Jobs", "jobs", body, scripts, styleTail);
+  return renderSharedHtml("Sync Jobs", "jobs", body, basePath, scripts, styleTail);
 }
 
 export function escHtml(str: string): string {

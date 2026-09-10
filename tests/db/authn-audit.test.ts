@@ -49,7 +49,7 @@ describe("authentication audit persistence", () => {
       auditLogin: createAuthAuditSinks(pool).auditLogin,
     };
     const router = express.Router();
-    installOperatorAuth(router, runtime);
+    installOperatorAuth(router, runtime, "");
     const app = express().set("trust proxy", 1).use(express.json()).use("/admin/v1", router);
 
     const attempts = [

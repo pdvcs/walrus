@@ -5,7 +5,7 @@ import { createPackagesRouter, PackagesRouteDeps } from "../../src/routes/packag
 
 function createTestApp(deps: Parameters<typeof createPackagesRouter>[0]): express.Express {
   const app = express();
-  app.use("/api/v1/packages", createPackagesRouter(deps));
+  app.use("/api/v1/packages", createPackagesRouter(deps, ""));
   return app;
 }
 

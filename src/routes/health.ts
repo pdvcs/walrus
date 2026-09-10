@@ -16,6 +16,7 @@ export interface ApplicationStatusDetails {
   degradations: unknown[];
   egress: unknown;
   upstream_credentials: unknown;
+  base_path: string;
 }
 
 export interface HealthRouterDeps {

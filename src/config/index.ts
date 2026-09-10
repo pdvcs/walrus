@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isValidBasePath } from "../common/base-path.js";
 
 const configSchema = z.object({
   PORT: z.coerce.number().default(8080),
@@ -166,6 +167,21 @@ const configSchema = z.object({
   // rules: an unmatched URL is logged at warn and attempted anyway.
   // strict: an unmatched URL is refused rather than attempted direct.
   WALRUS_EGRESS_MODE: z.enum(["direct", "rules", "strict"]).default("direct"),
+  // Adopter deployment: serve the whole app under a path prefix of the adopter's own domain
+  // instead of only at root (e.g. /foo instead of /), so a team fronting walrus with their own
+  // path-routed gateway doesn't need a dedicated sub-domain. Default "" is today's behaviour —
+  // mounted at root, nothing prefixed. Priority is a single path segment (/foo); a multi-segment
+  // prefix (/corp/walrus) is accepted for free by the same pattern, not a design goal on its own.
+  // Validated at boot, same fail-fast contract as WALRUS_EGRESS_RULES: no leading-slash means a
+  // typo like "foo" would silently produce paths such as "foobar" rather than "/foo/bar".
+  WALRUS_BASE_PATH: z
+    .string()
+    .default("")
+    .refine(isValidBasePath, {
+      message:
+        "WALRUS_BASE_PATH must be empty, or a path made of /-separated segments of letters, " +
+        "digits, '-' and '_' (e.g. /foo or /corp/walrus) with no trailing slash",
+    }),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;

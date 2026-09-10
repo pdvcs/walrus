@@ -25,7 +25,7 @@ actually checks — which is a different question:
 | `✓`  | Declared with a type, enum, or range. A malformed value fails the parse and stops the process.                                                                                                       |
 | `~`  | Declared, but as a free-form string (`z.string()`): it is read and defaulted, and **every** value passes. A typo here is silent. The two credentials additionally normalise an empty value to unset. |
 
-26 variables are `✓` and 16 are `~`. Several `~` entries do have real constraints — a session
+27 variables are `✓` and 16 are `~`. Several `~` entries do have real constraints — a session
 key must be 32 bytes, `GCS_BUCKET` must exist when the backend is GCS — but those are enforced
 by hand after the parse, not by Zod; see [Boot-time validation](#boot-time-validation).
 
@@ -138,6 +138,15 @@ opening up — so scheduled ingestion will not run locally without them.
 | `WALRUS_EGRESS_MODE`  | ✓   | `direct`                   | `direct` (configured rules still apply to matching URLs), `rules` (an unmatched URL is logged at warn and attempted anyway), or `strict` (an unmatched URL is refused). |
 
 See [enterprise.md](enterprise.md) for the rule file format and the full design.
+
+## Adopter deployment: base path
+
+| Variable           | Zod | Default | Description                                                                                                                                                                                                                                                                                                                                                  |
+| ------------------ | --- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `WALRUS_BASE_PATH` | ✓   | `""`    | Serves the whole app under this path prefix instead of `/` — e.g. `/foo` rather than `/`. Priority is a single path segment; a multi-segment prefix (`/corp/walrus`) is accepted by the same pattern. Must start with `/`, no trailing slash, not `/` alone, no doubled `/` — enforced by a schema `refine`. Default is empty, today's unprefixed behaviour. |
+
+See [enterprise.md](enterprise.md#serving-under-a-path-prefix-walrus_base_path) for what gets
+prefixed and the `/health` carve-out for Cloud Run's own probe.
 
 ## Boot-time validation
 
