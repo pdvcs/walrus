@@ -120,6 +120,23 @@ after the 300-second startup grace period; operational degradations remain avail
 under `/app/status` and do not fail the deployment health check. PostgreSQL probe results,
 including failures, are cached for 60 seconds across all three paths.
 
+### Prometheus metrics
+
+```bash
+curl http://localhost:8080/metrics
+# With WALRUS_BASE_PATH=/local-walrus:
+curl http://localhost:8080/local-walrus/metrics
+```
+
+The Prometheus endpoint includes low-cardinality HTTP request counts and latency/size histograms,
+download throughput, Node.js/process metrics, PostgreSQL pool state, and database-derived catalogue,
+sync, and vulnerability health. Scrapes return the last successful database snapshot immediately
+and trigger a refresh in the background when it is at least 60 seconds old. Before the first
+successful refresh, `walrus_metrics_collection_age_seconds{collector="database"}` is `+Inf`. A
+failed refresh retains the previous database series; check their age together with
+`walrus_database_available` and `walrus_metrics_collection_success{collector="database"}`. The
+endpoint follows `WALRUS_BASE_PATH` and, unlike the Cloud Run health probe, has no unprefixed alias.
+
 ### API documentation and OpenAPI spec
 
 Two endpoints are always available once the server is running:

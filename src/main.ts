@@ -109,6 +109,8 @@ import { createAuthAuditSinks } from "./authn/audit.js";
 import { loadEgressConfig, getEgressState } from "./common/egress-rules.js";
 import { withBase } from "./common/base-path.js";
 import { getUpstreamCredentialStatus, warnIfNvdKeyless } from "./common/upstream-credentials.js";
+import { createMetricsRuntime } from "./metrics/index.js";
+import { getMetricsSnapshot, type MetricsSnapshot } from "./services/metrics-snapshot.js";
 
 const storage = createStorageBackend();
 const vulnSyncImpls = createVulnSyncImpls(pool);
@@ -259,6 +261,11 @@ export interface CreateAppOptions {
   };
   /** Defaults to config.WALRUS_BASE_PATH; overridable so tests don't need to touch env/config. */
   basePath?: string;
+  metrics?: {
+    loadSnapshot?: () => Promise<MetricsSnapshot>;
+    now?: () => Date;
+    databaseCacheMs?: number;
+  };
 }
 
 export const SECURITY_TIER_MOUNTS = [
@@ -277,16 +284,28 @@ export interface SecurityTierMount {
 export function createApp(options: CreateAppOptions = {}): express.Express {
   const basePath = options.basePath ?? config.WALRUS_BASE_PATH;
   const app = express();
+  const metrics = createMetricsRuntime({
+    pool,
+    version: packageMetadata.version,
+    basePath,
+    loadSnapshot:
+      options.metrics?.loadSnapshot ??
+      (() => getMetricsSnapshot(pool, { autoBackfillEnabled: config.VULN_AUTO_BACKFILL })),
+    now: options.metrics?.now,
+    databaseCacheMs: options.metrics?.databaseCacheMs,
+  });
   // Cloud Run terminates TLS and supplies the original scheme/client address through one
   // trusted proxy hop. Origin checks and login throttling must see those external values.
   app.set("trust proxy", 1);
   app.set("json spaces", 2);
+  app.use(metrics.middleware);
   app.use(express.json());
   // The admin UI posts plain HTML forms. Without this, every form field is silently dropped and
   // the handler sees an empty body — which turned "Backfill this package" into an unscoped
   // backfill of all 11 packages, since a missing `package` means "everything" (WAL-71).
   app.use(express.urlencoded({ extended: false }));
   const publicRouter = express.Router();
+  publicRouter.use("/metrics", metrics.router);
   publicRouter.use("/static", express.static(path.join(process.cwd(), "dist/public")));
 
   const operatorRouter = express.Router();
@@ -648,6 +667,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     { ...SECURITY_TIER_MOUNTS[2], router: publicRouter },
   ];
   app.locals.securityTierMounts = securityTierMounts;
+  app.locals.metrics = metrics;
   const topRouter = express.Router();
   for (const mount of securityTierMounts) topRouter.use(mount.prefix, mount.router);
   app.use(basePath || "/", topRouter);

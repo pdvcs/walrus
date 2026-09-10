@@ -151,6 +151,7 @@ export function renderLandingPage(version: string, basePath: string): string {
       <div class="link-grid">
         <a class="link-card" href="${withBase(basePath, "/health")}"><strong>Deployment health</strong><span>Minimal availability contract for the deployment platform.</span></a>
         <a class="link-card" href="${withBase(basePath, "/app/status")}"><strong>Application status</strong><span>Operational details, dependency state, and degradations.</span></a>
+        <a class="link-card" href="${withBase(basePath, "/metrics")}"><strong>Prometheus metrics</strong><span>Request, runtime, catalogue, sync, and vulnerability time series.</span></a>
         <a class="link-card" href="${withBase(basePath, "/openapi.json")}"><strong>OpenAPI specification</strong><span>Machine-readable public API contract.</span></a>
       </div>
     </section>`,

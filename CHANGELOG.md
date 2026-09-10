@@ -6,6 +6,14 @@ All notable changes to Walrus are documented here.
 
 Add CVE-lookup capability into walrus, keyed to walrus packages. Also add an admin UI and the ability to cross-reference CVEs against the package versions walrus has cached (i.e. which of the versions walrus is actually serving carry known CVEs).
 
+**Observability**
+
+- Added a base-path-aware `GET /metrics` Prometheus endpoint with API request rate, status, latency,
+  and payload-size metrics; download throughput; Node.js/process and PostgreSQL pool metrics; and
+  durable catalogue, sync, and vulnerability state sourced from PostgreSQL. Database snapshots are
+  refreshed asynchronously behind a 60-second cache. Scrapes return the last successful database
+  snapshot immediately, report its age, and remain available during a database outage.
+
 **Wave 1 — Foundation**
 
 - **WAL-2** Migration `0002_vulnerabilities.sql` (`pg_trgm`, `cves`, `cve_affects` with

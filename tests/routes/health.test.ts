@@ -152,6 +152,7 @@ describe("application health and status", () => {
     expect(spec.paths["/health"].get.responses).toHaveProperty("503");
     expect(spec.paths["/app/health"].get.responses).toHaveProperty("503");
     expect(spec.paths["/app/status"].get.responses).toHaveProperty("503");
+    expect(spec.paths["/metrics"].get.responses["200"].content).toHaveProperty("text/plain");
     expect(spec.components.schemas.HealthResponse.required).toEqual([
       "isAvailable",
       "gitUrl",

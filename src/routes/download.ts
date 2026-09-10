@@ -59,6 +59,9 @@ export function createDownloadRouter(deps: DownloadRouteDeps): Router {
         res.status(404).json({ error: "Version not found" });
         return;
       }
+      // Metrics may label a completed transfer only after the untrusted path parameter has
+      // resolved to a real catalogue package. This keeps the Prometheus label set bounded.
+      res.locals.metricsPackage = versionRow.package_name;
 
       const affects = await deps.listAffectsForPackage(packageName);
       const blocking = findBlockingCveMatch(versionRow.version, affects);
@@ -133,6 +136,7 @@ export function createDownloadRouter(deps: DownloadRouteDeps): Router {
           "Content-Range",
           `bytes ${requested.start}-${requested.end}/${artifact.file_size}`,
         );
+        res.locals.metricsDownloadBytes = requested.end - requested.start + 1;
         res.status(206);
         const range = { start: requested.start, end: requested.end };
         await streamToResponse(deps.streamFromStorage(artifact.gcs_path, range), res);
@@ -153,6 +157,7 @@ export function createDownloadRouter(deps: DownloadRouteDeps): Router {
       }
 
       setEntityHeaders(res, artifact);
+      if (artifact.file_size !== null) res.locals.metricsDownloadBytes = artifact.file_size;
       res.status(200);
       await streamToResponse(deps.streamFromStorage(artifact.gcs_path), res);
     } catch (err) {

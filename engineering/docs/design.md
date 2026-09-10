@@ -188,6 +188,21 @@ hops. In the future, this will allow us to add identity-awareness (authn and aut
 - Enable/disable a package
 - View sync job history
 
+### Metrics API (`/metrics`) — Prometheus scraping
+
+The public Prometheus endpoint exports low-cardinality HTTP RED and payload-size metrics,
+download throughput, standard Node.js process metrics, PostgreSQL pool pressure, and durable
+catalogue/sync/vulnerability state. A private per-application registry prevents duplicate metric
+registration in tests. Scrapes render the last successful database snapshot without waiting for
+PostgreSQL, then trigger a stale refresh in the background. Snapshots are fresh for 60 seconds and
+concurrent refreshes coalesce; failed refreshes retain the last values and explicitly mark the
+database collector unhealthy. Snapshot age is exported so consumers can reject stale values.
+
+HTTP route labels use Express templates, never concrete URLs or query parameters. Package labels
+are added only after a request resolves to a package in the catalogue. Durable job metrics read
+PostgreSQL because package and vulnerability work may execute in separate Cloud Run Jobs that are
+not themselves scrape targets.
+
 ### Internal API (`/internal/`) — called by Cloud Scheduler
 
 Machine routes verify the Google-signed OIDC bearer token, exact configured audience, expiry, and

@@ -93,6 +93,7 @@ describe("WALRUS_BASE_PATH (createApp basePath override)", () => {
       "/api",
       "/health",
       "/app/status",
+      "/metrics",
       "/openapi.json",
       "/admin/v1/login?return_to=",
     ]) {

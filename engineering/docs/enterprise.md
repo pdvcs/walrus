@@ -202,6 +202,10 @@ base path is configured. The effective value is also visible at runtime as `base
 `GET /app/status`, the same way `GET /admin/v1/egress` and the `egress` status field answer "is
 this working" for the egress rewriting feature above.
 
+`GET /metrics` follows the ordinary application mount: it becomes `GET /foo/metrics` in the
+example above and is not also exposed unprefixed. Only deployment health receives the Cloud Run
+probe exception.
+
 **Out of scope here:** how traffic actually reaches walrus under that path — a reverse proxy,
 gateway path rule, or other mechanism in front of the deployment — is the adopter's own topology
 and isn't documented or designed by this feature. Whatever fronts walrus does need to forward the

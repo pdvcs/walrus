@@ -19,6 +19,7 @@ import {
   CveDetailResponseSchema,
   PackageVulnsResponseSchema,
   LandingPageResponseSchema,
+  MetricsResponseSchema,
 } from "./schemas.js";
 
 const registry = new OpenAPIRegistry();
@@ -417,6 +418,21 @@ registry.registerPath({
     503: {
       description: "Application is wholly unavailable after its startup grace period",
       content: { "application/json": { schema: StatusResponseSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/metrics",
+  summary: "Prometheus metrics",
+  operationId: "metrics",
+  tags: ["Utility"],
+  responses: {
+    200: {
+      description:
+        "Prometheus text exposition with immediate access to the last background-refreshed database snapshot",
+      content: { "text/plain": { schema: MetricsResponseSchema } },
     },
   },
 });

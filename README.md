@@ -42,7 +42,7 @@ You can also validate interactively online at the `/admin/v1/validate` endpoint.
 | [engineering/docs/enterprise.md](engineering/docs/enterprise.md)         | Running walrus behind a corporate proxy: egress rewrite rules, reserved config namespace |
 | [examples/](examples/)                                                   | Client code samples — resumable ranged download with progress                            |
 
-API docs are served at `http://localhost:8080/api` (human-readable) and `http://localhost:8080/openapi.json` (OpenAPI 3.1).
+API docs are served at `http://localhost:8080/api` (human-readable) and `http://localhost:8080/openapi.json` (OpenAPI 3.1). Prometheus metrics are available at `http://localhost:8080/metrics` (under `WALRUS_BASE_PATH` when configured).
 
 ## Vulnerability intelligence
 

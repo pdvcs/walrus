@@ -27,6 +27,7 @@
     "@asteasolutions/zod-to-openapi": "^8.4.3",
     "@google-cloud/storage": "^7.16.0",
     "@iarna/toml": "^2.2.5",
+    "@prometheus-io/client": "^0.16.1",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "fast-xml-parser": "^5.5.5",

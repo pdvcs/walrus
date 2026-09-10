@@ -7,6 +7,7 @@ extendZodWithOpenApi(z);
 
 export const ErrorSchema = z.object({ error: z.string() }).openapi("Error");
 export const LandingPageResponseSchema = z.string().openapi("LandingPageResponse");
+export const MetricsResponseSchema = z.string().openapi("MetricsResponse");
 
 // ── GET /api/v1/packages/ ─────────────────────────────────────────────────────
 

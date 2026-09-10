@@ -736,10 +736,34 @@ every active suppression stands until revoked). A suppression is a deliberate, a
 rather than a fault, so it is reported in its own right and is never a degradation. The admin nav
 badges every page while `active_count` is non-zero.
 
+### GET /metrics
+
+Prometheus text exposition for API traffic, downloads, the Node.js process, PostgreSQL pool,
+catalogue/artifact state, package syncs, vulnerability ingestion, backfills, blocked versions, and
+CVE suppressions. The endpoint is public and deliberately excludes raw request paths, package
+versions, CVE IDs, URLs, error messages, and user identities from labels.
+
+When `WALRUS_BASE_PATH` is set, metrics are served only at
+`<WALRUS_BASE_PATH>/metrics`; there is no unprefixed alias. The endpoint returns the last successful
+database snapshot without waiting for PostgreSQL and starts a background refresh when that snapshot
+is at least 60 seconds old. `walrus_metrics_collection_age_seconds{collector="database"}` reports
+its age and is `+Inf` before the first successful refresh. If a refresh fails, the prior database
+values remain available, with `walrus_database_available 0` and
+`walrus_metrics_collection_success{collector="database"} 0`.
+
+```yaml
+scrape_configs:
+  - job_name: walrus
+    metrics_path: /metrics # or /<base-path>/metrics
+    static_configs:
+      - targets: ["walrus.example.com"]
+```
+
 ### GET /
 
 Public HTML landing page showing the running Walrus package version and links to operator login,
-API documentation, deployment health, detailed application status, and the OpenAPI contract.
+API documentation, deployment health, detailed application status, Prometheus metrics, and the
+OpenAPI contract.
 
 ### GET /api
 
