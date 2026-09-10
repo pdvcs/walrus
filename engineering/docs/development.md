@@ -406,18 +406,10 @@ Discovery strategy selection order (use the highest that applies):
 
 ---
 
-## Environment variable reference
+## Environment variables
 
-| Variable               | Dev default                                     | Description                                   |
-| ---------------------- | ----------------------------------------------- | --------------------------------------------- |
-| `DATABASE_URL`         | `postgresql://walrus:...@localhost:5432/walrus` | Postgres connection string                    |
-| `STORAGE_BACKEND`      | `local`                                         | `local` or `gcs`                              |
-| `LOCAL_STORAGE_PATH`   | `./data/artifacts`                              | Root dir for local storage backend            |
-| `PORT`                 | `8080`                                          | HTTP listen port                              |
-| `NODE_ENV`             | `development`                                   | `development` or `production`                 |
-| `LOG_LEVEL`            | `debug`                                         | `debug`, `info`, `warn`, `error`              |
-| `SYNC_CONCURRENCY`     | `4`                                             | Parallel package syncs                        |
-| `DOWNLOAD_CONCURRENCY` | `2`                                             | Parallel downloads per package                |
-| `DEFAULT_RETENTION`    | `3`                                             | Default `versions_per_group` if unset in TOML |
-| `GCS_BUCKET`           | —                                               | GCS bucket name (prod only)                   |
-| `GCP_PROJECT`          | —                                               | GCP project ID (prod only)                    |
+Every variable, its default, and what fails at boot if it is wrong:
+[environment-variables.md](environment-variables.md).
+
+For local development the ones that matter are `DATABASE_URL`, `STORAGE_BACKEND=local`,
+`LOCAL_STORAGE_PATH`, `PORT`, and `LOG_LEVEL` — see `.env.local`.

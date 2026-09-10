@@ -1,0 +1,189 @@
+# Reference: Environment variables
+
+Every variable an operator can set, what it defaults to, and what breaks if it is wrong.
+
+## How configuration is loaded
+
+`src/config/index.ts` declares a Zod schema and parses `process.env` against it **once, at
+import time**. A value that fails the schema prints the parse error and exits the process with
+status 1 — walrus does not start on invalid configuration, in any environment.
+
+Two consequences worth knowing:
+
+- Everything is a string in the environment. Numeric variables are coerced (`z.coerce.number()`),
+  so `PORT=abc` is a startup failure, not a silent zero.
+- Defaults live in that schema, not in Terraform or the Dockerfile. Anything below marked `—`
+  is genuinely optional and unset by default.
+
+`GITHUB_TOKEN` is the one exception: it is read directly from `process.env` in
+`src/discovery/github-releases.ts`, not through the schema. Secrets arrive from Secret Manager,
+whose ordinary failure mode is "no version mounted", so absence is a runtime state to report
+rather than a schema violation to reject at boot.
+
+## Process and logging
+
+| Variable    | Default       | Description                                                                                                                                                                                    |
+| ----------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PORT`      | `8080`        | HTTP listen port.                                                                                                                                                                              |
+| `NODE_ENV`  | `development` | `development`, `production`, or `test`. Gates several production-only requirements listed under [Boot-time validation](#boot-time-validation), and selects pretty log output in `development`. |
+| `LOG_LEVEL` | `info`        | `trace`, `debug`, `info`, `warn`, `error`, or `fatal`.                                                                                                                                         |
+
+## Database
+
+| Variable       | Default | Description                                                                                                                                                                                                              |
+| -------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `DATABASE_URL` | —       | Postgres connection string.                                                                                                                                                                                              |
+| `DB_POOL_MAX`  | `5`     | Connections this process may hold. Half of a budget: every workload multiplies it and Cloud SQL's `max_connections` divides it. Terraform sets it per workload in `cloudrun.tf`; read that arithmetic before raising it. |
+
+## Storage
+
+| Variable                 | Default            | Description                                                                                                                                                                                                                                                   |
+| ------------------------ | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `STORAGE_BACKEND`        | `local`            | `local` or `gcs`.                                                                                                                                                                                                                                             |
+| `LOCAL_STORAGE_PATH`     | `./data/artifacts` | Root directory for the `local` backend.                                                                                                                                                                                                                       |
+| `GCS_BUCKET`             | —                  | Bucket name. Required when `STORAGE_BACKEND=gcs`.                                                                                                                                                                                                             |
+| `GCS_UPLOAD_CHUNK_BYTES` | `8388608` (8 MiB)  | Resumable-upload chunk size. Setting it at all is what makes an upload resumable rather than a single unresumable PUT. Costs one buffer of this size per concurrent upload, so resident cost is this × `DOWNLOAD_CONCURRENCY`. Must be a multiple of 256 KiB. |
+
+## GCP
+
+| Variable            | Default       | Description                                                                      |
+| ------------------- | ------------- | -------------------------------------------------------------------------------- |
+| `GCP_PROJECT`       | —             | Project ID. Required, with the two below, to launch the backfill job.            |
+| `GCP_REGION`        | `us-central1` | Region used to address Cloud Run jobs.                                           |
+| `VULN_BACKFILL_JOB` | —             | Name of the Cloud Run job the API service executes for per-package CVE backfill. |
+
+## Sync and downloads
+
+| Variable                | Default             | Description                                                                                                                                                                                                                                                  |
+| ----------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `SYNC_CONCURRENCY`      | `4`                 | Packages synced in parallel.                                                                                                                                                                                                                                 |
+| `DOWNLOAD_CONCURRENCY`  | `2`                 | Parallel downloads per package.                                                                                                                                                                                                                              |
+| `TRANSFORM_CONCURRENCY` | `2`                 | Artifacts being transformed at once, governed separately from downloads: a download is IO-bound, a transform is CPU-bound and holds live compression state. Do not raise `DOWNLOAD_CONCURRENCY` to compensate — they limit different resources. Minimum `1`. |
+| `DOWNLOAD_MAX_ATTEMPTS` | `2`                 | Whole-transfer attempts per artifact. The GCS half retries its own chunks, so an outer restart only re-covers the upstream fetch. Minimum `1`.                                                                                                               |
+| `RANGE_REQUIRED_BYTES`  | `1000000000` (1 GB) | Above this size an unranged GET is refused rather than served. Cloud Run caps a request at 3600s, so a client sustaining 2 Mbps gets about 900 MB before the request is killed with no resumable partial.                                                    |
+| `SUGGESTED_CHUNK_BYTES` | `33554432` (32 MiB) | Chunk size advertised in that refusal body. A hint only; the server never constrains the client's actual chunk size.                                                                                                                                         |
+
+## Discovery HTTP
+
+| Variable                             | Default | Description                                |
+| ------------------------------------ | ------- | ------------------------------------------ |
+| `DISCOVERY_HTTP_TIMEOUT_MS`          | `15000` | Per-request timeout for version discovery. |
+| `DISCOVERY_HTTP_MAX_RETRIES`         | `2`     | Retries per discovery request.             |
+| `DISCOVERY_HTTP_RETRY_BASE_DELAY_MS` | `300`   | Base delay for discovery backoff.          |
+
+## Vulnerability ingestion
+
+| Variable                       | Default  | Description                                                                                                                                                                                                                                                                                                           |
+| ------------------------------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VULN_HTTP_TIMEOUT_MS`         | `30000`  | Request timeout for the KEV and OSV feeds. Bounds the whole exchange, body read included.                                                                                                                                                                                                                             |
+| `VULN_NVD_HTTP_TIMEOUT_MS`     | `120000` | The same, for NVD only, which needs far longer: its pages are megabytes and a 30s ceiling demanded roughly 350 KB/s sustained. Sized against Cloud Scheduler's 1800s attempt deadline — the client makes up to 6 attempts per page, so a fully failing page costs about 790s. Redo that arithmetic before raising it. |
+| `VULN_NVD_PAGE_SIZE`           | `100`    | Rows per page on the steady-state incremental walk. Not the 2000-row API maximum: a recent `lastMod` window holds a few hundred CVEs at roughly 14.5 KB each, so 2000 rows would deliver the whole window as one 10–13 MB body on a single deadline.                                                                  |
+| `VULN_NVD_BOOTSTRAP_PAGE_SIZE` | `2000`   | Rows per page for the fresh-database bootstrap only. The opposite trade, because the workload inverts: that 119-day window is roughly 372,000 CVEs averaging 2.1 KB, so request count binds rather than body size. At 100 rows the rate-limit floor alone exceeds the attempt deadline.                               |
+| `VULN_AUTO_BACKFILL`           | `true`   | `true` or `false` literally — not any truthy string, because `Boolean("false")` is `true` and that would make the off switch a no-op. Disables only the autostart sweep; scheduled NVD/KEV/OSV/CVSS ingestion is unaffected.                                                                                          |
+
+## Upstream credentials
+
+Both are optional. walrus runs without them, which is what makes local development and CI
+possible with nothing provisioned. In a deployment their absence is almost always an oversight,
+and the only symptom is reduced throughput.
+
+| Variable       | Default | Description                                                                                                                                                                                                                                                                                          |
+| -------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NVD_API_KEY`  | —       | Raises NVD's published rate limit from 5 to 50 requests per 30s (walrus uses 4 and 45, staying one under). Unset, ingestion runs roughly ten times longer and is far likelier to be cut off by the scheduler's attempt deadline — and a cut-off run ingests nothing.                                 |
+| `GITHUB_TOKEN` | —       | Raises api.github.com from 60 to 5,000 requests per hour. Unset, discovery for `github-releases` packages is throttled per IP, and Cloud Run's egress address is shared with other tenants, so that budget can be exhausted by strangers. A fine-grained PAT with public read-only access is enough. |
+
+Neither is reported as a degradation: a standing configuration choice is not machinery that has
+stopped, so it would leave the admin banner permanently visible. Instead each process logs a
+warning once at startup, and `GET /app/status` reports `upstream_credentials.nvd_api_key` as its
+own object. See `src/common/upstream-credentials.ts`.
+
+## Authentication and sessions
+
+| Variable                         | Default              | Description                                                                                                                                                                                                                       |
+| -------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WALRUS_AUTHN_PROVIDER`          | `password`           | `password`, or a path to a provider module (relative to the working directory, or absolute). Any other value is a startup error.                                                                                                  |
+| `WALRUS_ADMIN_PASSWORD`          | —                    | Password for the built-in `password` provider.                                                                                                                                                                                    |
+| `WALRUS_ADMINS_FILE`             | `config/admins.toml` | Path to the admin roster.                                                                                                                                                                                                         |
+| `WALRUS_ADMIN_MATCH`             | `fold`               | How roster identities are matched: `fold` (case-insensitive) or `exact`.                                                                                                                                                          |
+| `WALRUS_SESSION_SECRET`          | —                    | HMAC key for session cookies. At least 32 bytes. Unset outside production, a random process-local key is generated and warned about — which is unsuitable for more than one instance, since sessions will not verify across them. |
+| `WALRUS_SESSION_SECRET_PREVIOUS` | —                    | Previous key, accepted during rotation. At least 32 bytes.                                                                                                                                                                        |
+| `WALRUS_SESSION_TTL_SECONDS`     | `7200` (2h)          | Idle session lifetime.                                                                                                                                                                                                            |
+| `WALRUS_SESSION_MAX_SECONDS`     | `28800` (8h)         | Absolute session lifetime. Must be at least the TTL.                                                                                                                                                                              |
+| `WALRUS_SESSION_EPOCH`           | `0`                  | Increment to invalidate every existing session at once.                                                                                                                                                                           |
+
+## Machine (internal) authentication
+
+| Variable                          | Default | Description                                     |
+| --------------------------------- | ------- | ----------------------------------------------- |
+| `WALRUS_INTERNAL_AUDIENCE`        | —       | Expected OIDC audience on `/internal` requests. |
+| `WALRUS_INTERNAL_SERVICE_ACCOUNT` | —       | Service account allowed to call `/internal`.    |
+
+Both are required in production. Unset outside it, `/internal` fails closed with 503 rather than
+opening up — so scheduled ingestion will not run locally without them.
+
+## Enterprise egress
+
+| Variable              | Default                    | Description                                                                                                                                                             |
+| --------------------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WALRUS_EGRESS_RULES` | `config/egress-rules.toml` | Path to the rewrite-rule file. Ships empty, so this changes nothing out of the box. Rule _contents_ are validated separately at boot; this only names the file.         |
+| `WALRUS_EGRESS_MODE`  | `direct`                   | `direct` (configured rules still apply to matching URLs), `rules` (an unmatched URL is logged at warn and attempted anyway), or `strict` (an unmatched URL is refused). |
+
+See [enterprise.md](enterprise.md) for the rule file format and the full design.
+
+## Boot-time validation
+
+These fail startup rather than degrading, so they surface immediately rather than at first use:
+
+| Condition                                                              | Result                      |
+| ---------------------------------------------------------------------- | --------------------------- |
+| Any variable failing its schema type or range                          | Parse error printed, exit 1 |
+| `GCS_UPLOAD_CHUNK_BYTES` not a multiple of 256 KiB                     | Parse error, exit 1         |
+| `STORAGE_BACKEND=gcs` with no `GCS_BUCKET`                             | Throws at storage init      |
+| `WALRUS_SESSION_SECRET` shorter than 32 bytes                          | Throws                      |
+| `WALRUS_SESSION_SECRET` unset while `NODE_ENV=production`              | Throws                      |
+| `WALRUS_SESSION_SECRET_PREVIOUS` shorter than 32 bytes                 | Throws                      |
+| `WALRUS_SESSION_MAX_SECONDS` below `WALRUS_SESSION_TTL_SECONDS`        | Throws                      |
+| Internal audience or service account unset while `NODE_ENV=production` | Throws                      |
+| `WALRUS_AUTHN_PROVIDER` naming neither `password` nor a module         | Throws                      |
+
+## Which workload reads what
+
+The three deployed workloads run the same image with different entrypoints, and Terraform mounts
+credentials only where they are used:
+
+| Workload               | Entrypoint                           | Credentials mounted           |
+| ---------------------- | ------------------------------------ | ----------------------------- |
+| `walrus-api`           | the HTTP server                      | `NVD_API_KEY`                 |
+| `walrus-sync`          | `dist/commands/sync-job.js`          | `NVD_API_KEY`, `GITHUB_TOKEN` |
+| `walrus-vuln-backfill` | `dist/commands/vuln-backfill-job.js` | `NVD_API_KEY`                 |
+
+`GITHUB_TOKEN` is mounted **only** into `walrus-sync`, because that is where scheduled package
+discovery runs. Its absence from the API service is correct, not drift — which is why
+`/app/status` does not report on it.
+
+## Deploy-time variables
+
+These are read by `infra/scripts/deploy.sh` and Terraform, not by the application. They are
+listed here because an operator sets them in the same shell.
+
+| Variable                         | Required | Description                                                                     |
+| -------------------------------- | -------- | ------------------------------------------------------------------------------- |
+| `TF_VAR_project_id`              | yes      | GCP project ID.                                                                 |
+| `TF_VAR_gcs_bucket_name`         | yes      | Artifact bucket name.                                                           |
+| `TF_VAR_cloud_sql_db_password`   | yes      | Cloud SQL `walrus` user password.                                               |
+| `TERRAFORM_STATE_BUCKET`         | yes      | GCS bucket holding Terraform state.                                             |
+| `WALRUS_SESSION_SECRET`          | yes      | At least 32 bytes; written to Secret Manager.                                   |
+| `WALRUS_ADMIN_PASSWORD`          | yes      | At least 16 bytes; written to Secret Manager.                                   |
+| `NVD_API_KEY`                    | no       | Written to Secret Manager when set. `deploy.sh` prints a notice when it is not. |
+| `GITHUB_TOKEN`                   | no       | As above.                                                                       |
+| `WALRUS_SESSION_SECRET_PREVIOUS` | no       | Old session key, during rotation.                                               |
+
+Secret names in Secret Manager are `walrus-nvd-api-key`, `walrus-github-token`,
+`walrus-session-secret`, `walrus-session-secret-previous`, `walrus-admin-password`, and
+`walrus-database-url`.
+
+## Declared but unused
+
+| Variable            | Note                                                                                                                                                                                                                        |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DEFAULT_RETENTION` | Parsed by the config schema and read nowhere. Retention comes from each package's TOML, where `retention.versions_per_group` has its own default of 3 (`src/types/package-config.ts`). Setting this variable has no effect. |
