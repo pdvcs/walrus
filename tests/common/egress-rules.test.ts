@@ -192,6 +192,40 @@ describe("matchEgressRule", () => {
     expect(matchEgressRule("https://x/z", "artifact", rules)).toBeNull();
   });
 
+  it("preserves the query string when replacing a matched prefix", () => {
+    const rules = [
+      { match: "https://github.com/", rewrite: "https://artifactory.corp/github-remote/" },
+    ];
+    const result = matchEgressRule(
+      "https://github.com/repos/foo/bar/releases?per_page=100&page=2",
+      "discovery",
+      rules,
+    );
+    expect(result?.rewrittenUrl).toBe(
+      "https://artifactory.corp/github-remote/repos/foo/bar/releases?per_page=100&page=2",
+    );
+  });
+
+  it("preserves the query string through the WAL-113 catch-all wrap", () => {
+    const rules = [{ match: "https://", rewrite: "https://my-rewriting-proxy/url/https://" }];
+    const result = matchEgressRule(
+      "https://services.nvd.nist.gov/rest/json/cves/2.0?lastModStartDate=2026-01-01&resultsPerPage=200",
+      "vuln-feed",
+      rules,
+    );
+    expect(result?.rewrittenUrl).toBe(
+      "https://my-rewriting-proxy/url/https://services.nvd.nist.gov/rest/json/cves/2.0?lastModStartDate=2026-01-01&resultsPerPage=200",
+    );
+  });
+
+  it("treats a query string in `match` as a literal prefix, not a parsed component", () => {
+    const rules = [
+      { match: "https://api.example.test/v1?", rewrite: "https://egress.corp/v1-query/?" },
+    ];
+    const result = matchEgressRule("https://api.example.test/v1?foo=bar", "artifact", rules);
+    expect(result?.rewrittenUrl).toBe("https://egress.corp/v1-query/?foo=bar");
+  });
+
   it("exposes matched headers, defaulting to an empty object", () => {
     const withHeaders = [
       { match: "https://x/", rewrite: "https://y/", headers: { Authorization: "Bearer t" } },
