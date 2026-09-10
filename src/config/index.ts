@@ -66,6 +66,43 @@ const configSchema = z.object({
   DISCOVERY_HTTP_MAX_RETRIES: z.coerce.number().default(2),
   DISCOVERY_HTTP_RETRY_BASE_DELAY_MS: z.coerce.number().default(300),
   VULN_HTTP_TIMEOUT_MS: z.coerce.number().positive().default(30000),
+  // NVD gets its own, far longer budget. `AbortSignal.timeout` bounds the whole exchange
+  // including the body read, and an NVD lastMod page runs ~14 KB per CVE typically and ~43 KB
+  // at the worst measured -- so a page is megabytes, and 30s demanded ~350 KB/s sustained.
+  // Three 14:20Z ticks lost that race (7, 9 and 10 Sep 2026): every attempt aborted mid-body
+  // while TTFB stayed under a second, so the handshake was never the problem.
+  //
+  // 120s is sized against Cloud Scheduler's 1800s attempt deadline, which is the binding limit
+  // (Cloud Run allows 3600s). The client makes at most 6 attempts per page, so a page that
+  // fails every one of them costs 6 x 120s plus ~69s of backoff -- ~790s, leaving room for the
+  // rest of the walk. Raising this without redoing that arithmetic is how a retry budget starts
+  // outliving the deadline that contains it.
+  //
+  // Deliberately NOT folded into VULN_HTTP_TIMEOUT_MS above: KEV is one modest file and OSV is
+  // a per-package loop with no retries, so a longer ceiling buys them nothing and multiplies
+  // the cost of a hang across every package in the run.
+  VULN_NVD_HTTP_TIMEOUT_MS: z.coerce.number().positive().default(120000),
+  // Rows per NVD page request on the steady-state incremental walk. Not 2000 (the API maximum)
+  // because rows are a poor proxy for bytes, and the two NVD workloads sit at opposite ends of
+  // that: a *recent* lastMod window is CVEs NVD is actively re-enriching, measured at ~14.5 KB
+  // each and ~43 KB at the worst. A 2-hourly window holds only a few hundred of them, so at
+  // 2000 rows the whole window arrives as one 10-13 MB body on a single deadline -- which is
+  // precisely what failed on 7, 9 and 10 Sep 2026. 100 rows holds a page near 1.5 MB and costs
+  // ~10 requests for a 900-CVE window, nothing against the 45/30s keyed rate limit.
+  //
+  // Do NOT reuse this for the bootstrap; see VULN_NVD_BOOTSTRAP_PAGE_SIZE below for why.
+  VULN_NVD_PAGE_SIZE: z.coerce.number().int().positive().default(100),
+  // Rows per page for the fresh-DB bootstrap only -- the 119-day lookback taken when there is
+  // no cursor yet. The inverse trade of the knob above, because the workload inverts: that
+  // window is ~372,000 CVEs averaging ~2.1 KB (the bulk of NVD is old, sparse records, not the
+  // fat recently-re-enriched ones), so bytes are cheap and request COUNT is the binding cost.
+  //
+  // At 2000 rows that is 187 requests, a ~125s rate-limit floor and ~4.1 MB pages -- the real
+  // bootstraps on 30 Aug 2026 took 437s and 493s end to end, against Cloud Scheduler's 1800s
+  // deadline. At 100 rows it would be 3,723 requests and a ~2,482s floor: over the deadline
+  // before a single byte of payload, and permanently so, since the cursor is claimed only after
+  // the whole window completes (see incrementalNvdSync) -- every retry would restart from zero.
+  VULN_NVD_BOOTSTRAP_PAGE_SIZE: z.coerce.number().int().positive().default(2000),
   // Connections this process may hold. Explicit because it is half of a budget: every workload
   // multiplies it, and Cloud SQL's max_connections is the divisor. pg's own default is 10, which
   // on a db-f1-micro (max_connections ~25) means three instances exhaust the database and a

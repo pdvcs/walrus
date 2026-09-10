@@ -16,6 +16,7 @@ import {
 } from "../../db/queries/cves.js";
 import { loadCpeLookup, listDistinctCpePairs } from "../../db/queries/package-aliases.js";
 import { getSyncCursor, setSyncState } from "../../db/queries/vuln-sync-state.js";
+import { config } from "../../config/index.js";
 
 export interface IngestCounts {
   cves: number;
@@ -393,10 +394,15 @@ export async function incrementalNvdSync(
     // modified again *during* the walk -- and the next run's overlapping window re-fetches it.
     const ingested = new Set<string>();
 
-    for await (const page of nvd.cvePages({
-      lastModStartDate: start.toISOString(),
-      lastModEndDate: end.toISOString(),
-    })) {
+    for await (const page of nvd.cvePages(
+      {
+        lastModStartDate: start.toISOString(),
+        lastModEndDate: end.toISOString(),
+      },
+      // The bootstrap pages differently on purpose -- opposite workload, opposite trade.
+      // See VULN_NVD_BOOTSTRAP_PAGE_SIZE.
+      cursor ? {} : { resultsPerPage: config.VULN_NVD_BOOTSTRAP_PAGE_SIZE },
+    )) {
       modified += page.vulnerabilities.length;
       const fresh = page.vulnerabilities.filter((item) => !ingested.has(item.cve.id));
       // Per page, so the id list stays bounded: a single query carrying every id in a

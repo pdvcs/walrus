@@ -8,6 +8,7 @@ import { runMigrations } from "../../../src/db/client.js";
 import { upsertPackage } from "../../../src/db/queries/packages.js";
 import { reconcilePackageVuln } from "../../../src/db/queries/package-aliases.js";
 import { getSyncCursor } from "../../../src/db/queries/vuln-sync-state.js";
+import { config } from "../../../src/config/index.js";
 import { NvdClient, type NvdCveItem } from "../../../src/vuln/sync/nvd-client.js";
 import {
   backfillNvd,
@@ -454,6 +455,41 @@ describe("nvd-sync ingestion", () => {
         }),
       );
     }
+
+    it("pages the fresh-DB bootstrap and the incremental walk differently", async () => {
+      // The two NVD workloads invert each other and so must their page sizes. The bootstrap's
+      // 119-day window is ~372k CVEs averaging ~2.1 KB: request count is the binding cost, and
+      // paging it at the incremental size puts the rate-limit floor alone (~2,482s) past Cloud
+      // Scheduler's 1800s deadline -- permanently, since the cursor is claimed only at the end.
+      // A recent window is the opposite: a few hundred CVEs at ~14.5 KB and up, where one big
+      // page is the 10-13 MB body that aborted mid-stream on 7, 9 and 10 Sep 2026.
+      const sizes: string[] = [];
+      server.use(
+        http.get("https://services.nvd.nist.gov/rest/json/cves/2.0", ({ request }) => {
+          const url = new URL(request.url);
+          sizes.push(url.searchParams.get("resultsPerPage") ?? "");
+          return HttpResponse.json({
+            resultsPerPage: 0,
+            startIndex: 0,
+            totalResults: 0,
+            vulnerabilities: [],
+          });
+        }),
+      );
+
+      const nvd = new NvdClient({ apiKey: "k", backoffBaseMs: 1 }, async () => {});
+
+      // No cursor yet -> bootstrap.
+      await incrementalNvdSync(pool, nvd, {});
+      expect(sizes[0]).toBe(String(config.VULN_NVD_BOOTSTRAP_PAGE_SIZE));
+
+      // Cursor now set by the run above -> steady-state paging.
+      expect(await getSyncCursor(pool, "nvd-cve")).not.toBeNull();
+      sizes.length = 0;
+      await incrementalNvdSync(pool, nvd, {});
+      expect(sizes[0]).toBe(String(config.VULN_NVD_PAGE_SIZE));
+      expect(config.VULN_NVD_BOOTSTRAP_PAGE_SIZE).toBeGreaterThan(config.VULN_NVD_PAGE_SIZE);
+    });
 
     it("advances the cursor on success", async () => {
       mockPages(notepadFixture);

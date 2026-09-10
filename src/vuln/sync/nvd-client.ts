@@ -58,6 +58,8 @@ export interface NvdClientOptions {
   backoffBaseMs?: number;
   maxRetries?: number;
   requestTimeoutMs?: number;
+  /** Rows per page request. Defaults to config.VULN_NVD_PAGE_SIZE; see the note there. */
+  resultsPerPage?: number;
   logger?: { info: (msg: string) => void; warn: (msg: string) => void };
 }
 
@@ -107,6 +109,7 @@ export class NvdClient {
   private readonly backoffBaseMs: number;
   private readonly maxRetries: number;
   private readonly requestTimeoutMs: number;
+  private readonly pageSize: number;
   private readonly limiter: RateLimiter;
   private readonly log: NonNullable<NvdClientOptions["logger"]>;
   private readonly sleepFn: (ms: number) => Promise<void>;
@@ -118,7 +121,8 @@ export class NvdClient {
     this.fetchFn = opts.fetchFn ?? createEgressFetch({ purpose: "vuln-feed" });
     this.backoffBaseMs = opts.backoffBaseMs ?? 2000;
     this.maxRetries = opts.maxRetries ?? 5;
-    this.requestTimeoutMs = opts.requestTimeoutMs ?? config.VULN_HTTP_TIMEOUT_MS;
+    this.requestTimeoutMs = opts.requestTimeoutMs ?? config.VULN_NVD_HTTP_TIMEOUT_MS;
+    this.pageSize = opts.resultsPerPage ?? config.VULN_NVD_PAGE_SIZE;
     this.log = opts.logger ?? { info: () => {}, warn: () => {} };
     this.sleepFn = sleepFn ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.limiter = new RateLimiter(this.apiKey ? 45 : 4, 30_000, this.sleepFn);
@@ -145,11 +149,16 @@ export class NvdClient {
         // the promise unawaited would settle it outside the try and restore the bug.
         //
         // `AbortSignal.timeout` bounds the whole exchange, not the handshake: NVD sends headers
-        // promptly and then streams, so on a 2000-row page the deadline lands here. While this
+        // promptly and then streams, so on a full page the deadline lands here. While this
         // line sat outside the try, that abort rejected `res.json()` with a raw TimeoutError
         // that bypassed the retry loop entirely — five lost ingestion windows between 31 Aug
         // and 4 Sep 2026, every one of them recovered by Cloud Scheduler's retry rather than by
         // `maxRetries`, which was never once consulted.
+        //
+        // Retrying here is necessary but was never sufficient: on 7, 9 and 10 Sep 2026 the same
+        // abort took every attempt, because each one re-fetched the same oversized body against
+        // the same deadline. That is what VULN_NVD_PAGE_SIZE and VULN_NVD_HTTP_TIMEOUT_MS
+        // address -- retries only help once a single attempt can plausibly succeed.
         if (res.ok) return await res.json();
       } catch (err) {
         transportErr = err;
@@ -185,9 +194,18 @@ export class NvdClient {
     }
   }
 
-  /** Page through /cves/2.0, yielding each page. */
-  async *cvePages(params: Record<string, string>): AsyncGenerator<NvdCvePage> {
-    const pageSize = 2000;
+  /**
+   * Page through /cves/2.0, yielding each page.
+   *
+   * `opts.resultsPerPage` overrides the client default for one walk. The fresh-DB bootstrap
+   * needs it: its window is two orders of magnitude larger but its records are far smaller,
+   * so it wants few big pages where the incremental walk wants many small ones.
+   */
+  async *cvePages(
+    params: Record<string, string>,
+    opts: { resultsPerPage?: number } = {},
+  ): AsyncGenerator<NvdCvePage> {
+    const pageSize = opts.resultsPerPage ?? this.pageSize;
     let startIndex = 0;
     for (;;) {
       const qs = new URLSearchParams({

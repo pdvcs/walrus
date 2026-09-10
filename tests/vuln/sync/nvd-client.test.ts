@@ -4,6 +4,7 @@ import { http, HttpResponse } from "msw";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { NvdClient, type NvdCveItem, type NvdCvePage } from "../../../src/vuln/sync/nvd-client.js";
+import { config } from "../../../src/config/index.js";
 
 const noSleep = async (_ms: number) => {};
 
@@ -85,7 +86,13 @@ describe("NvdClient (injected fetch)", () => {
       .mockResolvedValueOnce(jsonResponse(page(2000, 4500, 2000)))
       .mockResolvedValueOnce(jsonResponse(page(4000, 4500, 500)));
 
-    const client = new NvdClient({ apiKey: "k", fetchFn, backoffBaseMs: 1 }, noSleep);
+    // Page size is stated here rather than inherited from config: this test is about walking
+    // startIndex to exhaustion, and tying it to the deployed default made it a second, silent
+    // assertion about that default's value.
+    const client = new NvdClient(
+      { apiKey: "k", fetchFn, backoffBaseMs: 1, resultsPerPage: 2000 },
+      noSleep,
+    );
     const items = await collect(client, "cpe:2.3:a:x:y");
 
     expect(items).toHaveLength(4500);
@@ -93,6 +100,17 @@ describe("NvdClient (injected fetch)", () => {
     const secondUrl = String(fetchFn.mock.calls[1][0]);
     expect(secondUrl).toContain("startIndex=2000");
     expect(secondUrl).toContain("resultsPerPage=2000");
+  });
+
+  it("requests the configured page size by default", async () => {
+    const fetchFn = vi.fn().mockResolvedValueOnce(jsonResponse(page(0, 1, 1)));
+
+    const client = new NvdClient({ apiKey: "k", fetchFn, backoffBaseMs: 1 }, noSleep);
+    await collect(client, "cpe:2.3:a:x:y");
+
+    expect(String(fetchFn.mock.calls[0][0])).toContain(
+      `resultsPerPage=${config.VULN_NVD_PAGE_SIZE}`,
+    );
   });
 
   it("backs off on 503 then succeeds", async () => {
@@ -151,7 +169,7 @@ describe("NvdClient (injected fetch)", () => {
   // ── Body-phase transport failures (WAL-111) ─────────────────────────────────
   //
   // `AbortSignal.timeout` bounds the entire exchange, not just the handshake. NVD answers a
-  // 2000-row page quickly and then streams it, so the deadline lands during the body read far
+  // full page quickly and then streams it, so the deadline lands during the body read far
   // more often than during the handshake — that is the failure that reached production on 2 and
   // 4 September 2026, five times in the preceding week. The test above covers the handshake and
   // passed throughout.
