@@ -2,6 +2,9 @@
 
 Deploys Walrus to GCP using Cloud Run, Cloud SQL (Postgres 18), GCS, and Cloud Scheduler.
 
+> New to the estate? See [`gcp-architecture.html`](./gcp-architecture.html) for a diagram and
+> plain-language map of every resource, job and cadence.
+
 ## Architecture
 
 - **Cloud Run** (min 1 instance) — Walrus API
