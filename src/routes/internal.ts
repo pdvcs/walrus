@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { log } from "../common/log.js";
 import { SyncAlreadyRunningError, SyncRunResult } from "../services/sync-service.js";
 import {
   isVulnSyncSource,
@@ -48,6 +49,31 @@ export interface InternalRouteDeps {
     deferred: string[];
     failed: Array<{ package: string; error: string }>;
   }>;
+}
+
+/**
+ * Write an audit row without letting its failure escape to the caller.
+ *
+ * The trail is recorded *after* the work it describes, so a rejection here means the sync or
+ * preview has already happened — letting it propagate reports completed work as failed. On
+ * 2026-09-11 that is exactly what happened: a Cloud SQL connection dropped mid-request, the kev
+ * sync itself succeeded, and the audit insert's `Connection terminated unexpectedly` became a
+ * 500. Cloud Scheduler recorded the invocation as failed and two ERROR alert policies fired,
+ * for a transient that had cost nothing.
+ *
+ * Logged rather than silently dropped: a missing audit row is worth seeing, just not worth
+ * failing a request over.
+ */
+async function recordAuditAction(
+  logAdminAction: InternalRouteDeps["logAdminAction"],
+  details: Record<string, unknown>,
+  subject?: string,
+): Promise<void> {
+  try {
+    await logAdminAction?.(details, subject);
+  } catch (err) {
+    log.error({ err, action: details.action }, "failed to record vuln-sync admin action");
+  }
 }
 
 export function createInternalRouter(deps: InternalRouteDeps): Router {
@@ -118,7 +144,8 @@ export function createInternalRouter(deps: InternalRouteDeps): Router {
           }
           throw err;
         }
-        await deps.logAdminAction?.(
+        await recordAuditAction(
+          deps.logAdminAction,
           {
             action: "vuln-sync-preview",
             source,
@@ -135,12 +162,14 @@ export function createInternalRouter(deps: InternalRouteDeps): Router {
 
       // After the write, not before: this records what actually changed rather than what a
       // run was projected to change. Failing to record history must not fail the sync that
-      // already succeeded, so it is logged and swallowed.
+      // already succeeded, so both this and the audit row below are swallowed — the audit
+      // failure via recordAuditAction, which logs it.
       const availability = outcomes.some((o) => o.ok)
         ? await deps.recordAvailability?.(source).catch(() => undefined)
         : undefined;
 
-      await deps.logAdminAction?.(
+      await recordAuditAction(
+        deps.logAdminAction,
         {
           action: "vuln-sync",
           source,

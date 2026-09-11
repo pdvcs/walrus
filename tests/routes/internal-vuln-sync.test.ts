@@ -310,6 +310,67 @@ describe("POST /internal/vuln-sync/:source auditing", () => {
   });
 
   /**
+   * Regression, 2026-09-11. A Cloud SQL connection dropped mid-request, so the audit insert
+   * rejected with `Connection terminated unexpectedly` *after* the kev sync had already
+   * succeeded. The rejection escaped the handler, Express answered 500, Cloud Scheduler recorded
+   * the tick as failed, and two ERROR alert policies fired — for work that had completed and
+   * that `/app/status` never recorded as a failure at all.
+   *
+   * The audit row is a record of the run, not a part of it.
+   *
+   * Mutation check: restore the bare `await deps.logAdminAction?.(...)` in `internal.ts` and the
+   * first two cases below fail with 500.
+   */
+  it("answers 200 when the sync succeeded but recording the audit row failed", async () => {
+    const app = appWith({ kev: async () => ({ flagged: 2 }) }, undefined, async () => {
+      throw new Error("Connection terminated unexpectedly");
+    });
+
+    const res = await request(app).post("/internal/vuln-sync/kev");
+
+    expect(res.status).toBe(200);
+    expect(res.body.outcomes[0]).toMatchObject({ source: "kev", ok: true });
+  });
+
+  it("answers 200 when a cvss preview succeeded but its audit row failed", async () => {
+    const app = appWith(
+      {
+        cvssPreview: async () => ({ candidates: 0, fetched: 0, proposals: [], newly_blocked: [] }),
+      },
+      undefined,
+      async () => {
+        throw new Error("Connection terminated unexpectedly");
+      },
+    );
+
+    const res = await request(app).post("/internal/vuln-sync/cvss").send({ dry_run: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body.dry_run).toBe(true);
+  });
+
+  it("still reports the sync's own failure when the audit row also failed", async () => {
+    // Swallowing the audit failure must not upgrade a failed run to a success. 502 is what tells
+    // Cloud Scheduler to retry, so losing it here would reintroduce WAL-108's lost run by
+    // another route.
+    const app = appWith(
+      {
+        nvd: async () => {
+          throw new Error("nvd upstream down");
+        },
+      },
+      undefined,
+      async () => {
+        throw new Error("Connection terminated unexpectedly");
+      },
+    );
+
+    const res = await request(app).post("/internal/vuln-sync/nvd");
+
+    expect(res.status).toBe(502);
+  });
+
+  /**
    * WAL-108. The status code is what Cloud Scheduler reads to decide whether a tick worked and
    * whether to retry it, so the matrix is load-bearing rather than cosmetic. `207` on a single
    * failed source meant the scheduler recorded success, never retried, and WAL-106's retry — added
