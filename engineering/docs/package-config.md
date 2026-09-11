@@ -361,14 +361,27 @@ release_date_path = "$.response.docs[0].timestamp"         # JSONPath → Unix m
 
 ### `directory-listing`
 
-**When to use:** Files are served from a browsable HTTP directory and there is no structured API. Use this only when no API exists.
+**When to use:** Versions are listed in a browsable HTTP directory and there is no structured API. This is a last-resort strategy — use it only when `github-releases`, `json-api` and `xml-api` do not apply.
+
+The strategy is **version-list-only**: `pattern` is applied to the whole response body, and its one capture group yields the version string. The matched link is never used as the artifact URL, so every `[[platforms]]` block must supply `url_template` (the schema rejects the config otherwise). This is what lets the version-history host and the download host differ, as they do for PostgreSQL.
 
 ```toml
 [discovery]
 type = "directory-listing"
-url = "https://example.com/downloads/"
-pattern = "mytool-\\d+\\.\\d+\\.\\d+-linux-amd64\\.tar\\.gz"  # regex matching filenames to consider
+url = "https://ftp.postgresql.org/pub/source/"
+# One capture group. Applied to the raw body, not to individual hrefs.
+pattern = "href=\"v(\\d+\\.\\d+)/\""
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "windows-x64"
+arch_upstream = "x64"
+extension = "zip"
+url_template = "https://get.enterprisedb.com/postgresql/postgresql-{version}-1-{os}-binaries.{ext}"
 ```
+
+`{version}` is the extracted version and `{os}`/`{arch}`/`{ext}` come from the platform's `os_upstream`/`arch_upstream`/`extension`, the same substitution as `json-api`. Generic `[versioning]` filtering (`min_version`, `version_group_extract`) applies normally. No release date is available, so `releasedAt` is undefined and cooling-off anchors to when walrus first saw the version.
 
 ---
 
@@ -892,29 +905,29 @@ Validating packages/walrus-mytool.toml...
 
 ## Quick reference: which fields are required vs optional
 
-| Field                                | Required?   | Notes                                                                                             |
-| ------------------------------------ | ----------- | ------------------------------------------------------------------------------------------------- |
-| `name`                               | Yes         |                                                                                                   |
-| `display_name`                       | Yes         |                                                                                                   |
-| `vendor`                             | Yes         |                                                                                                   |
-| `website`                            | No          |                                                                                                   |
-| `description`                        | No          |                                                                                                   |
-| `[discovery]`                        | Yes         | All sub-fields depend on `type`                                                                   |
-| `[versioning].type`                  | Yes         |                                                                                                   |
-| `[versioning].version_group_extract` | Yes         |                                                                                                   |
-| `[versioning].min_version`           | No          | Recommended for packages with many EOL releases                                                   |
-| `[versioning].lts_support`           | No          | Default: `false`                                                                                  |
-| `[retention].versions_per_group`     | No          | Default: `3`                                                                                      |
-| `[retention].groups_to_keep`         | No          | Default: unlimited                                                                                |
-| `[retention].cooling_off_days`       | No          | Default: no cooling-off period                                                                    |
-| `[checksum]`                         | No          | Omit only when `file_checksum_field` provides the checksum inline                                 |
-| `[[platforms]]`                      | Yes         | At least one block required                                                                       |
-| `[[platforms]].filename_template`    | Conditional | Required if not using `url_template` or inline json-api                                           |
-| `[[platforms]].url_template`         | Conditional | Required in string-list files inline mode; alternative to `filename_template` elsewhere           |
-| `[[platforms]].name_must_contain`    | No          | Extra filter when OS/arch matching isn't selective enough                                         |
-| `[[platforms]].transform`            | No          | Serve a converted archive — see `[platforms.transform]` above; `gitwindows` is the worked example |
-| `[discovery].release_date_field`     | No          | Field on each release object holding the upstream release date (cooling-off anchor)               |
-| `[discovery].release_lts_field`      | No          | Inline json-api only: field on each release whose truthy string value marks it as LTS             |
+| Field                                | Required?   | Notes                                                                                                             |
+| ------------------------------------ | ----------- | ----------------------------------------------------------------------------------------------------------------- |
+| `name`                               | Yes         |                                                                                                                   |
+| `display_name`                       | Yes         |                                                                                                                   |
+| `vendor`                             | Yes         |                                                                                                                   |
+| `website`                            | No          |                                                                                                                   |
+| `description`                        | No          |                                                                                                                   |
+| `[discovery]`                        | Yes         | All sub-fields depend on `type`                                                                                   |
+| `[versioning].type`                  | Yes         |                                                                                                                   |
+| `[versioning].version_group_extract` | Yes         |                                                                                                                   |
+| `[versioning].min_version`           | No          | Recommended for packages with many EOL releases                                                                   |
+| `[versioning].lts_support`           | No          | Default: `false`                                                                                                  |
+| `[retention].versions_per_group`     | No          | Default: `3`                                                                                                      |
+| `[retention].groups_to_keep`         | No          | Default: unlimited                                                                                                |
+| `[retention].cooling_off_days`       | No          | Default: no cooling-off period                                                                                    |
+| `[checksum]`                         | No          | Omit only when `file_checksum_field` provides the checksum inline                                                 |
+| `[[platforms]]`                      | Yes         | At least one block required                                                                                       |
+| `[[platforms]].filename_template`    | Conditional | Required if not using `url_template` or inline json-api                                                           |
+| `[[platforms]].url_template`         | Conditional | Required with `directory-listing` and string-list files inline mode; alternative to `filename_template` elsewhere |
+| `[[platforms]].name_must_contain`    | No          | Extra filter when OS/arch matching isn't selective enough                                                         |
+| `[[platforms]].transform`            | No          | Serve a converted archive — see `[platforms.transform]` above; `gitwindows` is the worked example                 |
+| `[discovery].release_date_field`     | No          | Field on each release object holding the upstream release date (cooling-off anchor)                               |
+| `[discovery].release_lts_field`      | No          | Inline json-api only: field on each release whose truthy string value marks it as LTS                             |
 
 ---
 

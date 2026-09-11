@@ -292,9 +292,40 @@ Checksums use `[checksum] type = "separate-file"` with SHA1 (`.sha1` sidecar fil
 
 **Implementation:** `src/discovery/directory-listing.ts`
 
-**Packages:** none currently
+**Packages:** `postgresql`
 
-Last-resort strategy for servers that expose a browsable HTTP directory with no structured API. Fetches the listing page, extracts `href` values matching the configured `pattern` regex, and derives version strings from the filenames. Only use this when no structured API exists — the strategy is fragile to HTML changes.
+Last-resort strategy for a server that exposes a browsable HTTP directory and nothing structured. It is a **version-list-only** source: `pattern` (a regex with one capture group) is applied to the whole response body, and the first capture group yields a version string. The matched link is never treated as the artifact URL, which matters when the listing host and the download host are different services.
+
+PostgreSQL is the worked example. Its release history lives on `ftp.postgresql.org` (a plain Apache autoindex, the only full-history source), while its binaries are served from EnterpriseDB's CDN, which has no browsable listing of its own and no derivable version history. So discovery reads:
+
+```
+GET https://ftp.postgresql.org/pub/source/
+→ ... <a href="v18.6/">v18.6/</a> ...
+   pattern = 'href="v(\d+\.\d+)/"'   →  18.6
+```
+
+and each `[[platforms]]` block builds its own download URL:
+
+```toml
+[discovery]
+type = "directory-listing"
+url = "https://ftp.postgresql.org/pub/source/"
+pattern = "href=\"v(\\d+\\.\\d+)/\""
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "windows-x64"
+arch_upstream = "x64"
+extension = "zip"
+url_template = "https://get.enterprisedb.com/postgresql/postgresql-{version}-1-{os}-binaries.{ext}"
+```
+
+`{version}` is the extracted version (`18.6`), and `{os}`/`{arch}`/`{ext}` take the platform's `os_upstream`/`arch_upstream`/`extension`, the same substitution `json-api` and `xml-api` use. `filename_template` is honoured when present; otherwise the filename is the URL's tail.
+
+Every `[[platforms]]` block **must** carry `url_template` — the schema rejects a `directory-listing` config that omits it, because there is no href-as-artifact-URL fallback and no filename-construction mode. Generic `[versioning]` filtering (`min_version`, `version_group_extract`) applies to the extracted strings exactly as it does elsewhere, and versions are returned newest-first.
+
+No release date is parsed from a plain directory listing (Apache exposes a `Last-Modified` column, but reading it is out of scope), so `releasedAt` is left undefined and cooling-off anchors to `versions.discovered_at` through the existing date-less fallback path. Use this strategy only when no structured API exists: it is fragile to a change in the listing's markup.
 
 ---
 

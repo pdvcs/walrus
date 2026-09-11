@@ -140,7 +140,18 @@ const DiscoverySchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("directory-listing"),
     url: z.string(),
-    pattern: z.string(),
+    // Applied to the whole response body (not per-href): the first capture group yields a version
+    // string. The matched link is never treated as the artifact URL — see the strategy's docs.
+    pattern: z.string().refine(
+      (p) => {
+        try {
+          return new RegExp(p).exec("") !== undefined && /\((?!\?)/.test(p);
+        } catch {
+          return false;
+        }
+      },
+      { message: "pattern must be a valid regex containing a capture group" },
+    ),
   }),
   z.object({
     type: z.literal("xml-api"),
@@ -266,19 +277,37 @@ const VulnerabilitiesSchema = z.object({
 
 export type VulnerabilitiesConfig = z.infer<typeof VulnerabilitiesSchema>;
 
-export const PackageConfigSchema = z.object({
-  name: z.string().regex(/^[a-z][a-z0-9-]*$/, "Name must be lowercase alphanumeric with hyphens"),
-  display_name: z.string(),
-  vendor: z.string(),
-  website: z.string().optional(),
-  description: z.string().optional(),
-  discovery: DiscoverySchema,
-  versioning: VersioningSchema,
-  retention: RetentionSchema.default({ versions_per_group: 3 }),
-  checksum: ChecksumSchema.optional(),
-  platforms: z.array(PlatformSchema).min(1),
-  vulnerabilities: VulnerabilitiesSchema.optional(),
-});
+export const PackageConfigSchema = z
+  .object({
+    name: z.string().regex(/^[a-z][a-z0-9-]*$/, "Name must be lowercase alphanumeric with hyphens"),
+    display_name: z.string(),
+    vendor: z.string(),
+    website: z.string().optional(),
+    description: z.string().optional(),
+    discovery: DiscoverySchema,
+    versioning: VersioningSchema,
+    retention: RetentionSchema.default({ versions_per_group: 3 }),
+    checksum: ChecksumSchema.optional(),
+    platforms: z.array(PlatformSchema).min(1),
+    vulnerabilities: VulnerabilitiesSchema.optional(),
+  })
+  .superRefine((config, ctx) => {
+    // `directory-listing` is version-list-only: the listing host supplies version strings and the
+    // download host is a different service, so there is no href-as-artifact-URL fallback. A
+    // platform without `url_template` therefore cannot produce an artifact, and a config that
+    // omits one should fail validation rather than silently discover nothing.
+    if (config.discovery.type !== "directory-listing") return;
+    config.platforms.forEach((platform, index) => {
+      if (!platform.url_template) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["platforms", index, "url_template"],
+          message:
+            "directory-listing requires url_template on every [[platforms]] block: the listing supplies versions only, and the download host is separate",
+        });
+      }
+    });
+  });
 
 export type PackageConfig = z.infer<typeof PackageConfigSchema>;
 export type Platform = z.infer<typeof PlatformSchema>;

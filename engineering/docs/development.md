@@ -419,7 +419,7 @@ Discovery strategy selection order (use the highest that applies):
 1. `github-releases` — GitHub Releases API
 2. `json-api` — generic JSON API with JSONPath (two-step or inline)
 3. `xml-api` — XML metadata endpoint (e.g. Maven Central)
-4. `directory-listing` — filename pattern matching on a directory listing
+4. `directory-listing` — versions from a browsable HTTP directory, artifact URLs from each platform's `url_template`
 5. `rust-channel` — Rust TOML channel manifests (Rust only)
 6. `html-scrape` — regex extraction from HTML (last resort; not implemented yet)
 
