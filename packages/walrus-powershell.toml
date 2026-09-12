@@ -40,13 +40,24 @@ version_group_extract = "^(\\d+\\.\\d+)" # 7.4, 7.6, … — one group per LTS l
 # Digest floor: v7.4.11 (2025-06-24) is the oldest release whose assets carry a GitHub
 # per-asset digest, below which an artifact would be served unverified.
 min_version = "7.4.11"
-# Left false deliberately, even though every version this package serves IS an LTS release.
-# `is_lts` is metadata only — nothing in discovery or retention filters on it, so it would
-# not help enforce the LTS-only rule the tag_pattern already enforces. Setting it would
-# require lts_source = "explicit" with a hand-maintained lts_groups list that goes stale the
-# day 7.8 ships. Reading upstream's own LTSReleaseTag would need lts_source = "api" support
-# in the github-releases strategy, which does not exist yet (only json-api implements it).
-lts_support = false
+# The `is_lts` flag on each version is read from upstream's own declaration rather than
+# inferred from the tag_pattern above, so the two are independent and can be checked against
+# each other: tools/metadata.json publishes "LTSReleaseTag": ["v7.4.20", "v7.6.6"], naming the
+# current patch of each LTS line, and Microsoft updates it with every release.
+#
+# Division of labour worth keeping straight: tag_pattern decides WHICH versions walrus serves
+# (it is the only thing that can — nothing in discovery or retention filters on is_lts), while
+# this decides what each served version is LABELLED. Both point at the same lines today; if
+# they ever diverge, the label is the one that came from upstream.
+#
+# lts_api_shape = "tags" because LTSReleaseTag holds release tags, not version groups. Each
+# value is reduced to a group by the same tag_pattern + version_group_extract the discovery
+# loop uses, so "v7.6.6" becomes "7.6" and matches the group its versions are filed under.
+lts_support = true
+lts_source = "api"
+lts_api_url = "https://raw.githubusercontent.com/PowerShell/PowerShell/master/tools/metadata.json"
+lts_api_path = "$.LTSReleaseTag"
+lts_api_shape = "tags"
 
 [retention]
 # The last 2 versions of the newest LTS line. Note that a third is held transiently whenever
