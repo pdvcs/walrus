@@ -1,0 +1,70 @@
+name = "zoxide"
+display_name = "zoxide"
+vendor = "ajeetdsouza"
+website = "https://github.com/ajeetdsouza/zoxide"
+description = "Smarter cd command with frecency-ranked directory jumping"
+
+# GitHub Releases API capabilities:
+#   Release date: "published_at" field on each release (ISO 8601) — captured automatically
+#   Checksum:     per-asset "digest" field ("sha256:…") — configured below
+
+[discovery]
+type = "github-releases"
+repo = "ajeetdsouza/zoxide"
+include_prereleases = false
+tag_pattern = "^v(\\d+\\.\\d+\\.\\d+)$"
+
+[versioning]
+type = "semver"
+version_group_extract = "^(\\d+\\.\\d+)" # zoxide is pre-1.0; group by minor (0.9, 0.10, ...)
+# Digest floor: v0.9.9 (2026-01-31) is the oldest release whose assets carry a GitHub
+# per-asset digest. v0.9.8 and earlier have none, and would be served unverified.
+min_version = "0.9.9"
+lts_support = false
+
+[retention]
+versions_per_group = 2
+groups_to_keep = 2
+cooling_off_days = 21
+
+[checksum]
+type = "github-asset-digest"
+algorithm = "sha256"
+
+# Tags carry a "v" prefix that the asset filenames do not, so the template uses the captured
+# version directly.
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "pc-windows-msvc"
+arch_upstream = "x86_64"
+extension = "zip"
+filename_template = "zoxide-{version}-{arch}-{os}.{ext}"
+
+# musl is the only Linux build zoxide publishes — there is no gnu tarball to choose.
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "unknown-linux-musl"
+arch_upstream = "x86_64"
+extension = "tar.gz"
+filename_template = "zoxide-{version}-{arch}-{os}.{ext}"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "apple-darwin"
+arch_upstream = "aarch64"
+extension = "tar.gz"
+filename_template = "zoxide-{version}-{arch}-{os}.{ext}"
+
+[vulnerabilities]
+# No NVD CPE presence for zoxide (verified absent 2026-09-12: "ajeetdsouza:zoxide" and
+# "zoxide_project:zoxide" both return zero dictionary entries, and a keyword search for
+# "zoxide" returns nothing) — OSV-only tracking.
+# OSV crates.io "zoxide" has no advisories today; the crate name is verified correct
+# (repository github.com/ajeetdsouza/zoxide), so a future RustSec advisory lands here
+# without a config change.
+osv = { ecosystem = "crates.io", name = "zoxide" }
+aliases = ["zoxide", "z", "smarter cd"]
