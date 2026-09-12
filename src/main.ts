@@ -82,7 +82,12 @@ import {
   listPendingArtifacts,
   updateArtifactStatus,
 } from "./db/queries/artifacts.js";
-import { getRecentSyncJob, getJobWithArtifacts, listSyncJobs } from "./db/queries/sync-jobs.js";
+import {
+  getRecentSyncJob,
+  getJobWithArtifacts,
+  listSyncJobs,
+  updateSyncJob,
+} from "./db/queries/sync-jobs.js";
 import {
   createVulnBackfillJob,
   getActiveVulnBackfillJob,
@@ -91,6 +96,7 @@ import {
   updateVulnBackfillJob,
 } from "./db/queries/vuln-backfill-jobs.js";
 import { CloudRunBackfillLauncher, LocalBackfillLauncher } from "./vuln/backfill-launcher.js";
+import { CloudRunSyncLauncher, LocalSyncLauncher } from "./services/sync-launcher.js";
 import { isVulnSyncRunning } from "./vuln/sync/lock.js";
 import {
   countActiveCveSuppressions,
@@ -146,6 +152,11 @@ for (const packageConfig of configs) {
   );
   syncServices.set(packageConfig.name, syncService);
 }
+
+const syncLauncher =
+  config.NODE_ENV === "production"
+    ? new CloudRunSyncLauncher()
+    : new LocalSyncLauncher((packageName) => syncServices.get(packageName));
 
 /**
  * `version_sort` is written once per row and never revisited, so a change to the sort-key
@@ -207,7 +218,44 @@ async function runSyncAll(
   return results;
 }
 
+/**
+ * Admin-triggered sync, launched onto the `walrus-sync` Cloud Run Job rather than run
+ * in-process. It used to run detached in this same request-serving container after
+ * responding 202 — exactly the "respond early, keep working" shape `sync-job.ts`'s header
+ * says Cloud Run's CPU throttling makes unsafe, and which starved rust/powershell/ms-edit mid-
+ * download when a burst of admin triggers left this instance looking idle to Cloud Run's
+ * autoscaler. The job row is created here, before the launch, so the caller gets a real id to
+ * poll immediately regardless of the launched execution's own startup latency.
+ */
 async function startSyncAsync(packageName: string, opts: SyncRunOptions): Promise<number> {
+  const service = syncServices.get(packageName);
+  if (!service) throw new Error(`Unknown package: ${packageName}`);
+  const job = await service.prepareJob(opts.triggerType ?? "admin");
+  try {
+    const executionName = await syncLauncher.launch(job.id, packageName);
+    log.info({ jobId: job.id, package: packageName, executionName }, "Launched package sync");
+  } catch (error) {
+    await updateSyncJob(pool, job.id, {
+      status: "failed",
+      error_message: error instanceof Error ? error.message : String(error),
+      completed_at: new Date(),
+    });
+    throw error;
+  }
+  return job.id;
+}
+
+/**
+ * Historical backfill stays on the old in-process path deliberately: it is operator-supervised
+ * (started from one package's own admin view, not fired in the bursts that starved the plain
+ * sync above) and carries discovery options (`releasePage`, `maxReleases`, `versionGroups`)
+ * `sync-job.ts`'s CLI has no argument surface for yet. Widening that surface to move this one
+ * too is future work, not something to fold into the fix above.
+ */
+async function startHistoricalBackfillAsync(
+  packageName: string,
+  opts: SyncRunOptions,
+): Promise<number> {
   const service = syncServices.get(packageName);
   if (!service) throw new Error(`Unknown package: ${packageName}`);
   return service.startAsync(opts);
@@ -507,7 +555,8 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         runSync: (packageName, opts) => runSync(packageName, opts),
         runSyncAll: (opts) => runSyncAll(opts),
         startSyncAsync,
-        startHistoricalBackfill: (packageName, opts) => startSyncAsync(packageName, opts),
+        startHistoricalBackfill: (packageName, opts) =>
+          startHistoricalBackfillAsync(packageName, opts),
         getArtifactByPackageVersionPlatform: async (packageName, version, os, arch) => {
           const versionRow = await getVersion(pool, packageName, version);
           if (!versionRow) return null;

@@ -117,6 +117,13 @@ resource "google_cloud_run_v2_service" "walrus" {
         name  = "VULN_BACKFILL_JOB"
         value = google_cloud_run_v2_job.vuln_backfill.name
       }
+      # CloudRunSyncLauncher launches this to run an admin-triggered single-package sync,
+      # instead of running it in-process and letting Cloud Run's CPU throttling starve it once
+      # the triggering request's response has been sent (see walrus_api_sync_runner in iam.tf).
+      env {
+        name  = "SYNC_JOB"
+        value = google_cloud_run_v2_job.sync.name
+      }
       env {
         name  = "WALRUS_INTERNAL_AUDIENCE"
         value = var.internal_oidc_audience

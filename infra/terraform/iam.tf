@@ -49,6 +49,17 @@ resource "google_cloud_run_v2_job_iam_member" "walrus_api_backfill_runner" {
   member   = "serviceAccount:${google_service_account.walrus_api.email}"
 }
 
+# walrus-api launches the sync job the same way, and for the same reason: CloudRunSyncLauncher
+# passes the package name and job id through overrides.containerOverrides, which needs
+# run.jobs.runWithOverrides just as the backfill launch above does.
+resource "google_cloud_run_v2_job_iam_member" "walrus_api_sync_runner" {
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_job.sync.name
+  role     = google_project_iam_custom_role.job_runner.id
+  member   = "serviceAccount:${google_service_account.walrus_api.email}"
+}
+
 # walrus-api: Secret Accessor for DATABASE_URL
 resource "google_secret_manager_secret_iam_member" "walrus_api_secret" {
   secret_id = google_secret_manager_secret.database_url.secret_id

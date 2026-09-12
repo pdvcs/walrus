@@ -12,6 +12,7 @@
  * Usage:
  *   node dist/commands/sync-job.js                  # every enabled package
  *   node dist/commands/sync-job.js --package golang # one package
+ *   node dist/commands/sync-job.js --package golang --job-id 708  # resume a launcher's row
  */
 import { config } from "../config/index.js";
 import { log } from "../common/log.js";
@@ -32,8 +33,31 @@ export function parsePackageArg(args: string[]): string | undefined {
   return value;
 }
 
+/**
+ * `--job-id` is how `CloudRunSyncLauncher` hands this execution the row `SyncService.prepareJob`
+ * already created — the caller needed that id to respond with before this execution had even
+ * started, let alone reached the point of creating its own. It only makes sense paired with
+ * `--package`: the row belongs to one package, and this job's default (no `--package`) walk of
+ * every enabled package would otherwise try to resume the same row once per package.
+ */
+export function parseJobIdArg(args: string[]): number | undefined {
+  const i = args.indexOf("--job-id");
+  if (i < 0) return undefined;
+  const value = args[i + 1];
+  const parsed = value ? Number(value) : NaN;
+  if (!value || value.startsWith("--") || !Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error("--job-id requires a positive integer");
+  }
+  return parsed;
+}
+
 async function main(): Promise<void> {
-  const only = parsePackageArg(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  const only = parsePackageArg(argv);
+  const jobId = parseJobIdArg(argv);
+  if (jobId !== undefined && only === undefined) {
+    throw new Error("--job-id requires --package — it names one package's own job row");
+  }
   // This job is where package discovery runs, so it is the only process that holds -- and the
   // only one that can truthfully report on -- GITHUB_TOKEN. See common/upstream-credentials.ts.
   warnIfGithubAnonymous();
@@ -74,7 +98,13 @@ async function main(): Promise<void> {
     );
 
     try {
-      const result = await service.run({ triggerType: "scheduled" });
+      // A resumed row was created with triggerType "admin" (by prepareJob, from the admin
+      // route); this run's own triggerType only feeds a log field (_doSync), never a second
+      // write of trigger_type, so "admin" here just keeps that field consistent with the row.
+      const result = await service.run({
+        triggerType: jobId !== undefined ? "admin" : "scheduled",
+        existingJobId: jobId,
+      });
       log.info({ package: packageConfig.name, result }, "Package sync complete");
     } catch (error) {
       // Contention is a normal outcome of overlapping triggers, and a failure of one

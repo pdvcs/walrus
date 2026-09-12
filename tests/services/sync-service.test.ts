@@ -773,6 +773,90 @@ describe("SyncService", () => {
   });
 });
 
+describe("SyncService job-row handoff", () => {
+  it("prepareJob creates the row without running discovery or downloads", async () => {
+    const deps = {
+      discoverVersions: vi.fn(),
+      upsertPackage: vi.fn().mockResolvedValue({}),
+      createSyncJob: vi.fn().mockResolvedValue({ id: 900 }),
+      getSyncJob: vi.fn(),
+      updateSyncJob: vi.fn(),
+      downloadArtifact: vi.fn(),
+    };
+
+    const service = new SyncService(
+      lockablePool(),
+      pkg,
+      {} as DownloadService,
+      {} as RetentionService,
+      { deps },
+    );
+
+    const job = await service.prepareJob("admin");
+
+    expect(job).toEqual({ id: 900 });
+    expect(deps.createSyncJob).toHaveBeenCalledWith(expect.anything(), "uv", "admin");
+    expect(deps.discoverVersions).not.toHaveBeenCalled();
+  });
+
+  it("run() with existingJobId resumes that row instead of creating a new one", async () => {
+    const deps = {
+      discoverVersions: vi.fn().mockResolvedValue([discovered("0.6.2")]),
+      upsertPackage: vi.fn().mockResolvedValue({}),
+      createSyncJob: vi.fn(),
+      getSyncJob: vi.fn().mockResolvedValue({ id: 900 }),
+      updateSyncJob: vi.fn().mockResolvedValue({}),
+      insertVersion: vi.fn().mockResolvedValue({ id: 1 }),
+      insertArtifact: vi
+        .fn()
+        .mockResolvedValue({ id: 41, status: "pending", cooling_off_until: null }),
+      updateArtifactStatus: vi.fn().mockResolvedValue({}),
+      incrementJobCounters: vi.fn().mockResolvedValue(undefined),
+      downloadArtifact: vi.fn().mockResolvedValue({ status: "available", attempts: 1 }),
+      enforceRetention: vi
+        .fn()
+        .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
+      getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+    };
+
+    const service = new SyncService(
+      lockablePool(),
+      pkg,
+      {} as DownloadService,
+      {} as RetentionService,
+      { deps },
+    );
+
+    await service.run({ triggerType: "admin", existingJobId: 900 });
+
+    expect(deps.getSyncJob).toHaveBeenCalledWith(expect.anything(), 900);
+    expect(deps.createSyncJob).not.toHaveBeenCalled();
+  });
+
+  it("run() with an unknown existingJobId fails rather than syncing into nothing", async () => {
+    const deps = {
+      discoverVersions: vi.fn().mockResolvedValue([discovered("0.6.2")]),
+      upsertPackage: vi.fn().mockResolvedValue({}),
+      createSyncJob: vi.fn(),
+      getSyncJob: vi.fn().mockResolvedValue(null),
+      updateSyncJob: vi.fn(),
+      downloadArtifact: vi.fn(),
+    };
+
+    const service = new SyncService(
+      lockablePool(),
+      pkg,
+      {} as DownloadService,
+      {} as RetentionService,
+      { deps },
+    );
+
+    await expect(service.run({ triggerType: "admin", existingJobId: 404 })).rejects.toThrow(
+      /Sync job 404 not found/,
+    );
+  });
+});
+
 describe("SyncService concurrency", () => {
   it("refuses a second run for the same package instead of racing it", async () => {
     const service = new SyncService(

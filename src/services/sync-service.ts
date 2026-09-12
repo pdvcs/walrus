@@ -10,7 +10,12 @@ import { DiscoveredVersion, DiscoveryOptions } from "../discovery/types.js";
 import { SyncJobTrigger } from "../types/db.js";
 import { insertArtifact, updateArtifactStatus } from "../db/queries/artifacts.js";
 import { upsertPackage } from "../db/queries/packages.js";
-import { createSyncJob, incrementJobCounters, updateSyncJob } from "../db/queries/sync-jobs.js";
+import {
+  createSyncJob,
+  getSyncJob,
+  incrementJobCounters,
+  updateSyncJob,
+} from "../db/queries/sync-jobs.js";
 import { getMaxAvailableVersionSort, insertVersion } from "../db/queries/versions.js";
 import { buildArtifactPath } from "../storage/types.js";
 import { PackageConfig } from "../types/package-config.js";
@@ -28,6 +33,13 @@ export interface SyncRunOptions {
   triggerType?: SyncJobTrigger;
   dryRun?: boolean;
   discovery?: DiscoveryOptions;
+  /**
+   * Resume a job row a launcher already created, instead of creating a new one. Used by
+   * `sync-job.ts` when it was handed `--job-id` by a `SyncLauncher` that needed the row to
+   * exist (and its id to return to the caller) before the run itself could start — a Cloud
+   * Run Job execution has startup latency the caller shouldn't have to wait through.
+   */
+  existingJobId?: number;
 }
 
 export interface SyncRunResult {
@@ -47,6 +59,7 @@ interface SyncDeps {
   ) => Promise<DiscoveredVersion[]>;
   upsertPackage: typeof upsertPackage;
   createSyncJob: typeof createSyncJob;
+  getSyncJob: typeof getSyncJob;
   updateSyncJob: typeof updateSyncJob;
   incrementJobCounters: typeof incrementJobCounters;
   insertVersion: typeof insertVersion;
@@ -100,6 +113,7 @@ export class SyncService {
       discoverVersions: (config, options) => getStrategy(config).discoverVersions(config, options),
       upsertPackage,
       createSyncJob,
+      getSyncJob,
       updateSyncJob,
       incrementJobCounters,
       insertVersion,
@@ -136,6 +150,17 @@ export class SyncService {
       const job = await this._setupJob(options);
       return this._doSync(job, options);
     });
+  }
+
+  /**
+   * Create this package's sync-job row without running it — for a `SyncLauncher` that starts
+   * the actual work somewhere else (a Cloud Run Job execution) and needs the row's id to hand
+   * back to its caller before that execution has even started, let alone finished setup itself.
+   * The launched run is then given the same id via `existingJobId` so it resumes this row
+   * instead of creating a second one.
+   */
+  async prepareJob(triggerType: SyncJobTrigger): Promise<SyncJobRow> {
+    return this._setupJob({ triggerType });
   }
 
   /**
@@ -188,6 +213,11 @@ export class SyncService {
       config_hash: configHash,
       enabled: true,
     });
+    if (options.existingJobId !== undefined) {
+      const job = await this.deps.getSyncJob(this.pool, options.existingJobId);
+      if (!job) throw new Error(`Sync job ${options.existingJobId} not found`);
+      return job;
+    }
     return this.deps.createSyncJob(this.pool, this.packageConfig.name, triggerType);
   }
 

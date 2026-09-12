@@ -10,6 +10,9 @@ const configSchema = z.object({
   GCP_PROJECT: z.string().optional(),
   GCP_REGION: z.string().default("us-central1"),
   VULN_BACKFILL_JOB: z.string().optional(),
+  // Name of the Terraform-managed `walrus-sync` Cloud Run Job, used by CloudRunSyncLauncher to
+  // launch an admin-triggered single-package sync there instead of running it in-process.
+  SYNC_JOB: z.string().optional(),
   STORAGE_BACKEND: z.enum(["gcs", "local"]).default("local"),
   LOCAL_STORAGE_PATH: z.string().default("./data/artifacts"),
   SYNC_CONCURRENCY: z.coerce.number().default(4),

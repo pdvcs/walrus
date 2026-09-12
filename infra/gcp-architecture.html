@@ -446,7 +446,8 @@
           <text x="222" y="544" class="s">2 vCPU · 2 GiB · ≤ 6 h</text>
           <text x="222" y="562" class="s">discovery → download →</text>
           <text x="222" y="578" class="s">transform → retention</text>
-          <text x="222" y="600" class="s" fill="#94a3b8">all enabled packages</text>
+          <text x="222" y="600" class="s" fill="#94a3b8">all packages, six-hourly —</text>
+          <text x="222" y="614" class="s" fill="#94a3b8">or one, launched by the API</text>
 
           <rect x="430" y="475" width="205" height="150" rx="10" class="box" />
           <rect x="430" y="475" width="4" height="150" rx="2" fill="var(--job)" />
@@ -546,6 +547,10 @@
           <path class="flow" d="M250,245 L250,455 L305,455 L305,475" />
           <text x="238" y="300" class="lbl" transform="rotate(-90 238 300)">OAuth :run</text>
 
+          <!-- service -> sync job (admin-triggered, one package) -->
+          <path class="flow" d="M380,425 L380,475" />
+          <text x="388" y="450" class="lbl" transform="rotate(-90 388 450)">overrides</text>
+
           <!-- service -> backfill job -->
           <path class="flow" d="M470,425 L470,452 L532,452 L532,475" />
           <text x="544" y="446" class="lbl">run.jobs.runWithOverrides</text>
@@ -610,14 +615,22 @@
       <h3>Cloud Run Jobs — <code>walrus-sync</code> and <code>walrus-vuln-backfill</code></h3>
       <p>
         Long-running work runs as Jobs, each in its own container with no request to outlive.
-        <code>walrus-sync</code> is triggered six-hourly by Cloud Scheduler; it discovers new
-        releases, downloads and verifies them, applies any configured archive transform, stores the
-        result in GCS, and prunes per the retention policy. It pins 2 vCPU and 2 GiB because two
-        transforms can run at once, each holding roughly 500 MiB of link cache.
-        <code>walrus-vuln-backfill</code> is not scheduled directly: the API launches it with a
-        <code>--job-id</code> override when a package needs its historical CVEs fetched. Its 24-hour
-        timeout and 1 GiB sizing reflect a workload that streams one page of NVD results at a time
-        and is rate-limited upstream rather than CPU-bound.
+        <code>walrus-sync</code> is triggered six-hourly by Cloud Scheduler for the whole fleet; it
+        discovers new releases, downloads and verifies them, applies any configured archive
+        transform, stores the result in GCS, and prunes per the retention policy. It pins 2 vCPU and
+        2 GiB because two transforms can run at once, each holding roughly 500 MiB of link cache. The
+        API also launches it directly, with <code>--package</code>/<code>--job-id</code> overrides,
+        for an operator's "sync now" on one package — that used to run detached inside the service
+        itself, which meant a large enough download (2+ GB across a handful of platform artifacts,
+        say) could still be transferring when Cloud Run's CPU throttling and instance-recycling
+        decided the service looked idle and pulled the container out from under it, silently, until
+        the next boot's startup recovery marked the job "interrupted by restart". Running it as a
+        Job instead gives it the same guarantee the scheduled walk already had: its own container,
+        no response to outlive.
+        <code>walrus-vuln-backfill</code> is launched the same way, with a <code>--job-id</code>
+        override, when a package needs its historical CVEs fetched. Its 24-hour timeout and 1 GiB
+        sizing reflect a workload that streams one page of NVD results at a time and is
+        rate-limited upstream rather than CPU-bound.
       </p>
 
       <div class="callout">
@@ -631,7 +644,11 @@
         Cloud Scheduler holds six jobs, all in UTC. Five call back into the API over OIDC using the
         <code>walrus-scheduler</code> service account; the package sync instead asks the Cloud Run
         Jobs API to start <code>walrus-sync</code>, authenticated with an OAuth token because the
-        target is a Google API.
+        target is a Google API. That is one of two ways <code>walrus-sync</code> gets started —
+        the other is <code>walrus-api</code> itself, as the <code>walrus-api</code> service account
+        rather than <code>walrus-scheduler</code>, with a container-argument override naming one
+        package, when an operator asks for that package right now instead of waiting for the next
+        six-hourly tick.
       </p>
       <table>
         <thead>
@@ -795,8 +812,9 @@
             Client, Secret Accessor on the six secrets, and a custom job-runner role (<code
               >run.jobs.run</code
             >
-            + <code>runWithOverrides</code>) scoped to the backfill Job. The custom role exists
-            because the API must start that one Job and nothing else.
+            + <code>runWithOverrides</code>) scoped to each Job individually — backfill and sync. The
+            custom role exists because the API only needs to start those two Jobs, with a
+            container-argument override, and nothing more.
           </p>
         </div>
         <div class="card">

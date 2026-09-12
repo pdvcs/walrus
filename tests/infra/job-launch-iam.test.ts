@@ -35,4 +35,17 @@ describe("Cloud Run Job launch permissions", () => {
     const sched = iam.slice(iam.indexOf('"walrus_scheduler_job_runner"'));
     expect(sched.slice(0, sched.indexOf("}"))).toContain('role     = "roles/run.invoker"');
   });
+
+  /**
+   * CloudRunSyncLauncher launches the sync job the same way the backfill launcher does —
+   * package name and job id through overrides.containerOverrides — so it needs the same
+   * override-capable role, not bare run.invoker, on the sync job specifically.
+   */
+  it("gives walrus-api that same role on the sync job, for the same reason", () => {
+    const block = iam.slice(iam.indexOf('"walrus_api_sync_runner"'));
+    const body = block.slice(0, block.indexOf("}"));
+    expect(body).toContain("role     = google_project_iam_custom_role.job_runner.id");
+    expect(body).toContain("name     = google_cloud_run_v2_job.sync.name");
+    expect(body).not.toContain("roles/run.invoker");
+  });
 });
