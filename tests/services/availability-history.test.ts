@@ -191,4 +191,21 @@ describe("version availability history", () => {
     const history = await listAvailabilityHistory(pool, PKG, version);
     expect(history[0].source).toBe("backfill");
   });
+
+  // The alert's own log line is otherwise silent on which package it fired for — an
+  // operator gets "2 blocked" and has to go find out which two. See listTransitionsSince
+  // below for the query that answers that without already knowing the package name.
+  it("names the package and CVE in the result, not just a count", async () => {
+    await seedPackageWithVersion(pool, version);
+    await addCriticalCve(pool, version, "9.6");
+
+    const result = await recordAvailabilityTransitions(pool, {
+      source: "nvd",
+      trigger: "internal",
+    });
+
+    expect(result.newlyBlocked).toEqual([
+      { package_name: PKG, version, cve_id: CVE },
+    ]);
+  });
 });

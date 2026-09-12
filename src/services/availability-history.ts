@@ -137,8 +137,13 @@ export async function recordAvailabilityTransitions(
     log.info(
       {
         source: attribution.source,
+        // Counts stay alongside the arrays: the alert policy's log filter matches on
+        // `jsonPayload.blocked>0` (a monitoring_dashboard.tf test pins that string), so it
+        // can't be replaced by array length without also editing Terraform.
         blocked: result.newlyBlocked.length,
         unblocked: result.newlyAvailable.length,
+        newly_blocked: result.newlyBlocked,
+        newly_available: result.newlyAvailable,
       },
       "Recorded version availability transitions",
     );
