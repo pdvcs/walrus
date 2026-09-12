@@ -875,7 +875,7 @@ function coolingOffUntil(artifact: {
 }
 
 function buildJobResponse(detail: JobDetail): Record<string, unknown> {
-  const { job, artifacts, elapsed_ms, cooling_off_days } = detail;
+  const { job, artifacts, elapsed_ms, queued_ms, transfer_ms, cooling_off_days } = detail;
   const enrichedArtifacts = artifacts.map((a) => {
     const until = coolingOffUntil(a);
     return { ...a, cooling_off_until: until?.toISOString() ?? null };
@@ -899,6 +899,8 @@ function buildJobResponse(detail: JobDetail): Record<string, unknown> {
     container_started_at: job.container_started_at,
     completed_at: job.completed_at,
     elapsed_ms,
+    queued_ms,
+    transfer_ms,
     artifacts: enrichedArtifacts,
   };
 }
@@ -1006,7 +1008,13 @@ function renderJobStatusPage(detail: JobDetail, basePath: string): string {
       if (data.cooling_off_days != null) {
         cardDefs.push(['Cooling Off (' + data.cooling_off_days + 'd)', data.artifacts_cooling_off]);
       }
-      cardDefs.push(['Elapsed', fmtElapsed(data.elapsed_ms)]);
+      // Split the one "how long has this taken" question into the three that actually matter
+      // once a sync can spend a real, variable amount of time cold-starting: how long that wait
+      // was, how long the sync itself has actually taken, and the sum an operator ultimately
+      // cares about.
+      cardDefs.push(['Startup', fmtElapsed(data.queued_ms)]);
+      cardDefs.push(['Transfer', data.transfer_ms == null ? '—' : fmtElapsed(data.transfer_ms)]);
+      cardDefs.push(['Total', fmtElapsed(data.elapsed_ms)]);
       cards.innerHTML = cardDefs.map(([label, val]) =>
         '<div class="card"><div class="card-label">' + esc(label) + '</div><div class="card-value">' + esc(val) + '</div></div>'
       ).join('');
@@ -1730,7 +1738,19 @@ function renderJobsListPage(
   const esc = escHtml;
   const rows = jobs
     .map((j) => {
-      const elapsed = (j.completed_at ?? new Date()).getTime() - j.started_at.getTime();
+      // A launched Cloud Run Job execution can sit cold-starting for tens of seconds before
+      // container_started_at is ever set. Showing "queued" there instead of a growing duration
+      // — and the actual transfer time, not time-since-created, once it has started — keeps this
+      // column answering "how long has the sync itself taken" rather than "how long ago did an
+      // operator click the button". A row from before migration 0017 has no container_started_at
+      // to fall back on even once terminal; total elapsed is the best available answer there.
+      const endMs = (j.completed_at ?? new Date()).getTime();
+      const elapsedCell =
+        j.container_started_at != null
+          ? fmtMs(endMs - j.container_started_at.getTime())
+          : j.status === "running"
+            ? "queued"
+            : fmtMs(endMs - j.started_at.getTime());
       const failedCell =
         j.artifacts_failed > 0 ? `<span class="status-failed">${j.artifacts_failed}</span>` : "0";
       return `<tr>
@@ -1742,7 +1762,7 @@ function renderJobsListPage(
         <td>${j.artifacts_downloaded}</td>
         <td>${failedCell}</td>
         <td style="color:#9ca3af;font-size:0.78rem;white-space:nowrap">${fmtAge(j.started_at)}</td>
-        <td style="color:#9ca3af;font-size:0.78rem">${fmtMs(elapsed)}</td>
+        <td style="color:#9ca3af;font-size:0.78rem">${esc(elapsedCell)}</td>
       </tr>`;
     })
     .join("");

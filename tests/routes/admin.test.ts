@@ -809,6 +809,48 @@ describe("admin routes", () => {
     expect(patchBody.enabled).toBe(false);
   });
 
+  it("shows 'queued' for a running job with no heartbeat yet, and the transfer time once it has one", async () => {
+    const deps = baseDeps();
+    deps.listJobs = vi.fn().mockResolvedValue([
+      {
+        id: 740,
+        package_name: "ms-edit",
+        trigger_type: "admin",
+        status: "running",
+        versions_found: 0,
+        artifacts_queued: 0,
+        artifacts_downloaded: 0,
+        artifacts_failed: 0,
+        error_message: null,
+        started_at: new Date(Date.now() - 60_000),
+        container_started_at: null,
+        completed_at: null,
+      },
+      {
+        id: 738,
+        package_name: "powershell",
+        trigger_type: "admin",
+        status: "completed",
+        versions_found: 3,
+        artifacts_queued: 0,
+        artifacts_downloaded: 0,
+        artifacts_failed: 0,
+        error_message: null,
+        started_at: new Date(Date.now() - 120_000),
+        container_started_at: new Date(Date.now() - 5_000),
+        completed_at: new Date(),
+      },
+    ]);
+
+    const res = await request(createTestApp(deps)).get("/admin/v1/jobs").set("Accept", "text/html");
+
+    expect(res.status).toBe(200);
+    // Cold-starting: not yet a duration to report, and not the 60s since the row was created.
+    expect(res.text).toMatch(/#740[\s\S]*?<td[^>]*>queued<\/td>/);
+    // Finished: the ~5s transfer time, not the ~120s since the row was created.
+    expect(res.text).toMatch(/#738[\s\S]*?<td[^>]*>5\.0s<\/td>/);
+  });
+
   it("pages the HTML jobs list at 100/page with filter-preserving prev/next links", async () => {
     const deps = baseDeps();
     const seen: Array<{ limit?: number; offset?: number }> = [];

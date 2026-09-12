@@ -19,7 +19,16 @@ export interface ArtifactSummary {
 export interface JobDetail {
   job: SyncJobRow;
   artifacts: ArtifactSummary[];
+  /** Total time since the row was created — includes any cold-start wait. */
   elapsed_ms: number;
+  /**
+   * Time from row creation to the container actually starting (`container_started_at`), or to
+   * completion/now if it never did. For an old row from before migration 0017 this is the whole
+   * `elapsed_ms` — there is no better answer once that data was never recorded.
+   */
+  queued_ms: number;
+  /** Time from the container starting to completion/now. Null until it has started. */
+  transfer_ms: number | null;
   cooling_off_days?: number;
 }
 
@@ -153,8 +162,11 @@ export async function getJobWithArtifacts(pool: Pool, id: number): Promise<JobDe
 
   const endMs = job.completed_at ? job.completed_at.getTime() : Date.now();
   const elapsed_ms = endMs - job.started_at.getTime();
+  const queuedEndMs = job.container_started_at ? job.container_started_at.getTime() : endMs;
+  const queued_ms = queuedEndMs - job.started_at.getTime();
+  const transfer_ms = job.container_started_at ? endMs - job.container_started_at.getTime() : null;
 
-  return { job, artifacts: artifactRes.rows, elapsed_ms };
+  return { job, artifacts: artifactRes.rows, elapsed_ms, queued_ms, transfer_ms };
 }
 
 export async function listSyncJobs(pool: Pool, opts: ListSyncJobsOpts = {}): Promise<SyncJobRow[]> {
