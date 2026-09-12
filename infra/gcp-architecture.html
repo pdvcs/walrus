@@ -10,7 +10,7 @@
         --muted: #475569;
         --faint: #64748b;
         --line: #cbd5e1;
-        --bg: #f8fafc;
+        --bg: #f1f5f9;
         --panel: #ffffff;
         --api: #2563eb;
         --job: #7c3aed;
@@ -19,6 +19,9 @@
         --sched: #db2777;
         --obs: #0891b2;
         --ext: #64748b;
+        --egress: #334155;
+        --tf: #4338ca;
+        --gutter: clamp(16px, 2.5vw, 48px);
       }
       * {
         box-sizing: border-box;
@@ -37,47 +40,10 @@
           sans-serif;
         -webkit-font-smoothing: antialiased;
       }
-      .wrap {
-        max-width: 1240px;
+      .page {
+        max-width: 2200px;
         margin: 0 auto;
-        padding: 40px 28px 80px;
-      }
-      header.doc {
-        border-bottom: 2px solid var(--ink);
-        padding-bottom: 20px;
-        margin-bottom: 32px;
-      }
-      header.doc h1 {
-        font-size: 30px;
-        line-height: 1.15;
-        margin: 0 0 8px;
-        letter-spacing: -0.01em;
-      }
-      header.doc p {
-        margin: 0;
-        color: var(--muted);
-        max-width: 74ch;
-      }
-      h2 {
-        font-size: 21px;
-        margin: 42px 0 12px;
-        padding-bottom: 6px;
-        border-bottom: 1px solid var(--line);
-      }
-      h3 {
-        font-size: 16px;
-        margin: 26px 0 6px;
-      }
-      p {
-        margin: 0 0 14px;
-        max-width: 82ch;
-      }
-      a {
-        color: var(--api);
-        text-decoration: none;
-      }
-      a:hover {
-        text-decoration: underline;
+        padding: 28px var(--gutter) 64px;
       }
       code,
       .mono {
@@ -85,15 +51,578 @@
         font-size: 0.86em;
       }
       code {
-        background: #eef2f7;
+        background: #e8edf4;
         padding: 1px 5px;
         border-radius: 4px;
+      }
+      a {
+        color: var(--api);
+      }
+
+      /* ---------- header ---------- */
+      header.doc {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 24px 48px;
+        align-items: end;
+        padding-bottom: 20px;
+        margin-bottom: 22px;
+        border-bottom: 2px solid var(--ink);
+      }
+      header.doc h1 {
+        font-size: 32px;
+        line-height: 1.1;
+        margin: 0 0 10px;
+        letter-spacing: -0.015em;
+      }
+      header.doc p {
+        margin: 0;
+        color: var(--muted);
+        max-width: 110ch;
+      }
+      .facts {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin: 0;
+      }
+      .facts div {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 8px 14px;
+        min-width: 110px;
+      }
+      .facts dt {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--faint);
+        font-weight: 600;
+      }
+      .facts dd {
+        margin: 0;
+        font-size: 18px;
+        font-weight: 700;
+      }
+
+      /* ---------- map section ---------- */
+      .map {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 16px 18px 18px;
+      }
+      .map-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px 24px;
+        margin-bottom: 10px;
+      }
+      .map-head h2 {
+        margin: 0;
+        font-size: 20px;
+      }
+      .map-head p {
+        margin: 2px 0 0;
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+      }
+      .toolbar .lab {
+        font-size: 12px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--faint);
+        margin-right: 2px;
+      }
+      .btn {
+        font: inherit;
+        font-size: 13.5px;
+        font-weight: 600;
+        color: var(--ink);
+        background: #f8fafc;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 5px 13px;
+        cursor: pointer;
+      }
+      .btn:hover {
+        border-color: #94a3b8;
+        background: #fff;
+      }
+      .btn[aria-pressed="true"] {
+        background: var(--ink);
+        border-color: var(--ink);
+        color: #fff;
+      }
+      .btn.clear {
+        background: transparent;
+        border-style: dashed;
+        color: var(--muted);
+      }
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px 8px;
+        align-items: center;
+        margin: 0 0 8px;
+      }
+      .legend .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-weight: 500;
+        font-size: 13px;
+        padding: 3px 11px;
+        background: #fff;
+      }
+      .legend .btn[aria-pressed="true"] {
+        background: #fff;
+        border-color: var(--line);
+        color: var(--ink);
+      }
+      .legend .btn[aria-pressed="false"] {
+        opacity: 0.45;
+        text-decoration: line-through;
+      }
+      .legend svg {
+        width: 28px;
+        height: 8px;
+      }
+
+      #stage-wrap {
+        position: relative;
+      }
+      #stage {
+        overflow-x: auto;
+      }
+      #estate {
+        display: block;
+        width: 100%;
+        min-width: 1100px;
+        height: auto;
+        max-height: calc(100vh - 60px);
+        user-select: none;
+      }
+
+      /* ---------- SVG ---------- */
+      #estate text {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+          sans-serif;
+      }
+      #estate .mn {
+        font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+      }
+      .boundary {
+        fill: #f5f7ff;
+        stroke: #a5b4fc;
+        stroke-width: 1.5;
+        stroke-dasharray: 8 6;
+      }
+      .b-label {
+        fill: var(--tf);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+      }
+      .node {
+        cursor: pointer;
+        outline: none;
+        transition: opacity 0.15s;
+      }
+      .node .box {
+        fill: #fff;
+        stroke: var(--line);
+        stroke-width: 1.5;
+        transition:
+          stroke 0.15s,
+          stroke-width 0.15s;
+      }
+      .node:hover .box,
+      .node.on .box {
+        stroke: #64748b;
+      }
+      .node.selected .box {
+        stroke: var(--ink);
+        stroke-width: 2.5;
+      }
+      .node:focus-visible .box {
+        stroke: var(--api);
+        stroke-width: 3;
+      }
+      .node.group .box {
+        fill: #faf8ff;
+        stroke: #c4b5fd;
+        stroke-dasharray: 6 5;
+      }
+      .node.group:hover .box {
+        stroke: var(--job);
+      }
+      .node.pill .box {
+        fill: #fdf2f8;
+        stroke: #f9a8d4;
+      }
+      .node.pill .sm {
+        font-size: 11.5px;
+      }
+      .node.pill:hover .box,
+      .node.pill.on .box {
+        stroke: var(--sched);
+      }
+      .ey {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.07em;
+      }
+      .ti {
+        font-size: 17px;
+        font-weight: 700;
+        fill: var(--ink);
+      }
+      .nm {
+        font-size: 14px;
+        font-weight: 700;
+        fill: var(--ink);
+      }
+      .tx {
+        font-size: 13.5px;
+        fill: var(--muted);
+      }
+      .sm {
+        font-size: 12.5px;
+        fill: #334155;
+      }
+      .dim {
+        fill: #94a3b8;
+      }
+      .tag {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        fill: var(--faint);
+      }
+
+      .edge {
+        transition: opacity 0.15s;
+      }
+      .edge .line {
+        fill: none;
+        stroke-width: 2.5;
+        stroke-linejoin: round;
+      }
+      .edge .hit {
+        fill: none;
+        stroke: transparent;
+        stroke-width: 16;
+        cursor: help;
+      }
+      .edge.on .line {
+        stroke-width: 3.5;
+      }
+      .elabel {
+        font-size: 12.5px;
+        font-weight: 600;
+        paint-order: stroke;
+        stroke: #fff;
+        stroke-width: 5px;
+        stroke-linejoin: round;
+        pointer-events: none;
+      }
+      .edge[data-kind="public"] .line {
+        stroke: var(--api);
+        marker-end: url(#m-public);
+      }
+      .edge[data-kind="public"] .elabel {
+        fill: var(--api);
+      }
+      .edge[data-kind="invoke"] .line {
+        stroke: var(--job);
+        marker-end: url(#m-invoke);
+      }
+      .edge[data-kind="invoke"] .elabel {
+        fill: var(--job);
+      }
+      .edge[data-kind="data"] .line {
+        stroke: var(--data);
+        marker-end: url(#m-data);
+      }
+      .edge[data-kind="data"] .elabel {
+        fill: var(--data);
+      }
+      .edge[data-kind="secret"] .line {
+        stroke: var(--secret);
+        stroke-dasharray: 7 5;
+        marker-end: url(#m-secret);
+      }
+      .edge[data-kind="secret"] .elabel {
+        fill: #b45309;
+      }
+      .edge[data-kind="image"] .line {
+        stroke: var(--ext);
+        stroke-dasharray: 7 5;
+        marker-end: url(#m-image);
+      }
+      .edge[data-kind="image"] .elabel {
+        fill: var(--ext);
+      }
+      .edge[data-kind="obs"] .line {
+        stroke: var(--obs);
+        stroke-dasharray: 3 4;
+        marker-end: url(#m-obs);
+      }
+      .edge[data-kind="obs"] .elabel {
+        fill: #0e7490;
+      }
+      .edge[data-kind="egress"] .line {
+        stroke: var(--egress);
+        marker-end: url(#m-egress);
+      }
+      .edge[data-kind="egress"] .elabel {
+        fill: var(--egress);
+      }
+      #estate.hide-public .edge[data-kind="public"],
+      #estate.hide-invoke .edge[data-kind="invoke"],
+      #estate.hide-data .edge[data-kind="data"],
+      #estate.hide-secret .edge[data-kind="secret"],
+      #estate.hide-image .edge[data-kind="image"],
+      #estate.hide-obs .edge[data-kind="obs"],
+      #estate.hide-egress .edge[data-kind="egress"] {
+        display: none;
+      }
+
+      #estate.focus .node:not(.on),
+      #estate.focus .edge:not(.on) {
+        opacity: 0.18;
+      }
+      #estate.flowing .edge.on .line {
+        stroke-dasharray: 10 7;
+        animation: march 0.9s linear infinite;
+      }
+      @keyframes march {
+        to {
+          stroke-dashoffset: -17;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #estate.flowing .edge.on .line {
+          animation: none;
+        }
+      }
+      .badge rect {
+        fill: var(--ink);
+      }
+      .badge text {
+        fill: #fff;
+        font-size: 12.5px;
+        font-weight: 700;
+      }
+      .badge.hot rect {
+        fill: #f59e0b;
+      }
+      .badge.hot text {
+        fill: var(--ink);
+      }
+
+      /* ---------- popover / tooltip ---------- */
+      #pop {
+        position: absolute;
+        z-index: 5;
+        width: min(400px, calc(100% - 16px));
+        max-height: min(620px, calc(100% - 16px));
+        overflow: auto;
+        background: #fff;
+        border: 1px solid #94a3b8;
+        border-radius: 12px;
+        box-shadow: 0 18px 40px -12px rgba(15, 23, 42, 0.35);
+        padding: 16px 18px 14px;
+        font-size: 14px;
+        line-height: 1.55;
+      }
+      #pop .eyebrow {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+      }
+      #pop h3 {
+        margin: 2px 0 8px;
+        font-size: 18px;
+        line-height: 1.25;
+        padding-right: 24px;
+      }
+      #pop p {
+        margin: 0 0 8px;
+      }
+      #pop ul {
+        margin: 0 0 8px;
+        padding-left: 18px;
+      }
+      #pop h4 {
+        margin: 12px 0 6px;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        color: var(--faint);
+      }
+      #pop ul.conns {
+        list-style: none;
+        padding: 0;
+        font-size: 13px;
+        color: var(--muted);
+      }
+      #pop ul.conns li {
+        display: grid;
+        grid-template-columns: 18px 1fr;
+        gap: 6px;
+        margin-bottom: 6px;
+      }
+      #pop ul.conns b {
+        color: var(--ink);
+      }
+      #pop .x {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        border: 0;
+        background: transparent;
+        font-size: 22px;
+        line-height: 1;
+        cursor: pointer;
+        color: var(--faint);
+        padding: 4px 8px;
+      }
+      .k {
+        display: inline-block;
+        width: 16px;
+        height: 3px;
+        margin-top: 9px;
+        border-radius: 2px;
+      }
+      .k-public { background: var(--api); }
+      .k-invoke { background: var(--job); }
+      .k-data { background: var(--data); }
+      .k-secret { background: var(--secret); }
+      .k-image { background: var(--ext); }
+      .k-obs { background: var(--obs); }
+      .k-egress { background: var(--egress); }
+      #tip {
+        position: absolute;
+        z-index: 6;
+        pointer-events: none;
+        max-width: 340px;
+        background: var(--ink);
+        color: #fff;
+        font-size: 13px;
+        line-height: 1.45;
+        padding: 8px 11px;
+        border-radius: 8px;
+      }
+      #tip b {
+        display: block;
+        margin-bottom: 2px;
+      }
+
+      /* ---------- flow steps ---------- */
+      #steps {
+        margin-top: 10px;
+        border-top: 1px solid var(--line);
+        padding-top: 12px;
+        min-height: 44px;
+      }
+      #steps .hint {
+        color: var(--faint);
+        font-size: 14px;
+        margin: 0;
+      }
+      #steps ol {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+        gap: 8px 14px;
+      }
+      #steps li {
+        display: grid;
+        grid-template-columns: 26px 1fr;
+        gap: 8px;
+        font-size: 14px;
+        line-height: 1.45;
+        padding: 6px 8px;
+        border-radius: 8px;
+        cursor: default;
+      }
+      #steps li:hover {
+        background: #fef3c7;
+      }
+      #steps li .num {
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        background: var(--ink);
+        color: #fff;
+        font-size: 12.5px;
+        font-weight: 700;
+        display: grid;
+        place-items: center;
+      }
+
+      /* ---------- prose sections ---------- */
+      .sections {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 20px;
+        margin-top: 24px;
+        align-items: start;
+      }
+      .sections > section {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 20px 26px 10px;
+        min-width: 0;
+      }
+      .sections > .span {
+        grid-column: 1 / -1;
+      }
+      @media (max-width: 1100px) {
+        .sections {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        header.doc {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+      section h2 {
+        font-size: 20px;
+        margin: 0 0 12px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid var(--line);
+      }
+      section h3 {
+        font-size: 15.5px;
+        margin: 18px 0 4px;
+      }
+      section p {
+        margin: 0 0 14px;
+      }
+      .table-wrap {
+        overflow-x: auto;
+        margin: 4px 0 16px;
       }
       table {
         width: 100%;
         border-collapse: collapse;
-        margin: 6px 0 18px;
-        font-size: 13.5px;
+        font-size: 14px;
       }
       th,
       td {
@@ -112,59 +641,30 @@
       td.mono {
         white-space: nowrap;
       }
-      .diagram {
-        background: var(--panel);
-        border: 1px solid var(--line);
-        border-radius: 14px;
-        padding: 10px;
-        overflow-x: auto;
-        margin: 10px 0 8px;
-      }
-      .diagram svg {
-        display: block;
-        width: 100%;
-        min-width: 900px;
-        height: auto;
-      }
-      .legend {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 18px;
-        color: var(--muted);
-        font-size: 12.5px;
-        margin: 4px 2px 0;
-      }
-      .legend span {
-        display: inline-flex;
-        align-items: center;
-        gap: 7px;
-      }
-      .swatch {
-        width: 22px;
-        height: 4px;
-        border-radius: 2px;
-        display: inline-block;
-      }
       .callout {
         background: #eef4ff;
         border-left: 4px solid var(--api);
         padding: 12px 16px;
         border-radius: 0 8px 8px 0;
-        margin: 18px 0;
-        color: #1e293b;
+        margin: 16px 0;
         font-size: 14px;
+      }
+      .formula {
+        text-align: center;
+        overflow-x: auto;
+        margin: 0 0 14px;
       }
       .grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-        gap: 16px;
-        margin: 8px 0 4px;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 12px;
+        margin: 4px 0 16px;
       }
       .card {
-        background: var(--panel);
+        background: #f8fafc;
         border: 1px solid var(--line);
         border-radius: 10px;
-        padding: 16px 18px;
+        padding: 14px 16px;
       }
       .card h3 {
         margin: 0 0 6px;
@@ -172,11 +672,12 @@
       }
       .card p {
         margin: 0;
-        font-size: 13.5px;
+        font-size: 14px;
         color: var(--muted);
       }
-      .tag {
+      .pilltag {
         display: inline-block;
+        font-family: -apple-system, BlinkMacSystemFont, sans-serif;
         font-size: 11px;
         font-weight: 600;
         padding: 1px 7px;
@@ -193,801 +694,1154 @@
         color: #92400e;
       }
       footer.doc {
-        margin-top: 48px;
-        padding-top: 16px;
+        margin-top: 28px;
+        padding-top: 14px;
         border-top: 1px solid var(--line);
         color: var(--faint);
-        font-size: 12.5px;
-      }
-      /* --- SVG classes --- */
-      .grp {
-        fill: #eef2ff;
-        stroke: #818cf8;
-        stroke-width: 1.5;
-        stroke-dasharray: 7 6;
-      }
-      .grp-label {
-        fill: #4338ca;
-        font-size: 12px;
-        font-weight: 600;
-      }
-      .box {
-        fill: #ffffff;
-        stroke: var(--line);
-        stroke-width: 1.4;
-      }
-      .accent {
-        rx: 3;
-      }
-      .t {
-        fill: var(--ink);
         font-size: 13px;
-        font-weight: 700;
-      }
-      .t-api {
-        fill: var(--api);
-      }
-      .t-job {
-        fill: var(--job);
-      }
-      .t-data {
-        fill: var(--data);
-      }
-      .t-secret {
-        fill: var(--secret);
-      }
-      .t-sched {
-        fill: var(--sched);
-      }
-      .t-obs {
-        fill: var(--obs);
-      }
-      .t-ext {
-        fill: var(--ext);
-      }
-      .s {
-        fill: var(--muted);
-        font-size: 11px;
-      }
-      .mono-svg {
-        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        font-size: 9.5px;
-        fill: #334155;
-      }
-      .mono-svg.sm {
-        font-size: 9px;
-      }
-      .dim {
-        fill: #94a3b8;
-      }
-      .pill {
-        fill: #fdf2f8;
-        stroke: #f9a8d4;
-        stroke-width: 1;
-      }
-      .lbl {
-        fill: #475569;
-        font-size: 10px;
-        font-weight: 600;
-        paint-order: stroke;
-        stroke: #ffffff;
-        stroke-width: 3.5px;
-        stroke-linejoin: round;
-      }
-      .flow {
-        fill: none;
-        stroke: #64748b;
-        stroke-width: 1.6;
-        marker-end: url(#arrow);
-      }
-      .flow-dashed {
-        fill: none;
-        stroke: #94a3b8;
-        stroke-width: 1.5;
-        stroke-dasharray: 5 5;
-        marker-end: url(#arrow-dim);
-      }
-      .flow-api {
-        stroke: var(--api);
-        marker-end: url(#arrow-api);
       }
     </style>
   </head>
   <body>
-    <div class="wrap">
+    <div class="page">
       <header class="doc">
-        <h1>Walrus on GCP</h1>
-        <p>
-          A map of the deployed estate: the managed services, the scheduled workloads and what each
-          one is for. Everything below is provisioned by Terraform in
-          <code>infra/terraform/</code> and rolled out by <code>infra/scripts/deploy.sh</code>. If
-          the console and this page disagree, the console is drifting.
-        </p>
+        <div>
+          <h1>Walrus on GCP</h1>
+          <p>
+            A map of the deployed estate: the managed services, the scheduled workloads and what each
+            one is for. Everything below is provisioned by Terraform in
+            <code>infra/terraform/</code> and rolled out by <code>infra/scripts/deploy.sh</code>. If
+            the console and this page disagree, the console is drifting.
+          </p>
+        </div>
+        <dl class="facts">
+          <div><dt>Service</dt><dd>1</dd></div>
+          <div><dt>Cloud Run Jobs</dt><dd>2</dd></div>
+          <div><dt>Schedules</dt><dd>6</dd></div>
+          <div><dt>Secrets</dt><dd>6</dd></div>
+          <div><dt>Cost</dt><dd>~$15–25/mo</dd></div>
+        </dl>
       </header>
 
-      <h2>At a glance</h2>
-      <p>
-        Walrus runs as an always-on Cloud Run service that serves package metadata and ranged
-        downloads, backed by a small Cloud SQL Postgres instance and a GCS bucket of cached
-        artifacts. The work that cannot fit inside an HTTP request — full package syncs and
-        historical CVE ingestion — runs as Cloud Run Jobs. Cloud Scheduler wakes the recurring work;
-        Cloud Monitoring watches it.
-      </p>
+      <section class="map" aria-labelledby="map-title">
+        <div class="map-head">
+          <div>
+            <h2 id="map-title">Estate map</h2>
+            <p>
+              An always-on Cloud Run service serves metadata and ranged downloads, backed by Cloud SQL
+              and a GCS bucket. Work too long for a request runs as Cloud Run Jobs; Cloud Scheduler
+              wakes the recurring work and Cloud Monitoring watches it.
+            </p>
+          </div>
+          <div class="toolbar" id="flows" role="group" aria-label="Walk through a flow">
+            <span class="lab">Walk through</span>
+          </div>
+        </div>
+        <div class="legend" id="legend" role="group" aria-label="Show or hide connection kinds"></div>
 
-      <div class="diagram">
-        <svg
-          viewBox="0 0 1290 930"
-          role="img"
-          aria-label="Architecture diagram of the Walrus GCP estate"
-        >
-          <defs>
-            <marker
-              id="arrow"
-              viewBox="0 0 10 10"
-              refX="9"
-              refY="5"
-              markerWidth="7"
-              markerHeight="7"
-              orient="auto-start-reverse"
+        <div id="stage-wrap">
+          <div id="stage">
+            <svg
+              id="estate"
+              viewBox="0 0 1640 820"
+              role="img"
+              aria-label="Interactive architecture diagram of the Walrus GCP estate"
             >
-              <path d="M0,0 L10,5 L0,10 z" fill="#64748b" />
-            </marker>
-            <marker
-              id="arrow-dim"
-              viewBox="0 0 10 10"
-              refX="9"
-              refY="5"
-              markerWidth="7"
-              markerHeight="7"
-              orient="auto-start-reverse"
-            >
-              <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8" />
-            </marker>
-            <marker
-              id="arrow-api"
-              viewBox="0 0 10 10"
-              refX="9"
-              refY="5"
-              markerWidth="7"
-              markerHeight="7"
-              orient="auto-start-reverse"
-            >
-              <path d="M0,0 L10,5 L0,10 z" fill="var(--api)" />
-            </marker>
-          </defs>
+              <defs>
+                <marker id="m-public" viewBox="0 0 10 10" refX="9.5" refY="5" markerWidth="11" markerHeight="11" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2563eb" /></marker>
+                <marker id="m-invoke" viewBox="0 0 10 10" refX="9.5" refY="5" markerWidth="11" markerHeight="11" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7c3aed" /></marker>
+                <marker id="m-data" viewBox="0 0 10 10" refX="9.5" refY="5" markerWidth="11" markerHeight="11" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#059669" /></marker>
+                <marker id="m-secret" viewBox="0 0 10 10" refX="9.5" refY="5" markerWidth="11" markerHeight="11" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#d97706" /></marker>
+                <marker id="m-image" viewBox="0 0 10 10" refX="9.5" refY="5" markerWidth="11" markerHeight="11" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#64748b" /></marker>
+                <marker id="m-obs" viewBox="0 0 10 10" refX="9.5" refY="5" markerWidth="11" markerHeight="11" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#0891b2" /></marker>
+                <marker id="m-egress" viewBox="0 0 10 10" refX="9.5" refY="5" markerWidth="11" markerHeight="11" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#334155" /></marker>
+              </defs>
 
-          <!-- ============ EXTERNAL LEFT: clients ============ -->
-          <rect x="15" y="300" width="140" height="120" rx="10" class="box" />
-          <text x="85" y="330" text-anchor="middle" class="t t-ext">Clients, CI</text>
-          <text x="85" y="348" text-anchor="middle" class="t t-ext">&amp; operators</text>
-          <text x="85" y="374" text-anchor="middle" class="s">public internet</text>
-          <text x="85" y="392" text-anchor="middle" class="s">+ operator browser</text>
+              <!-- project boundary -->
+              <rect class="boundary" x="250" y="20" width="1120" height="780" rx="18" />
+              <text class="b-label" x="272" y="44">GCP PROJECT · us-central1 · TERRAFORM-MANAGED</text>
 
-          <!-- ============ GCP PROJECT BOUNDARY ============ -->
-          <rect x="180" y="45" width="880" height="850" rx="16" class="grp" />
-          <text x="198" y="70" class="grp-label">
-            GCP project · us-central1 (default) · Terraform-managed
-          </text>
+              <!-- ============ NODES ============ -->
+              <g class="node" data-node="clients" tabindex="0" role="button" aria-label="Clients, CI and operators">
+                <rect class="box" x="20" y="320" width="200" height="160" rx="12" />
+                <text class="ey" x="120" y="350" text-anchor="middle" fill="#64748b">EXTERNAL</text>
+                <text class="ti" x="120" y="374" text-anchor="middle">Clients &amp; CI</text>
+                <text class="tx" x="120" y="400" text-anchor="middle">public internet</text>
+                <text class="tx" x="120" y="420" text-anchor="middle">+ operators' browsers</text>
+                <text class="sm mn" x="120" y="448" text-anchor="middle">/api/v1 · /download</text>
+                <text class="sm mn" x="120" y="466" text-anchor="middle">/admin/v1</text>
+              </g>
 
-          <!-- ============ SCHEDULER ============ -->
-          <rect x="205" y="85" width="430" height="160" rx="10" class="box" />
-          <rect x="205" y="85" width="4" height="160" rx="2" fill="var(--sched)" />
-          <text x="222" y="111" class="t t-sched">Cloud Scheduler</text>
-          <text x="222" y="129" class="s">
-            six cron jobs (all prefixed walrus-), UTC · OIDC or OAuth auth
-          </text>
+              <g class="node" data-node="scheduler" tabindex="0" role="button" aria-label="Cloud Scheduler">
+                <rect class="box" x="280" y="56" width="780" height="130" rx="12" />
+                <rect x="280" y="70" width="5" height="102" rx="2" fill="#db2777" />
+                <text class="ti" x="302" y="88" fill="#db2777" style="fill: #db2777">Cloud Scheduler</text>
+                <text class="tx" x="1040" y="88" text-anchor="end">6 cron jobs · UTC · 5 × OIDC → walrus-api · 1 × OAuth → walrus-sync</text>
+              </g>
+              <g class="node pill" data-node="sched-nvd" data-parent="scheduler" data-edges="e-sched-api" tabindex="0" role="button" aria-label="walrus-vuln-sync-nvd">
+                <rect class="box" x="300" y="104" width="240" height="30" rx="8" />
+                <text class="sm mn" x="312" y="124">vuln-sync-nvd</text>
+                <text class="sm mn dim" x="528" y="124" text-anchor="end">20 */2 * * *</text>
+              </g>
+              <g class="node pill" data-node="sched-kev" data-parent="scheduler" data-edges="e-sched-api" tabindex="0" role="button" aria-label="walrus-vuln-sync-kev">
+                <rect class="box" x="550" y="104" width="240" height="30" rx="8" />
+                <text class="sm mn" x="562" y="124">vuln-sync-kev</text>
+                <text class="sm mn dim" x="778" y="124" text-anchor="end">40 7 * * *</text>
+              </g>
+              <g class="node pill" data-node="sched-auto" data-parent="scheduler" data-edges="e-sched-api" tabindex="0" role="button" aria-label="walrus-vuln-backfill-auto">
+                <rect class="box" x="800" y="104" width="240" height="30" rx="8" />
+                <text class="sm mn" x="812" y="124">vuln-backfill-auto</text>
+                <text class="sm mn dim" x="1028" y="124" text-anchor="end">50 6 * * *</text>
+              </g>
+              <g class="node pill" data-node="sched-osv" data-parent="scheduler" data-edges="e-sched-api" tabindex="0" role="button" aria-label="walrus-vuln-sync-osv">
+                <rect class="box" x="300" y="142" width="240" height="30" rx="8" />
+                <text class="sm mn" x="312" y="162">vuln-sync-osv</text>
+                <text class="sm mn dim" x="528" y="162" text-anchor="end">10 8 * * 1</text>
+              </g>
+              <g class="node pill" data-node="sched-cvss" data-parent="scheduler" data-edges="e-sched-api" tabindex="0" role="button" aria-label="walrus-vuln-sync-cvss">
+                <rect class="box" x="550" y="142" width="240" height="30" rx="8" />
+                <text class="sm mn" x="562" y="162">vuln-sync-cvss</text>
+                <text class="sm mn dim" x="778" y="162" text-anchor="end">10 9 * * *</text>
+              </g>
+              <g class="node pill" data-node="sched-sync" data-parent="scheduler" data-edges="e-sched-sync" tabindex="0" role="button" aria-label="walrus-sync schedule">
+                <rect class="box" x="800" y="142" width="240" height="30" rx="8" />
+                <text class="sm mn" x="812" y="162">sync</text>
+                <text class="sm mn dim" x="1028" y="162" text-anchor="end">0 */6 * * *</text>
+              </g>
 
-          <g>
-            <rect x="220" y="145" width="200" height="26" rx="6" class="pill" />
-            <text x="227" y="162" class="mono-svg sm">sync</text>
-            <text x="413" y="162" text-anchor="end" class="mono-svg sm dim">0 */6 * * *</text>
-          </g>
-          <g>
-            <rect x="220" y="176" width="200" height="26" rx="6" class="pill" />
-            <text x="227" y="193" class="mono-svg sm">vuln-sync-nvd</text>
-            <text x="413" y="193" text-anchor="end" class="mono-svg sm dim">20 */2 * * *</text>
-          </g>
-          <g>
-            <rect x="220" y="207" width="200" height="26" rx="6" class="pill" />
-            <text x="227" y="224" class="mono-svg sm">vuln-sync-kev</text>
-            <text x="413" y="224" text-anchor="end" class="mono-svg sm dim">40 7 * * *</text>
-          </g>
-          <g>
-            <rect x="430" y="145" width="200" height="26" rx="6" class="pill" />
-            <text x="437" y="162" class="mono-svg sm">vuln-sync-osv</text>
-            <text x="623" y="162" text-anchor="end" class="mono-svg sm dim">10 8 * * 1</text>
-          </g>
-          <g>
-            <rect x="430" y="176" width="200" height="26" rx="6" class="pill" />
-            <text x="437" y="193" class="mono-svg sm">vuln-sync-cvss</text>
-            <text x="623" y="193" text-anchor="end" class="mono-svg sm dim">10 9 * * *</text>
-          </g>
-          <g>
-            <rect x="430" y="207" width="200" height="26" rx="6" class="pill" />
-            <text x="437" y="224" class="mono-svg sm">vuln-backfill-auto</text>
-            <text x="623" y="224" text-anchor="end" class="mono-svg sm dim">50 6 * * *</text>
-          </g>
+              <g class="node" data-node="monitoring" tabindex="0" role="button" aria-label="Cloud Monitoring and Logging">
+                <rect class="box" x="1120" y="56" width="220" height="200" rx="12" />
+                <rect x="1120" y="70" width="5" height="172" rx="2" fill="#0891b2" />
+                <text class="ti" x="1140" y="86" style="fill: #0891b2">Cloud Monitoring</text>
+                <text class="tx" x="1140" y="112">5 alert policies → email</text>
+                <text class="tx" x="1140" y="134">dashboard · 4 charts</text>
+                <text class="tx" x="1140" y="156">2 log-based metrics</text>
+                <text class="tx" x="1140" y="178">Error Reporting</text>
+                <text class="tx dim" x="1140" y="210">tier 1 emails;</text>
+                <text class="tx dim" x="1140" y="230">tier 2 never notifies</text>
+              </g>
 
-          <!-- ============ MONITORING ============ -->
-          <rect x="660" y="85" width="375" height="160" rx="10" class="box" />
-          <rect x="660" y="85" width="4" height="160" rx="2" fill="var(--obs)" />
-          <text x="677" y="111" class="t t-obs">Cloud Monitoring &amp; Logging</text>
-          <text x="677" y="133" class="s">5 alert policies → email channel</text>
-          <text x="677" y="151" class="s">2 log-based metrics, grouped by source/job</text>
-          <text x="677" y="169" class="s">dashboard: "Walrus operations" (4 charts)</text>
-          <text x="677" y="187" class="s">Cloud Error Reporting (grouped exceptions)</text>
-          <text x="677" y="211" class="s" fill="#94a3b8">
-            tier 1 interrupts · tier 2 is looked at
-          </text>
+              <g class="node group" data-node="compute" tabindex="0" role="button" aria-label="Cloud Run workloads">
+                <rect class="box" x="280" y="216" width="780" height="344" rx="14" />
+                <text class="ey" x="300" y="242" fill="#6d28d9">CLOUD RUN WORKLOADS</text>
+              </g>
 
-          <!-- ============ CLOUD RUN SERVICE ============ -->
-          <rect x="360" y="285" width="310" height="140" rx="10" class="box" />
-          <rect x="360" y="285" width="310" height="4" rx="2" fill="var(--api)" />
-          <text x="515" y="315" text-anchor="middle" class="t t-api">Cloud Run service</text>
-          <text x="515" y="334" text-anchor="middle" class="mono-svg">walrus-api</text>
-          <text x="515" y="354" text-anchor="middle" class="s">
-            1 vCPU · 1 GiB · :8080 · min 1 / max 4
-          </text>
-          <text x="515" y="378" text-anchor="middle" class="s">
-            public: /api/v1 · /download · /health · docs
-          </text>
-          <text x="515" y="396" text-anchor="middle" class="s">
-            operators: /admin/v1 (provider auth)
-          </text>
-          <text x="515" y="414" text-anchor="middle" class="s">
-            machines: /internal (Google OIDC)
-          </text>
+              <g class="node" data-node="api" data-parent="compute" tabindex="0" role="button" aria-label="Cloud Run service walrus-api">
+                <rect class="box" x="310" y="280" width="360" height="240" rx="12" />
+                <rect x="310" y="294" width="5" height="212" rx="2" fill="#2563eb" />
+                <text class="ey" x="332" y="306" fill="#2563eb">CLOUD RUN SERVICE</text>
+                <text class="mn" x="332" y="334" style="font-size: 21px; font-weight: 700; fill: #0f172a">walrus-api</text>
+                <text class="tx" x="332" y="358">1 vCPU · 1 GiB · :8080 · min 1 / max 4</text>
+                <line x1="332" y1="374" x2="650" y2="374" stroke="#e2e8f0" />
+                <text class="tag" x="332" y="400">PUBLIC</text>
+                <text class="tx" x="424" y="400" style="fill: #0f172a">/api/v1 · /download · /health</text>
+                <text class="tag" x="332" y="426">OPERATORS</text>
+                <text class="tx" x="424" y="426" style="fill: #0f172a">/admin/v1 · provider auth</text>
+                <text class="tag" x="332" y="452">MACHINES</text>
+                <text class="tx" x="424" y="452" style="fill: #0f172a">/internal · Google OIDC</text>
+                <text class="tx dim" x="332" y="490">runs vuln syncs in-process for /internal</text>
+              </g>
 
-          <!-- ============ CLOUD RUN JOBS ============ -->
-          <rect x="205" y="475" width="200" height="150" rx="10" class="box" />
-          <rect x="205" y="475" width="4" height="150" rx="2" fill="var(--job)" />
-          <text x="222" y="501" class="t t-job">Cloud Run Job</text>
-          <text x="222" y="520" class="mono-svg">walrus-sync</text>
-          <text x="222" y="544" class="s">2 vCPU · 2 GiB · ≤ 6 h</text>
-          <text x="222" y="562" class="s">discovery → download →</text>
-          <text x="222" y="578" class="s">transform → retention</text>
-          <text x="222" y="600" class="s" fill="#94a3b8">all packages, six-hourly —</text>
-          <text x="222" y="614" class="s" fill="#94a3b8">or one, launched by the API</text>
+              <g class="node" data-node="sync" data-parent="compute" tabindex="0" role="button" aria-label="Cloud Run Job walrus-sync">
+                <rect class="box" x="790" y="250" width="230" height="130" rx="12" />
+                <rect x="790" y="262" width="5" height="106" rx="2" fill="#7c3aed" />
+                <text class="ey" x="810" y="274" fill="#7c3aed">CLOUD RUN JOB</text>
+                <text class="mn" x="810" y="298" style="font-size: 16px; font-weight: 700; fill: #0f172a">walrus-sync</text>
+                <text class="tx" x="810" y="320">2 vCPU · 2 GiB · ≤ 6 h</text>
+                <text class="tx" x="810" y="342">discover → download →</text>
+                <text class="tx" x="810" y="362">transform → retain</text>
+              </g>
 
-          <rect x="430" y="475" width="205" height="150" rx="10" class="box" />
-          <rect x="430" y="475" width="4" height="150" rx="2" fill="var(--job)" />
-          <text x="447" y="501" class="t t-job">Cloud Run Job</text>
-          <text x="447" y="520" class="mono-svg">walrus-vuln-backfill</text>
-          <text x="447" y="544" class="s">1 vCPU · 1 GiB · ≤ 24 h</text>
-          <text x="447" y="562" class="s">one package's CVE history,</text>
-          <text x="447" y="578" class="s">paged from NVD</text>
-          <text x="447" y="600" class="s" fill="#94a3b8">launched on demand</text>
+              <g class="node" data-node="backfill" data-parent="compute" tabindex="0" role="button" aria-label="Cloud Run Job walrus-vuln-backfill">
+                <rect class="box" x="790" y="410" width="230" height="130" rx="12" />
+                <rect x="790" y="422" width="5" height="106" rx="2" fill="#7c3aed" />
+                <text class="ey" x="810" y="434" fill="#7c3aed">CLOUD RUN JOB</text>
+                <text class="mn" x="810" y="458" style="font-size: 15px; font-weight: 700; fill: #0f172a">walrus-vuln-backfill</text>
+                <text class="tx" x="810" y="480">1 vCPU · 1 GiB · ≤ 24 h</text>
+                <text class="tx" x="810" y="502">one package's CVE history,</text>
+                <text class="tx" x="810" y="522">paged from NVD</text>
+              </g>
 
-          <!-- ============ SECRETS ============ -->
-          <rect x="660" y="475" width="185" height="150" rx="10" class="box" />
-          <rect x="660" y="475" width="4" height="150" rx="2" fill="var(--secret)" />
-          <text x="677" y="501" class="t t-secret">Secret Manager</text>
-          <text x="677" y="523" class="mono-svg">walrus-database-url</text>
-          <text x="677" y="541" class="mono-svg">walrus-session-secret</text>
-          <text x="677" y="559" class="mono-svg">…-secret-previous</text>
-          <text x="677" y="577" class="mono-svg">walrus-admin-password</text>
-          <text x="677" y="595" class="mono-svg">walrus-nvd-api-key</text>
-          <text x="677" y="613" class="mono-svg">walrus-github-token</text>
+              <g class="node" data-node="secrets" tabindex="0" role="button" aria-label="Secret Manager">
+                <rect class="box" x="1120" y="290" width="220" height="190" rx="12" />
+                <rect x="1120" y="304" width="5" height="162" rx="2" fill="#d97706" />
+                <text class="ti" x="1140" y="318" style="fill: #b45309">Secret Manager</text>
+                <text class="sm mn" x="1140" y="344">walrus-database-url</text>
+                <text class="sm mn" x="1140" y="366">walrus-session-secret</text>
+                <text class="sm mn" x="1140" y="388">…-secret-previous</text>
+                <text class="sm mn" x="1140" y="410">walrus-admin-password</text>
+                <text class="sm mn" x="1140" y="432">walrus-nvd-api-key</text>
+                <text class="sm mn" x="1140" y="454">walrus-github-token</text>
+                <text class="tag" x="1328" y="432" text-anchor="end" style="fill: #b45309">OPT</text>
+                <text class="tag" x="1328" y="454" text-anchor="end" style="fill: #b45309">OPT</text>
+              </g>
 
-          <!-- ============ ARTIFACT REGISTRY ============ -->
-          <rect x="880" y="300" width="160" height="115" rx="10" class="box" />
-          <rect x="880" y="300" width="4" height="115" rx="2" fill="#334155" />
-          <text x="897" y="326" class="t" fill="#334155">Artifact Registry</text>
-          <text x="897" y="348" class="s">repo: walrus (Docker)</text>
-          <text x="897" y="370" class="mono-svg">walrus-api:&lt;sha&gt;</text>
-          <text x="897" y="396" class="s">one image per deploy,</text>
-          <text x="897" y="412" class="s">pulled by all three</text>
+              <g class="node" data-node="registry" tabindex="0" role="button" aria-label="Artifact Registry">
+                <rect class="box" x="1120" y="520" width="220" height="140" rx="12" />
+                <rect x="1120" y="534" width="5" height="112" rx="2" fill="#334155" />
+                <text class="ti" x="1140" y="548">Artifact Registry</text>
+                <text class="tx" x="1140" y="572">repo walrus · Docker</text>
+                <text class="sm mn" x="1140" y="596">walrus-api:&lt;sha&gt;</text>
+                <text class="tx" x="1140" y="620">one image per deploy,</text>
+                <text class="tx" x="1140" y="640">run by all three</text>
+              </g>
 
-          <!-- ============ SQL ============ -->
-          <rect x="205" y="665" width="235" height="175" rx="10" class="box" />
-          <rect x="205" y="665" width="4" height="175" rx="2" fill="var(--data)" />
-          <text x="222" y="691" class="t t-data">Cloud SQL</text>
-          <text x="222" y="711" class="mono-svg">walrus-postgres</text>
-          <text x="222" y="733" class="s">PostgreSQL 18 · Enterprise</text>
-          <text x="222" y="751" class="s">db-f1-micro · max_conn 25</text>
-          <text x="222" y="769" class="s">database &amp; user: walrus</text>
-          <text x="222" y="791" class="s">Auth Proxy, IAM-only,</text>
-          <text x="222" y="807" class="s">no authorised networks</text>
-          <text x="222" y="828" class="s" fill="#94a3b8">source of truth</text>
+              <g class="node" data-node="sql" tabindex="0" role="button" aria-label="Cloud SQL walrus-postgres">
+                <rect class="box" x="280" y="600" width="370" height="140" rx="12" />
+                <rect x="280" y="614" width="5" height="112" rx="2" fill="#059669" />
+                <text class="ti" x="302" y="628" style="fill: #047857">Cloud SQL</text>
+                <text class="mn" x="302" y="652" style="font-size: 14px; font-weight: 700; fill: #0f172a">walrus-postgres</text>
+                <text class="tx" x="302" y="676">PostgreSQL 18 · Enterprise · db-f1-micro</text>
+                <text class="tx" x="302" y="698">max_connections 25 · Auth Proxy, IAM-only</text>
+                <text class="tx dim" x="302" y="722">no authorised networks · source of truth</text>
+              </g>
 
-          <!-- ============ GCS ============ -->
-          <rect x="465" y="665" width="235" height="175" rx="10" class="box" />
-          <rect x="465" y="665" width="4" height="175" rx="2" fill="var(--data)" />
-          <text x="482" y="691" class="t t-data">Cloud Storage</text>
-          <text x="482" y="711" class="s">artifact bucket</text>
-          <text x="482" y="733" class="s">cached release binaries,</text>
-          <text x="482" y="751" class="s">some after archive</text>
-          <text x="482" y="769" class="s">transformation</text>
-          <text x="482" y="791" class="s">uniform bucket-level</text>
-          <text x="482" y="807" class="s">access</text>
-          <text x="482" y="828" class="s" fill="#94a3b8">survives a restart</text>
+              <g class="node" data-node="gcs" tabindex="0" role="button" aria-label="Cloud Storage artifact bucket">
+                <rect class="box" x="690" y="600" width="370" height="140" rx="12" />
+                <rect x="690" y="614" width="5" height="112" rx="2" fill="#059669" />
+                <text class="ti" x="712" y="628" style="fill: #047857">Cloud Storage</text>
+                <text class="mn" x="712" y="652" style="font-size: 14px; font-weight: 700; fill: #0f172a">artifact bucket</text>
+                <text class="tx" x="712" y="676">cached release binaries, some transformed</text>
+                <text class="tx" x="712" y="698">uniform bucket-level access</text>
+                <text class="tx dim" x="712" y="722">force_destroy = false · outlives destroy</text>
+              </g>
 
-          <!-- ============ TERRAFORM ============ -->
-          <rect x="725" y="665" width="315" height="175" rx="10" class="box" />
-          <text x="742" y="691" class="t" fill="#4338ca">Terraform</text>
-          <text x="742" y="713" class="s">config: infra/terraform/*.tf</text>
-          <text x="742" y="731" class="s">remote state: GCS bucket, versioned</text>
-          <text x="742" y="749" class="s">provider google ~&gt; 6.0 · terraform ≥ 1.9</text>
-          <text x="742" y="771" class="s">deploy.sh: build → push → secrets → apply</text>
-          <text x="742" y="789" class="s">teardown.sh: lower protection → destroy</text>
-          <text x="742" y="813" class="s" fill="#94a3b8">
-            state bucket &amp; artifact bucket outlive destroy
-          </text>
+              <g class="node" data-node="terraform" tabindex="0" role="button" aria-label="Terraform">
+                <rect class="box" x="280" y="754" width="1060" height="34" rx="8" />
+                <text class="tx" x="300" y="776"><tspan style="font-weight: 700; fill: #4338ca">Terraform</tspan>  ·  infra/terraform/*.tf  ·  state in a versioned GCS bucket  ·  deploy.sh: build → push → secrets → apply  ·  teardown.sh: lower protection → destroy</text>
+              </g>
 
-          <!-- ============ EXTERNAL RIGHT: inbox ============ -->
-          <rect x="1085" y="120" width="190" height="100" rx="10" class="box" />
-          <text x="1180" y="150" text-anchor="middle" class="t t-ext">Operator inbox</text>
-          <text x="1180" y="172" text-anchor="middle" class="s">alert email channel</text>
-          <text x="1180" y="192" text-anchor="middle" class="s">(alert_notification_email)</text>
+              <g class="node" data-node="inbox" tabindex="0" role="button" aria-label="Operator inbox">
+                <rect class="box" x="1420" y="70" width="200" height="120" rx="12" />
+                <text class="ey" x="1520" y="98" text-anchor="middle" fill="#64748b">EXTERNAL</text>
+                <text class="ti" x="1520" y="122" text-anchor="middle">Operator inbox</text>
+                <text class="tx" x="1520" y="146" text-anchor="middle">tier-1 alert emails</text>
+                <text class="sm mn" x="1520" y="170" text-anchor="middle">alert_notification_email</text>
+              </g>
 
-          <!-- ============ EXTERNAL RIGHT: upstreams ============ -->
-          <rect x="1085" y="290" width="190" height="230" rx="10" class="box" />
-          <text x="1180" y="318" text-anchor="middle" class="t t-ext">Upstream APIs</text>
-          <text x="1180" y="344" text-anchor="middle" class="s">NVD API 2.0</text>
-          <text x="1180" y="366" text-anchor="middle" class="s">CISA KEV</text>
-          <text x="1180" y="388" text-anchor="middle" class="s">OSV</text>
-          <text x="1180" y="410" text-anchor="middle" class="s">api.github.com</text>
-          <text x="1180" y="438" text-anchor="middle" class="s" fill="#94a3b8">
-            keyless / anonymous
-          </text>
-          <text x="1180" y="454" text-anchor="middle" class="s" fill="#94a3b8">
-            rate limits apply
-          </text>
+              <g class="node" data-node="upstream" tabindex="0" role="button" aria-label="Upstream services">
+                <rect class="box" x="1420" y="290" width="200" height="350" rx="12" />
+                <text class="ey" x="1440" y="318" fill="#64748b">EXTERNAL</text>
+                <text class="ti" x="1440" y="342">Upstreams</text>
+                <text class="nm" x="1440" y="374">NVD API 2.0</text>
+                <text class="sm dim" x="1440" y="392">api · backfill</text>
+                <text class="nm" x="1440" y="422">CISA KEV</text>
+                <text class="sm dim" x="1440" y="440">api</text>
+                <text class="nm" x="1440" y="470">OSV</text>
+                <text class="sm dim" x="1440" y="488">api</text>
+                <text class="nm" x="1440" y="518">api.github.com</text>
+                <text class="sm dim" x="1440" y="536">sync · release discovery</text>
+                <text class="nm" x="1440" y="566">vendor release hosts</text>
+                <text class="sm dim" x="1440" y="584">sync · binary downloads</text>
+                <text class="tx dim" x="1440" y="620">rate limits apply</text>
+              </g>
 
-          <!-- ============ ARROWS ============ -->
-          <!-- clients -> service -->
-          <path class="flow flow-api" d="M155,360 L352,360" />
-          <text x="253" y="352" text-anchor="middle" class="lbl">HTTPS public</text>
+              <!-- ============ EDGES ============ -->
+              <g class="edge" id="e-clients-api" data-kind="public" data-from="clients" data-to="api" data-badge="292,400"
+                 data-title="Clients → walrus-api" data-desc="Public HTTPS: metadata API, ranged downloads, health and docs. Operators reach /admin/v1 the same way.">
+                <path class="line" d="M220,400 H310" />
+                <text class="elabel" x="252" y="390" text-anchor="middle">HTTPS</text>
+              </g>
+              <g class="edge" id="e-sched-api" data-kind="invoke" data-from="scheduler" data-to="api" data-badge="490,201"
+                 data-title="Scheduler → walrus-api" data-desc="Five scheduler jobs POST /internal/* with a Google-signed OIDC token as walrus-scheduler; the route verifies audience, expiry and principal.">
+                <path class="line" d="M490,186 V280" />
+                <text class="elabel" x="502" y="244">OIDC · POST /internal/*</text>
+              </g>
+              <g class="edge" id="e-sched-sync" data-kind="invoke" data-from="scheduler" data-to="sync" data-badge="905,201"
+                 data-title="Scheduler → walrus-sync" data-desc="The six-hourly job calls the Cloud Run Jobs API :run with an OAuth token (the target is a Google API) to sync every package.">
+                <path class="line" d="M905,186 V250" />
+                <text class="elabel" x="920" y="232">OAuth · :run</text>
+              </g>
+              <g class="edge" id="e-api-sync" data-kind="invoke" data-from="api" data-to="sync" data-badge="692,315"
+                 data-title="walrus-api → walrus-sync" data-desc="“Sync now” for one package: run.jobs.runWithOverrides with --package and --job-id.">
+                <path class="line" d="M670,315 H790" />
+                <text class="elabel" x="740" y="305" text-anchor="middle">sync now</text>
+              </g>
+              <g class="edge" id="e-api-backfill" data-kind="invoke" data-from="api" data-to="backfill" data-badge="692,475"
+                 data-title="walrus-api → walrus-vuln-backfill" data-desc="Historical CVE fetch for one package: run.jobs.runWithOverrides with --job-id.">
+                <path class="line" d="M670,475 H790" />
+                <text class="elabel" x="740" y="465" text-anchor="middle">backfill</text>
+              </g>
+              <g class="edge" id="e-compute-sql" data-kind="data" data-from="compute" data-to="sql" data-badge="465,580"
+                 data-title="All workloads → Cloud SQL" data-desc="Every workload connects through the mounted /cloudsql Auth Proxy socket, IAM-only.">
+                <path class="line" d="M465,560 V600" />
+                <text class="elabel" x="434" y="585" text-anchor="end">pg · /cloudsql</text>
+              </g>
+              <g class="edge" id="e-api-gcs" data-kind="data" data-from="api" data-to="gcs" data-badge="620,541"
+                 data-title="walrus-api → Cloud Storage" data-desc="The service streams stored artifacts to clients, honouring byte ranges.">
+                <path class="line" d="M620,520 V580 H760 V600" />
+                <text class="elabel" x="690" y="576" text-anchor="middle">ranged reads</text>
+              </g>
+              <g class="edge" id="e-sync-gcs" data-kind="data" data-from="sync" data-to="gcs" data-badge="1040,450"
+                 data-title="walrus-sync → Cloud Storage" data-desc="Upstream bytes stream through checksum verification (and any archive transform) straight into the bucket — no temp file.">
+                <path class="line" d="M1020,330 H1040 V600" />
+                <text class="elabel" x="1030" y="585" text-anchor="end">verified writes</text>
+              </g>
+              <g class="edge" id="e-compute-secrets" data-kind="secret" data-from="compute" data-to="secrets" data-badge="1060,385"
+                 data-title="All workloads → Secret Manager" data-desc="Secrets are mounted as references at runtime, never as literal values.">
+                <path class="line" d="M1060,385 H1120" />
+                <text class="elabel" x="1090" y="376" text-anchor="middle">secrets</text>
+              </g>
+              <g class="edge" id="e-registry-compute" data-kind="image" data-from="registry" data-to="compute" data-badge="1060,540"
+                 data-title="Artifact Registry → all workloads" data-desc="Every workload runs walrus-api:&lt;git-sha&gt;; the deployment verifier asserts all three tags match.">
+                <path class="line" d="M1120,540 H1060" />
+                <text class="elabel" x="1090" y="531" text-anchor="middle">pull</text>
+              </g>
+              <g class="edge" id="e-compute-mon" data-kind="obs" data-from="compute" data-to="monitoring" data-badge="1060,236"
+                 data-title="All workloads → Monitoring" data-desc="Structured logs, request metrics and Job execution results.">
+                <path class="line" d="M1060,236 H1120" />
+                <text class="elabel" x="1090" y="228" text-anchor="middle">logs</text>
+              </g>
+              <g class="edge" id="e-sched-mon" data-kind="obs" data-from="scheduler" data-to="monitoring" data-badge="1060,120"
+                 data-title="Scheduler → Monitoring" data-desc="Cloud Scheduler publishes no metrics; invocation failures reach the dashboard through a log-based metric.">
+                <path class="line" d="M1060,120 H1120" />
+                <text class="elabel" x="1090" y="112" text-anchor="middle">logs</text>
+              </g>
+              <g class="edge" id="e-mon-inbox" data-kind="obs" data-from="monitoring" data-to="inbox" data-badge="1346,130"
+                 data-title="Monitoring → Operator inbox" data-desc="Tier-1 alert policies email alert_notification_email.">
+                <path class="line" d="M1340,130 H1420" />
+                <text class="elabel" x="1382" y="121" text-anchor="middle">email</text>
+              </g>
+              <g class="edge" id="e-compute-upstream" data-kind="egress" data-from="compute" data-to="upstream" data-badge="1250,500"
+                 data-title="All workloads → Upstreams" data-desc="Outbound HTTPS: walrus-api reaches NVD, KEV and OSV; walrus-sync reaches GitHub and vendor hosts; walrus-vuln-backfill pages NVD.">
+                <path class="line" d="M1060,500 H1420" />
+                <text class="elabel" x="1396" y="491" text-anchor="middle">HTTPS</text>
+              </g>
 
-          <!-- scheduler -> service (internal) -->
-          <path class="flow" d="M420,245 L420,268 L500,268 L500,285" />
-          <text x="432" y="262" class="lbl">OIDC /internal</text>
-
-          <!-- scheduler -> sync job -->
-          <path class="flow" d="M250,245 L250,455 L305,455 L305,475" />
-          <text x="238" y="300" class="lbl" transform="rotate(-90 238 300)">OAuth :run</text>
-
-          <!-- service -> sync job (admin-triggered, one package) -->
-          <path class="flow" d="M380,425 L380,475" />
-          <text x="388" y="450" class="lbl" transform="rotate(-90 388 450)">overrides</text>
-
-          <!-- service -> backfill job -->
-          <path class="flow" d="M470,425 L470,452 L532,452 L532,475" />
-          <text x="544" y="446" class="lbl">run.jobs.runWithOverrides</text>
-
-          <!-- service -> sql -->
-          <path class="flow" d="M390,425 L390,620 L322,620 L322,665" />
-          <text x="330" y="642" class="lbl">pg via /cloudsql</text>
-
-          <!-- sync -> sql -->
-          <path class="flow-dashed" d="M305,625 L305,648 L322,648 L322,665" />
-
-          <!-- service -> gcs -->
-          <path class="flow flow-api" d="M417,425 L417,640 L580,640 L580,665" />
-          <text x="500" y="634" text-anchor="middle" class="lbl">stream artifacts</text>
-
-          <!-- backfill -> gcs -->
-          <path class="flow-dashed" d="M532,625 L532,648 L520,648 L520,665" />
-
-          <!-- workloads -> secrets -->
-          <path class="flow-dashed" d="M640,425 L640,458 L700,458 L700,475" />
-          <text x="708" y="468" class="lbl">runtime secrets</text>
-
-          <!-- workloads -> upstreams -->
-          <path class="flow" d="M670,420 L1060,420 L1085,420" />
-          <text x="870" y="434" text-anchor="middle" class="lbl">
-            vulnerability + release metadata
-          </text>
-
-          <!-- workloads -> monitoring -->
-          <path class="flow-dashed" d="M620,285 L620,258 L900,258 L900,245" />
-          <text x="730" y="251" class="lbl">logs &amp; metrics</text>
-
-          <!-- monitoring -> inbox -->
-          <path class="flow" d="M1035,165 L1085,165" />
-          <text x="1060" y="156" text-anchor="middle" class="lbl">email</text>
-
-          <!-- artifact registry -> service -->
-          <path class="flow-dashed" d="M880,357 L670,357" />
-          <text x="775" y="349" text-anchor="middle" class="lbl">image pull</text>
-        </svg>
-      </div>
-      <div class="legend">
-        <span><i class="swatch" style="background: #2563eb"></i> public request path</span>
-        <span><i class="swatch" style="background: #64748b"></i> platform invocation</span>
-        <span><i class="swatch" style="background: #94a3b8"></i> internal dependency</span>
-        <span><i class="swatch" style="background: #818cf8"></i> Terraform project boundary</span>
-      </div>
-
-      <h2>Compute</h2>
-
-      <h3>Cloud Run service — <code>walrus-api</code></h3>
-      <p>
-        The always-on HTTP face. It serves the public metadata API, ranged artifact downloads,
-        health and docs; the authenticated operator UI under <code>/admin/v1</code>; and the
-        machine-only <code>/internal</code> routes that Cloud Scheduler calls. It scales between one
-        and four instances, which is not an arbitrary ceiling: the maximum is bounded by the Cloud
-        SQL connection budget (see below), and the one-instance floor keeps the service responsive
-        instead of cold on the first request. On-demand syncs run inside the service with a single
-        transform slot, so it pins 1 GiB rather than the 512 MiB default.
-      </p>
-
-      <h3>Cloud Run Jobs — <code>walrus-sync</code> and <code>walrus-vuln-backfill</code></h3>
-      <p>
-        Long-running work runs as Jobs, each in its own container with no request to outlive.
-        <code>walrus-sync</code> is triggered six-hourly by Cloud Scheduler for the whole fleet; it
-        discovers new releases, downloads and verifies them, applies any configured archive
-        transform, stores the result in GCS, and prunes per the retention policy. It pins 2 vCPU and
-        2 GiB because two transforms can run at once, each holding roughly 500 MiB of link cache. The
-        API also launches it directly, with <code>--package</code>/<code>--job-id</code> overrides,
-        for an operator's "sync now" on one package — that used to run detached inside the service
-        itself, which meant a large enough download (2+ GB across a handful of platform artifacts,
-        say) could still be transferring when Cloud Run's CPU throttling and instance-recycling
-        decided the service looked idle and pulled the container out from under it, silently, until
-        the next boot's startup recovery marked the job "interrupted by restart". Running it as a
-        Job instead gives it the same guarantee the scheduled walk already had: its own container,
-        no response to outlive.
-        <code>walrus-vuln-backfill</code> is launched the same way, with a <code>--job-id</code>
-        override, when a package needs its historical CVEs fetched. Its 24-hour timeout and 1 GiB
-        sizing reflect a workload that streams one page of NVD results at a time and is
-        rate-limited upstream rather than CPU-bound.
-      </p>
-
-      <div class="callout">
-        A sync can transfer tens of gigabytes — onboarding a single IDE package has meant 25.8 GB
-        across 16 artifacts. That is why it is a Job and why its timeout is six hours rather than
-        the 30-minute ceiling of a Scheduler HTTP call.
-      </div>
-
-      <h2>Scheduled jobs</h2>
-      <p>
-        Cloud Scheduler holds six jobs, all in UTC. Five call back into the API over OIDC using the
-        <code>walrus-scheduler</code> service account; the package sync instead asks the Cloud Run
-        Jobs API to start <code>walrus-sync</code>, authenticated with an OAuth token because the
-        target is a Google API. That is one of two ways <code>walrus-sync</code> gets started —
-        the other is <code>walrus-api</code> itself, as the <code>walrus-api</code> service account
-        rather than <code>walrus-scheduler</code>, with a container-argument override naming one
-        package, when an operator asks for that package right now instead of waiting for the next
-        six-hourly tick.
-      </p>
-      <table>
-        <thead>
-          <tr>
-            <th>Scheduler job</th>
-            <th>Schedule (UTC)</th>
-            <th>Target</th>
-            <th>Purpose</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td class="mono">walrus-sync</td>
-            <td class="mono">0 */6 * * *</td>
-            <td>Cloud Run Job <code>walrus-sync</code> via <code>:run</code></td>
-            <td>Full package sync: discover releases, download, transform, retain.</td>
-          </tr>
-          <tr>
-            <td class="mono">walrus-vuln-sync-nvd</td>
-            <td class="mono">20 */2 * * *</td>
-            <td><code>POST /internal/vuln-sync/nvd</code></td>
-            <td>
-              Incremental NVD ingestion on its cursor. Every two hours, because NVD changes
-              constantly.
-            </td>
-          </tr>
-          <tr>
-            <td class="mono">walrus-vuln-sync-kev</td>
-            <td class="mono">40 7 * * *</td>
-            <td><code>POST /internal/vuln-sync/kev</code></td>
-            <td>CISA KEV catalogue, once a day.</td>
-          </tr>
-          <tr>
-            <td class="mono">walrus-vuln-sync-osv</td>
-            <td class="mono">10 8 * * 1</td>
-            <td><code>POST /internal/vuln-sync/osv</code></td>
-            <td>Weekly OSV cross-check, Mondays.</td>
-          </tr>
-          <tr>
-            <td class="mono">walrus-vuln-sync-cvss</td>
-            <td class="mono">10 9 * * *</td>
-            <td><code>POST /internal/vuln-sync/cvss</code></td>
-            <td>
-              CVSS enrichment repair pass. Fills missing scores in a bounded walk (default 150
-              CVEs); a fresh score can newly block a download, which is intended (ADR-002).
-            </td>
-          </tr>
-          <tr>
-            <td class="mono">walrus-vuln-backfill-auto</td>
-            <td class="mono">50 6 * * *</td>
-            <td><code>POST /internal/vuln-backfill/auto</code></td>
-            <td>
-              Sweeps for newly tracked packages whose CVE history was never fetched, and launches
-              <code>walrus-vuln-backfill</code> for each (ADR-003). Incremental sync is cursor-based
-              and structurally blind to a package's past.
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      <p>
-        The minutes are offset deliberately. Package sync is on the hour, NVD at :20, cvss at :10
-        the next day, and the auto-backfill sweep at :50 after a scheduled NVD tick, so the sources
-        do not contend for the same advisory lock. The retry backoff on the vulnerability jobs is
-        600 seconds for the same reason: a retry should land after a contended lock has been
-        released, not bounce straight off it again.
-      </p>
-
-      <h2>Data stores</h2>
-
-      <h3>Cloud SQL — <code>walrus-postgres</code></h3>
-      <p>
-        Postgres 18 on the smallest Enterprise tier, reachable only through the Cloud SQL Auth Proxy
-        from the mounted <code>/cloudsql</code> socket. There are no authorised networks and no
-        public application path. It holds catalogue state, jobs, audit history, vulnerability
-        associations and artifact provenance. It is the source of truth.
-      </p>
-
-      <h3>Cloud Storage — the artifact bucket</h3>
-      <p>
-        Cached release binaries, some stored in a walrus-produced transformed form. It uses uniform
-        bucket-level access, and Terraform is configured not to delete it on teardown (<code
-          >force_destroy = false</code
-        >), so it and the Terraform state bucket outlive <code>terraform destroy</code>.
-      </p>
-
-      <h3>Artifact Registry</h3>
-      <p>
-        A single Docker repository named <code>walrus</code>. Each deploy builds
-        <code>walrus-api:&lt;git-sha&gt;</code> and pushes it; all three workloads run that same
-        image, which is why a deployment verifier asserts their tags match. A partial deploy that
-        updates the Jobs but not the service is a real failure mode.
-      </p>
-
-      <h2>Credentials and secrets</h2>
-      <p>
-        All runtime secrets live in Secret Manager and are mounted as references, never as literal
-        values. Two of them are optional, and their absence changes throughput rather than
-        correctness.
-      </p>
-      <table>
-        <thead>
-          <tr>
-            <th>Secret</th>
-            <th>Consumed by</th>
-            <th>Notes</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td class="mono">walrus-database-url <span class="tag t-required">required</span></td>
-            <td>all three workloads</td>
-            <td>The Postgres DSN, pointing at the <code>/cloudsql</code> socket.</td>
-          </tr>
-          <tr>
-            <td class="mono">walrus-session-secret <span class="tag t-required">required</span></td>
-            <td>walrus-api</td>
-            <td>Signs operator session cookies.</td>
-          </tr>
-          <tr>
-            <td class="mono">…-secret-previous <span class="tag t-required">required</span></td>
-            <td>walrus-api</td>
-            <td>Accepts sessions signed before a rotation.</td>
-          </tr>
-          <tr>
-            <td class="mono">walrus-admin-password <span class="tag t-required">required</span></td>
-            <td>walrus-api</td>
-            <td>Built-in admin provider; a strawman for an enterprise directory.</td>
-          </tr>
-          <tr>
-            <td class="mono">walrus-nvd-api-key <span class="tag t-optional">optional</span></td>
-            <td>service + both Jobs</td>
-            <td>
-              Raises NVD from 5 to 50 requests / 30 s. Keyless is supported; a backfill goes from
-              minutes to hours.
-            </td>
-          </tr>
-          <tr>
-            <td class="mono">walrus-github-token <span class="tag t-optional">optional</span></td>
-            <td>walrus-sync only</td>
-            <td>
-              Raises GitHub from 60 to 5,000 requests / hour. Mounted only on the one workload that
-              calls <code>api.github.com</code>.
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      <p>
-        The optional secrets are declared unconditionally so their IAM bindings and rotation paths
-        exist from the first apply, but a secret version is written only when the corresponding
-        environment variable is supplied. A secret reference with no version is a hard deploy
-        failure, so <code>deploy.sh</code> derives the mount flag from whether it actually populated
-        one.
-      </p>
-
-      <h2>Identity and access</h2>
-      <div class="grid">
-        <div class="card">
-          <h3><code>walrus-api</code></h3>
-          <p>
-            Runs the service and both Jobs. Holds GCS Object Admin on the artifact bucket, Cloud SQL
-            Client, Secret Accessor on the six secrets, and a custom job-runner role (<code
-              >run.jobs.run</code
-            >
-            + <code>runWithOverrides</code>) scoped to each Job individually — backfill and sync. The
-            custom role exists because the API only needs to start those two Jobs, with a
-            container-argument override, and nothing more.
+              <g id="badges"></g>
+            </svg>
+          </div>
+          <div id="pop" hidden role="dialog" aria-live="polite"></div>
+          <div id="tip" hidden></div>
+        </div>
+        <div id="steps">
+          <p class="hint">
+            Hover any box or line to trace its connections; click a box for details. Pick a flow above
+            to see a request or job step by step.
           </p>
         </div>
-        <div class="card">
-          <h3><code>walrus-scheduler</code></h3>
+      </section>
+
+      <div class="sections">
+        <section>
+          <h2>Compute</h2>
+          <h3>Cloud Run service — <code>walrus-api</code></h3>
           <p>
-            What Cloud Scheduler acts as. Holds <code>run.invoker</code> on the API service for the
-            OIDC <code>/internal</code> calls, and <code>run.invoker</code> on the sync Job to start
-            it. Invoking a service and executing a Job are separate permissions.
+            The always-on HTTP face. It serves the public metadata API, ranged artifact downloads,
+            health and docs; the authenticated operator UI under <code>/admin/v1</code>; and the
+            machine-only <code>/internal</code> routes that Cloud Scheduler calls. It scales between
+            one and four instances, which is not an arbitrary ceiling: the maximum is bounded by the
+            Cloud SQL connection budget (see below), and the one-instance floor keeps the service
+            responsive instead of cold on the first request. On-demand syncs run inside the service
+            with a single transform slot, so it pins 1 GiB rather than the 512 MiB default.
           </p>
-        </div>
-        <div class="card">
-          <h3><code>allUsers</code></h3>
+          <h3>Cloud Run Jobs — <code>walrus-sync</code> and <code>walrus-vuln-backfill</code></h3>
           <p>
-            Public <code>run.invoker</code> on the API service, which is what makes
-            <code>/api/v1</code>, <code>/download</code>, health and docs reachable. It is not an
-            authorisation bypass: <code>/internal</code> verifies OIDC audience, expiry and
-            principal, and <code>/admin</code> is guarded by provider auth.
+            Long-running work runs as Jobs, each in its own container with no request to outlive.
+            <code>walrus-sync</code> is triggered six-hourly by Cloud Scheduler for the whole fleet;
+            it discovers new releases, downloads and verifies them, applies any configured archive
+            transform, stores the result in GCS, and prunes per the retention policy. It pins 2 vCPU
+            and 2 GiB because two transforms can run at once, each holding roughly 500 MiB of link
+            cache. The API also launches it directly, with <code>--package</code>/<code>--job-id</code>
+            overrides, for an operator's "sync now" on one package — that used to run detached inside
+            the service itself, which meant a large enough download (2+ GB across a handful of
+            platform artifacts, say) could still be transferring when Cloud Run's CPU throttling and
+            instance-recycling decided the service looked idle and pulled the container out from
+            under it, silently, until the next boot's startup recovery marked the job "interrupted by
+            restart". Running it as a Job instead gives it the same guarantee the scheduled walk
+            already had: its own container, no response to outlive.
+            <code>walrus-vuln-backfill</code> is launched the same way, with a
+            <code>--job-id</code> override, when a package needs its historical CVEs fetched. Its
+            24-hour timeout and 1 GiB sizing reflect a workload that streams one page of NVD results
+            at a time and is rate-limited upstream rather than CPU-bound.
           </p>
-        </div>
+          <div class="callout">
+            A sync can transfer tens of gigabytes — onboarding a single IDE package has meant 25.8 GB
+            across 16 artifacts. That is why it is a Job and why its timeout is six hours rather than
+            the 30-minute ceiling of a Scheduler HTTP call.
+          </div>
+        </section>
+
+        <section>
+          <h2>Data stores</h2>
+          <h3>Cloud SQL — <code>walrus-postgres</code></h3>
+          <p>
+            Postgres 18 on the smallest Enterprise tier, reachable only through the Cloud SQL Auth
+            Proxy from the mounted <code>/cloudsql</code> socket. There are no authorised networks and
+            no public application path. It holds catalogue state, jobs, audit history, vulnerability
+            associations and artifact provenance. It is the source of truth.
+          </p>
+          <h3>Cloud Storage — the artifact bucket</h3>
+          <p>
+            Cached release binaries, some stored in a walrus-produced transformed form. It uses
+            uniform bucket-level access, and Terraform is configured not to delete it on teardown
+            (<code>force_destroy = false</code>), so it and the Terraform state bucket outlive
+            <code>terraform destroy</code>.
+          </p>
+          <h3>Artifact Registry</h3>
+          <p>
+            A single Docker repository named <code>walrus</code>. Each deploy builds
+            <code>walrus-api:&lt;git-sha&gt;</code> and pushes it; all three workloads run that same
+            image, which is why a deployment verifier asserts their tags match. A partial deploy that
+            updates the Jobs but not the service is a real failure mode.
+          </p>
+          <h2 style="margin-top: 26px">The connection budget</h2>
+          <p>
+            Four numbers bound how many Postgres connections the estate can hold, and they move
+            together:
+          </p>
+          <p class="formula">
+            <code>service_db_pool_max × cloud_run_max_instances + job_db_pool_max × 2 ≤
+              db_max_connections − db_reserved_connections</code>
+          </p>
+          <p>
+            With the defaults that is <code>3 × 4 + 4 × 2 = 20 ≤ 25 − 5</code>. The invariant is
+            enforced by a Terraform precondition, so an over-subscribed configuration fails at plan
+            time rather than at three in the morning. The lesson behind it: raising the Cloud Run
+            instance ceiling without raising the database tier does not scale the service up, it
+            exhausts Postgres and turns a scale-up into an outage. The defaults size a test
+            environment; production should raise the Cloud SQL tier and all four numbers together.
+          </p>
+        </section>
+
+        <section class="span">
+          <h2>Scheduled jobs</h2>
+          <p>
+            Cloud Scheduler holds six jobs, all in UTC. Five call back into the API over OIDC using
+            the <code>walrus-scheduler</code> service account; the package sync instead asks the Cloud
+            Run Jobs API to start <code>walrus-sync</code>, authenticated with an OAuth token because
+            the target is a Google API. That is one of two ways <code>walrus-sync</code> gets started
+            — the other is <code>walrus-api</code> itself, as the <code>walrus-api</code> service
+            account rather than <code>walrus-scheduler</code>, with a container-argument override
+            naming one package, when an operator asks for that package right now instead of waiting
+            for the next six-hourly tick.
+          </p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Scheduler job</th>
+                  <th>Schedule (UTC)</th>
+                  <th>Target</th>
+                  <th>Purpose</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="mono">walrus-sync</td>
+                  <td class="mono">0 */6 * * *</td>
+                  <td>Cloud Run Job <code>walrus-sync</code> via <code>:run</code></td>
+                  <td>Full package sync: discover releases, download, transform, retain.</td>
+                </tr>
+                <tr>
+                  <td class="mono">walrus-vuln-sync-nvd</td>
+                  <td class="mono">20 */2 * * *</td>
+                  <td><code>POST /internal/vuln-sync/nvd</code></td>
+                  <td>Incremental NVD ingestion on its cursor. Every two hours, because NVD changes constantly.</td>
+                </tr>
+                <tr>
+                  <td class="mono">walrus-vuln-sync-kev</td>
+                  <td class="mono">40 7 * * *</td>
+                  <td><code>POST /internal/vuln-sync/kev</code></td>
+                  <td>CISA KEV catalogue, once a day.</td>
+                </tr>
+                <tr>
+                  <td class="mono">walrus-vuln-sync-osv</td>
+                  <td class="mono">10 8 * * 1</td>
+                  <td><code>POST /internal/vuln-sync/osv</code></td>
+                  <td>Weekly OSV cross-check, Mondays.</td>
+                </tr>
+                <tr>
+                  <td class="mono">walrus-vuln-sync-cvss</td>
+                  <td class="mono">10 9 * * *</td>
+                  <td><code>POST /internal/vuln-sync/cvss</code></td>
+                  <td>
+                    CVSS enrichment repair pass. Fills missing scores in a bounded walk (default 150
+                    CVEs); a fresh score can newly block a download, which is intended (ADR-002).
+                  </td>
+                </tr>
+                <tr>
+                  <td class="mono">walrus-vuln-backfill-auto</td>
+                  <td class="mono">50 6 * * *</td>
+                  <td><code>POST /internal/vuln-backfill/auto</code></td>
+                  <td>
+                    Sweeps for newly tracked packages whose CVE history was never fetched, and launches
+                    <code>walrus-vuln-backfill</code> for each (ADR-003). Incremental sync is
+                    cursor-based and structurally blind to a package's past.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            The minutes are offset deliberately. Package sync is on the hour, NVD at :20, cvss at :10
+            the next day, and the auto-backfill sweep at :50 after a scheduled NVD tick, so the sources
+            do not contend for the same advisory lock. The retry backoff on the vulnerability jobs is
+            600 seconds for the same reason: a retry should land after a contended lock has been
+            released, not bounce straight off it again.
+          </p>
+        </section>
+
+        <section>
+          <h2>Credentials and secrets</h2>
+          <p>
+            All runtime secrets live in Secret Manager and are mounted as references, never as literal
+            values. Two of them are optional, and their absence changes throughput rather than
+            correctness.
+          </p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Secret</th>
+                  <th>Consumed by</th>
+                  <th>Notes</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="mono">walrus-database-url <span class="pilltag t-required">required</span></td>
+                  <td>all three workloads</td>
+                  <td>The Postgres DSN, pointing at the <code>/cloudsql</code> socket.</td>
+                </tr>
+                <tr>
+                  <td class="mono">walrus-session-secret <span class="pilltag t-required">required</span></td>
+                  <td>walrus-api</td>
+                  <td>Signs operator session cookies.</td>
+                </tr>
+                <tr>
+                  <td class="mono">…-secret-previous <span class="pilltag t-required">required</span></td>
+                  <td>walrus-api</td>
+                  <td>Accepts sessions signed before a rotation.</td>
+                </tr>
+                <tr>
+                  <td class="mono">walrus-admin-password <span class="pilltag t-required">required</span></td>
+                  <td>walrus-api</td>
+                  <td>Built-in admin provider; a strawman for an enterprise directory.</td>
+                </tr>
+                <tr>
+                  <td class="mono">walrus-nvd-api-key <span class="pilltag t-optional">optional</span></td>
+                  <td>service + both Jobs</td>
+                  <td>Raises NVD from 5 to 50 requests / 30 s. Keyless is supported; a backfill goes from minutes to hours.</td>
+                </tr>
+                <tr>
+                  <td class="mono">walrus-github-token <span class="pilltag t-optional">optional</span></td>
+                  <td>walrus-sync only</td>
+                  <td>
+                    Raises GitHub from 60 to 5,000 requests / hour. Mounted only on the one workload
+                    that calls <code>api.github.com</code>.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            The optional secrets are declared unconditionally so their IAM bindings and rotation paths
+            exist from the first apply, but a secret version is written only when the corresponding
+            environment variable is supplied. A secret reference with no version is a hard deploy
+            failure, so <code>deploy.sh</code> derives the mount flag from whether it actually
+            populated one.
+          </p>
+        </section>
+
+        <section>
+          <h2>Identity and access</h2>
+          <div class="grid">
+            <div class="card">
+              <h3><code>walrus-api</code></h3>
+              <p>
+                Runs the service and both Jobs. Holds GCS Object Admin on the artifact bucket, Cloud
+                SQL Client, Secret Accessor on the six secrets, and a custom job-runner role
+                (<code>run.jobs.run</code> + <code>runWithOverrides</code>) scoped to each Job
+                individually — backfill and sync. The custom role exists because the API only needs to
+                start those two Jobs, with a container-argument override, and nothing more.
+              </p>
+            </div>
+            <div class="card">
+              <h3><code>walrus-scheduler</code></h3>
+              <p>
+                What Cloud Scheduler acts as. Holds <code>run.invoker</code> on the API service for
+                the OIDC <code>/internal</code> calls, and <code>run.invoker</code> on the sync Job to
+                start it. Invoking a service and executing a Job are separate permissions.
+              </p>
+            </div>
+            <div class="card">
+              <h3><code>allUsers</code></h3>
+              <p>
+                Public <code>run.invoker</code> on the API service, which is what makes
+                <code>/api/v1</code>, <code>/download</code>, health and docs reachable. It is not an
+                authorisation bypass: <code>/internal</code> verifies OIDC audience, expiry and
+                principal, and <code>/admin</code> is guarded by provider auth.
+              </p>
+            </div>
+          </div>
+          <h2 style="margin-top: 22px">Observability</h2>
+          <p>
+            The estate distinguishes two tiers. Tier 1 sends email and is deliberately narrow, because
+            paging a human for a transient failure teaches them to ignore the channel. Tier 2 is the
+            surface an operator looks at, and it never notifies.
+          </p>
+          <div class="grid">
+            <div class="card">
+              <h3>Tier 1 — alerts</h3>
+              <p>
+                Cloud Run error, scheduler job failed, vulnerability sync degraded (more than one
+                failure in four hours), automatic CVE backfill exhausted, and a deliberate
+                informational alert when versions become undownloadable. That last one is walrus
+                working correctly; it exists so the block is not discovered as a mystery build
+                failure.
+              </p>
+            </div>
+            <div class="card">
+              <h3>Tier 2 — dashboard</h3>
+              <p>
+                The "Walrus operations" dashboard charts vulnerability sync failures by source,
+                scheduler invocation failures by job, API requests by response class, and Job
+                executions by result. Two of those charts are fed by log-based metrics, because Cloud
+                Scheduler publishes no metric at all.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section>
+          <h2>Deploying and tearing down</h2>
+          <p>
+            <code>bash infra/scripts/deploy.sh</code> runs the TypeScript build, builds and pushes a
+            git-SHA-tagged image, writes the runtime secrets, imports any pre-existing secrets into
+            Terraform state, applies the full plan, and finally rolls the new image onto the Cloud Run
+            service. Terraform owns everything except the container image, which it ignores so that
+            routine deploys are not Terraform runs.
+          </p>
+          <p>
+            <code>bash infra/scripts/teardown.sh</code> confirms, lowers deletion protection on Cloud
+            SQL and the Jobs, and destroys the Terraform-managed resources. The Terraform state bucket
+            and the artifact bucket are deliberately left behind.
+          </p>
+          <p>
+            <code>verify-deployment.sh</code> asserts the invariants the tickets claim: healthy
+            service, all six scheduler jobs enabled and firing, matching image tags across the three
+            workloads, correct memory/heap/pool sizing, mounted secrets, alert policies with
+            severities, the dashboard and log metrics, auth rejection on <code>/internal</code>, and —
+            with <code>--full</code> — that served bytes hash to their published digests.
+          </p>
+          <h2 style="margin-top: 22px">Cost</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Resource</th>
+                  <th>~Monthly cost</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td>Cloud SQL <code>db-f1-micro</code></td><td>~$7</td></tr>
+                <tr><td>Cloud Run (min 1 instance)</td><td>~$5–15</td></tr>
+                <tr><td>GCS, Artifact Registry, Scheduler</td><td>negligible</td></tr>
+                <tr><th>Total</th><th>~$15–25 / month</th></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section>
+          <h2>Where the pieces live in the repo</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Concern</th>
+                  <th>File</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td>Service and Jobs, plus the connection-budget precondition</td><td class="mono">infra/terraform/cloudrun.tf</td></tr>
+                <tr><td>Scheduler jobs and cadences</td><td class="mono">infra/terraform/scheduler.tf</td></tr>
+                <tr><td>Cloud SQL instance, database and user</td><td class="mono">infra/terraform/sql.tf</td></tr>
+                <tr><td>Bucket and Docker repository</td><td class="mono">infra/terraform/storage.tf, registry.tf</td></tr>
+                <tr><td>Secrets and IAM</td><td class="mono">infra/terraform/secrets.tf, iam.tf</td></tr>
+                <tr><td>Alert policies, metrics and dashboard</td><td class="mono">infra/terraform/monitoring.tf</td></tr>
+                <tr><td>Inputs and defaults, including every pool size</td><td class="mono">infra/terraform/variables.tf</td></tr>
+                <tr><td>Job entry points</td><td class="mono">src/commands/sync-job.ts, vuln-backfill-job.ts</td></tr>
+                <tr><td>Internal trigger routes</td><td class="mono">src/routes/internal.ts</td></tr>
+                <tr><td>Operator runbook</td><td class="mono">engineering/docs/build-release.md</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
       </div>
-
-      <h2>The connection budget</h2>
-      <p>
-        Four numbers bound how many Postgres connections the estate can hold, and they move
-        together:
-      </p>
-      <p style="text-align: center">
-        <code
-          >service_db_pool_max × cloud_run_max_instances + job_db_pool_max × 2 ≤ db_max_connections
-          − db_reserved_connections</code
-        >
-      </p>
-      <p>
-        With the defaults that is <code>3 × 4 + 4 × 2 = 20 ≤ 25 − 5</code>. The invariant is
-        enforced by a Terraform precondition, so an over-subscribed configuration fails at plan time
-        rather than at three in the morning. The lesson behind it: raising the Cloud Run instance
-        ceiling without raising the database tier does not scale the service up, it exhausts
-        Postgres and turns a scale-up into an outage. The defaults size a test environment;
-        production should raise the Cloud SQL tier and all four numbers together.
-      </p>
-
-      <h2>Observability</h2>
-      <p>
-        The estate distinguishes two tiers. Tier 1 sends email and is deliberately narrow, because
-        paging a human for a transient failure teaches them to ignore the channel. Tier 2 is the
-        surface an operator looks at, and it never notifies.
-      </p>
-      <div class="grid">
-        <div class="card">
-          <h3>Tier 1 — alerts</h3>
-          <p>
-            Cloud Run error, scheduler job failed, vulnerability sync degraded (more than one
-            failure in four hours), automatic CVE backfill exhausted, and a deliberate informational
-            alert when versions become undownloadable. That last one is walrus working correctly; it
-            exists so the block is not discovered as a mystery build failure.
-          </p>
-        </div>
-        <div class="card">
-          <h3>Tier 2 — dashboard</h3>
-          <p>
-            The "Walrus operations" dashboard charts vulnerability sync failures by source,
-            scheduler invocation failures by job, API requests by response class, and Job executions
-            by result. Two of those charts are fed by log-based metrics, because Cloud Scheduler
-            publishes no metric at all.
-          </p>
-        </div>
-      </div>
-
-      <h2>Deploying and tearing down</h2>
-      <p>
-        <code>bash infra/scripts/deploy.sh</code> runs the TypeScript build, builds and pushes a
-        git-SHA-tagged image, writes the runtime secrets, imports any pre-existing secrets into
-        Terraform state, applies the full plan, and finally rolls the new image onto the Cloud Run
-        service. Terraform owns everything except the container image, which it ignores so that
-        routine deploys are not Terraform runs.
-      </p>
-      <p>
-        <code>bash infra/scripts/teardown.sh</code> confirms, lowers deletion protection on Cloud
-        SQL and the Jobs, and destroys the Terraform-managed resources. The Terraform state bucket
-        and the artifact bucket are deliberately left behind.
-      </p>
-      <p>
-        <code>verify-deployment.sh</code> asserts the invariants the tickets claim: healthy service,
-        all six scheduler jobs enabled and firing, matching image tags across the three workloads,
-        correct memory/heap/pool sizing, mounted secrets, alert policies with severities, the
-        dashboard and log metrics, auth rejection on <code>/internal</code>, and — with
-        <code>--full</code> — that served bytes hash to their published digests.
-      </p>
-
-      <h2>Cost</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>Resource</th>
-            <th>~Monthly cost</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>Cloud SQL <code>db-f1-micro</code></td>
-            <td>~$7</td>
-          </tr>
-          <tr>
-            <td>Cloud Run (min 1 instance)</td>
-            <td>~$5–15</td>
-          </tr>
-          <tr>
-            <td>GCS, Artifact Registry, Scheduler</td>
-            <td>negligible</td>
-          </tr>
-          <tr>
-            <th>Total</th>
-            <th>~$15–25 / month</th>
-          </tr>
-        </tbody>
-      </table>
-
-      <h2>Where the pieces live in the repo</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>Concern</th>
-            <th>File</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>Service and Jobs, plus the connection-budget precondition</td>
-            <td class="mono">infra/terraform/cloudrun.tf</td>
-          </tr>
-          <tr>
-            <td>Scheduler jobs and cadences</td>
-            <td class="mono">infra/terraform/scheduler.tf</td>
-          </tr>
-          <tr>
-            <td>Cloud SQL instance, database and user</td>
-            <td class="mono">infra/terraform/sql.tf</td>
-          </tr>
-          <tr>
-            <td>Bucket and Docker repository</td>
-            <td class="mono">infra/terraform/storage.tf, registry.tf</td>
-          </tr>
-          <tr>
-            <td>Secrets and IAM</td>
-            <td class="mono">infra/terraform/secrets.tf, iam.tf</td>
-          </tr>
-          <tr>
-            <td>Alert policies, metrics and dashboard</td>
-            <td class="mono">infra/terraform/monitoring.tf</td>
-          </tr>
-          <tr>
-            <td>Inputs and defaults, including every pool size</td>
-            <td class="mono">infra/terraform/variables.tf</td>
-          </tr>
-          <tr>
-            <td>Job entry points</td>
-            <td class="mono">src/commands/sync-job.ts, vuln-backfill-job.ts</td>
-          </tr>
-          <tr>
-            <td>Internal trigger routes</td>
-            <td class="mono">src/routes/internal.ts</td>
-          </tr>
-          <tr>
-            <td>Operator runbook</td>
-            <td class="mono">engineering/docs/build-release.md</td>
-          </tr>
-        </tbody>
-      </table>
 
       <footer class="doc">
-        Derived from <code>infra/</code> and the ADRs under <code>engineering/decisions/</code>.
-        Update this file when Terraform changes the estate; it is a map, not the territory.
+        Derived from <code>infra/</code> and the ADRs under <code>engineering/decisions/</code>. Update
+        this file when Terraform changes the estate; it is a map, not the territory.
       </footer>
+    <script>
+      const KINDS = {
+        public: ["#2563eb", "", "public request"],
+        invoke: ["#7c3aed", "", "invocation"],
+        data: ["#059669", "", "data access"],
+        secret: ["#d97706", "7 5", "secrets"],
+        image: ["#64748b", "7 5", "image pull"],
+        obs: ["#0891b2", "3 4", "logs & alerts"],
+        egress: ["#334155", "", "outbound HTTPS"],
+      };
+
+      const DETAILS = {
+        clients: {
+          kind: "External", color: "#64748b", title: "Clients, CI & operators",
+          html: `<p>Anyone on the internet. <code>allUsers</code> holds <code>run.invoker</code> on the service, which is what makes <code>/api/v1</code>, <code>/download</code>, <code>/health</code> and docs reachable.</p>
+                 <p>Operators come through the same front door: <code>/admin/v1</code> is guarded by provider auth, not by IAM.</p>`,
+        },
+        scheduler: {
+          kind: "Cloud Scheduler", color: "#db2777", title: "Six cron jobs, all UTC",
+          html: `<p>Five call back into <code>walrus-api</code> over OIDC as the <code>walrus-scheduler</code> service account. The package sync instead asks the Cloud Run Jobs API to start <code>walrus-sync</code>, with an OAuth token because the target is a Google API.</p>
+                 <p>Minutes are offset so sources don't contend for the same advisory lock; vulnerability-job retries back off 600 s for the same reason. Click a single job for its purpose.</p>`,
+        },
+        "sched-sync": {
+          kind: "Scheduler job · 0 */6 * * *", color: "#db2777", title: "walrus-sync",
+          html: `<p>On the hour, every six hours. Starts the <code>walrus-sync</code> Job via the Jobs API <code>:run</code> for the whole fleet: discover releases, download, transform, retain.</p>`,
+        },
+        "sched-nvd": {
+          kind: "Scheduler job · 20 */2 * * *", color: "#db2777", title: "walrus-vuln-sync-nvd",
+          html: `<p><code>POST /internal/vuln-sync/nvd</code>. Incremental NVD ingestion on its cursor, every two hours, because NVD changes constantly.</p>`,
+        },
+        "sched-kev": {
+          kind: "Scheduler job · 40 7 * * *", color: "#db2777", title: "walrus-vuln-sync-kev",
+          html: `<p><code>POST /internal/vuln-sync/kev</code>. The CISA KEV catalogue, once a day.</p>`,
+        },
+        "sched-osv": {
+          kind: "Scheduler job · 10 8 * * 1", color: "#db2777", title: "walrus-vuln-sync-osv",
+          html: `<p><code>POST /internal/vuln-sync/osv</code>. Weekly OSV cross-check, Mondays.</p>`,
+        },
+        "sched-cvss": {
+          kind: "Scheduler job · 10 9 * * *", color: "#db2777", title: "walrus-vuln-sync-cvss",
+          html: `<p><code>POST /internal/vuln-sync/cvss</code>. CVSS enrichment repair pass: fills missing scores in a bounded walk (default 150 CVEs). A fresh score can newly block a download, which is intended (ADR-002).</p>`,
+        },
+        "sched-auto": {
+          kind: "Scheduler job · 50 6 * * *", color: "#db2777", title: "walrus-vuln-backfill-auto",
+          html: `<p><code>POST /internal/vuln-backfill/auto</code>. Sweeps for newly tracked packages whose CVE history was never fetched and launches <code>walrus-vuln-backfill</code> for each (ADR-003). Incremental sync is cursor-based and structurally blind to a package's past.</p>`,
+        },
+        monitoring: {
+          kind: "Cloud Monitoring & Logging", color: "#0891b2", title: "Two tiers of attention",
+          html: `<p><b>Tier 1 — email.</b> Cloud Run error, scheduler job failed, vulnerability sync degraded (&gt;1 failure in 4 h), automatic CVE backfill exhausted, and an informational alert when versions become undownloadable.</p>
+                 <p><b>Tier 2 — dashboard, never notifies.</b> "Walrus operations": vuln sync failures by source, scheduler failures by job, API requests by response class, Job executions by result. Two charts come from log-based metrics, because Scheduler publishes none.</p>
+                 <p>Cloud Error Reporting groups exceptions.</p>`,
+        },
+        compute: {
+          kind: "Cloud Run", color: "#6d28d9", title: "One image, one service account",
+          html: `<p>The service and both Jobs run the same <code>walrus-api:&lt;sha&gt;</code> image as the <code>walrus-api</code> service account, which holds:</p>
+                 <ul><li>GCS Object Admin on the artifact bucket</li><li>Cloud SQL Client</li><li>Secret Accessor on the six secrets</li><li>a custom job-runner role (<code>run.jobs.run</code> + <code>runWithOverrides</code>) scoped to each Job</li></ul>
+                 <p>Connections drawn from this box apply to all three workloads.</p>`,
+        },
+        api: {
+          kind: "Cloud Run service", color: "#2563eb", title: "walrus-api",
+          html: `<p>1 vCPU · 1 GiB · port 8080 · min 1 / max 4 instances.</p>
+                 <ul><li><b>public</b>: <code>/api/v1</code>, <code>/download</code>, <code>/health</code>, docs</li><li><b>operators</b>: <code>/admin/v1</code>, provider auth</li><li><b>machines</b>: <code>/internal</code>, Google OIDC — where the scheduled vulnerability syncs run</li></ul>
+                 <p>The max of four is set by the Cloud SQL connection budget, not taste; the floor of one keeps the first request warm. It starts both Jobs with container-argument overrides rather than doing long work itself.</p>`,
+        },
+        sync: {
+          kind: "Cloud Run Job", color: "#7c3aed", title: "walrus-sync",
+          html: `<p>2 vCPU · 2 GiB · 6 h timeout. Discovers new releases, downloads and verifies them, applies any archive transform, stores the result in GCS, and prunes per retention.</p>
+                 <p>2 GiB because two transforms can run at once, each holding ~500 MiB of link cache. Six hours because one IDE package alone has meant 25.8 GB across 16 artifacts.</p>
+                 <p>Started two ways: by Scheduler for every package, or by <code>walrus-api</code> with <code>--package</code>/<code>--job-id</code> for an operator's "sync now". The only workload that mounts <code>walrus-github-token</code>.</p>`,
+        },
+        backfill: {
+          kind: "Cloud Run Job", color: "#7c3aed", title: "walrus-vuln-backfill",
+          html: `<p>1 vCPU · 1 GiB · 24 h timeout. Fetches one package's historical CVEs, streaming one page of NVD results at a time.</p>
+                 <p>Launched by <code>walrus-api</code> with a <code>--job-id</code> override — from the daily auto sweep or on demand. Rate-limited upstream rather than CPU-bound: keyless NVD allows 5 requests / 30 s, a key allows 50.</p>`,
+        },
+        secrets: {
+          kind: "Secret Manager", color: "#b45309", title: "Six runtime secrets",
+          html: `<ul><li><code>walrus-database-url</code> — all three workloads</li><li><code>walrus-session-secret</code>, <code>…-secret-previous</code> — walrus-api, cookie signing across rotation</li><li><code>walrus-admin-password</code> — walrus-api, built-in admin provider</li><li><code>walrus-nvd-api-key</code> <i>optional</i> — service + both Jobs, NVD 5 → 50 req / 30 s</li><li><code>walrus-github-token</code> <i>optional</i> — walrus-sync only, GitHub 60 → 5,000 req / h</li></ul>
+                 <p>Optional secrets are declared unconditionally but only get a version when supplied; <code>deploy.sh</code> mounts them only if it populated one.</p>`,
+        },
+        registry: {
+          kind: "Artifact Registry", color: "#334155", title: "Docker repo walrus",
+          html: `<p>Each deploy builds and pushes <code>walrus-api:&lt;git-sha&gt;</code>. All three workloads run that same image, so the deployment verifier asserts their tags match — a partial deploy that updates the Jobs but not the service is a real failure mode.</p>`,
+        },
+        sql: {
+          kind: "Cloud SQL", color: "#047857", title: "walrus-postgres",
+          html: `<p>PostgreSQL 18, Enterprise, <code>db-f1-micro</code>, <code>max_connections</code> 25. Reachable only through the Auth Proxy socket at <code>/cloudsql</code>; no authorised networks.</p>
+                 <p>Holds catalogue state, jobs, audit history, vulnerability associations and artifact provenance — the source of truth.</p>
+                 <p>Connection budget, enforced by a Terraform precondition:<br><code>3 × 4 + 4 × 2 = 20 ≤ 25 − 5</code></p>`,
+        },
+        gcs: {
+          kind: "Cloud Storage", color: "#047857", title: "Artifact bucket",
+          html: `<p>Cached release binaries, some stored in a walrus-produced transformed form. Uniform bucket-level access.</p>
+                 <p><code>force_destroy = false</code>: the bucket and the Terraform state bucket outlive <code>terraform destroy</code>.</p>`,
+        },
+        terraform: {
+          kind: "Terraform", color: "#4338ca", title: "Owns everything but the image",
+          html: `<p>Config in <code>infra/terraform/*.tf</code>; remote state in a versioned GCS bucket; provider google ~&gt; 6.0, terraform ≥ 1.9.</p>
+                 <p><code>deploy.sh</code>: build → push image → write secrets → import existing secrets → apply → roll image onto the service. The image is ignored by Terraform so routine deploys aren't Terraform runs.</p>
+                 <p><code>teardown.sh</code>: confirm → lower deletion protection → destroy.</p>`,
+        },
+        inbox: {
+          kind: "External", color: "#64748b", title: "Operator inbox",
+          html: `<p>The email notification channel, set by the <code>alert_notification_email</code> variable. Only tier-1 alerts arrive here.</p>`,
+        },
+        upstream: {
+          kind: "External", color: "#64748b", title: "Upstream services",
+          html: `<ul><li><b>NVD API 2.0</b> — walrus-api (incremental, CVSS) and walrus-vuln-backfill</li><li><b>CISA KEV</b>, <b>OSV</b> — walrus-api</li><li><b>api.github.com</b> — walrus-sync, release discovery</li><li><b>vendor release hosts</b> — walrus-sync, the binaries themselves</li></ul>
+                 <p>All work keyless; the optional NVD key and GitHub token raise rate limits, not correctness.</p>`,
+        },
+      };
+
+      const FLOWS = [
+        {
+          id: "download", name: "Public download",
+          steps: [
+            { edges: ["e-clients-api"], text: "A client or CI job requests <code>/download/…</code> over public HTTPS." },
+            { edges: ["e-compute-sql"], nodes: ["api"], text: "walrus-api looks the artifact up in Postgres — only <code>available</code> artifacts are served." },
+            { edges: ["e-api-gcs"], text: "It streams the stored bytes from the bucket, honouring byte ranges." },
+          ],
+        },
+        {
+          id: "sync", name: "Scheduled sync",
+          steps: [
+            { edges: ["e-sched-sync"], nodes: ["sched-sync"], text: "Every six hours, Scheduler starts the <code>walrus-sync</code> Job through the Jobs API (OAuth)." },
+            { edges: ["e-registry-compute"], nodes: ["sync"], text: "The Job's container runs the same <code>walrus-api:&lt;sha&gt;</code> image as the service." },
+            { edges: ["e-compute-secrets"], nodes: ["sync"], text: "It reads the database URL and, if present, the GitHub token." },
+            { edges: ["e-compute-upstream"], nodes: ["sync"], text: "Discovery walks every package's upstream for new releases." },
+            { edges: ["e-sync-gcs"], text: "Each artifact streams from upstream through checksum verification and any transform, straight into the bucket." },
+            { edges: ["e-compute-sql"], nodes: ["sync"], text: "Versions and artifacts are recorded, then retention prunes the oldest." },
+            { edges: ["e-compute-mon"], nodes: ["sync"], text: "The execution result lands on the operations dashboard." },
+          ],
+        },
+        {
+          id: "syncnow", name: "Sync now (one package)",
+          steps: [
+            { edges: ["e-clients-api"], text: "An operator asks for one package in the admin UI (<code>/admin/v1</code>, provider auth)." },
+            { edges: ["e-compute-sql"], nodes: ["api"], text: "walrus-api records the sync job whose id it will hand on." },
+            { edges: ["e-api-sync"], text: "It starts <code>walrus-sync</code> with <code>--package</code> and <code>--job-id</code> overrides — its own container, so Cloud Run can't recycle it mid-transfer." },
+            { edges: ["e-compute-upstream"], nodes: ["sync"], text: "The Job discovers and downloads that package's new releases." },
+            { edges: ["e-sync-gcs"], text: "Verified (and, if configured, transformed) artifacts go into the bucket." },
+            { edges: ["e-compute-sql"], nodes: ["sync"], text: "Job and artifact state are updated; the admin UI reads them back." },
+          ],
+        },
+        {
+          id: "vuln", name: "Vulnerability sync",
+          steps: [
+            { edges: ["e-sched-api"], nodes: ["sched-nvd"], text: "At :20 every two hours Scheduler POSTs <code>/internal/vuln-sync/nvd</code> with an OIDC token. KEV, OSV and CVSS take the same path on their own schedules." },
+            { nodes: ["api"], text: "The route verifies the token's audience, expiry and principal before doing anything." },
+            { edges: ["e-compute-secrets"], nodes: ["api"], text: "The NVD API key, if present, raises the limit from 5 to 50 requests / 30 s." },
+            { edges: ["e-compute-upstream"], nodes: ["api"], text: "walrus-api pulls changes since its cursor from NVD." },
+            { edges: ["e-compute-sql"], nodes: ["api"], text: "CVEs and package associations are written under an advisory lock." },
+            { edges: ["e-compute-mon"], nodes: ["api"], text: "Failures are logged by source; more than one in four hours counts as degraded…" },
+            { edges: ["e-mon-inbox"], text: "…which emails the operator." },
+          ],
+        },
+        {
+          id: "backfill", name: "CVE backfill",
+          steps: [
+            { edges: ["e-sched-api"], nodes: ["sched-auto"], text: "Daily at 06:50 Scheduler POSTs <code>/internal/vuln-backfill/auto</code>." },
+            { edges: ["e-compute-sql"], nodes: ["api"], text: "walrus-api finds tracked packages whose CVE history was never fetched." },
+            { edges: ["e-api-backfill"], text: "For each, it launches <code>walrus-vuln-backfill</code> with a <code>--job-id</code> override." },
+            { edges: ["e-compute-upstream"], nodes: ["backfill"], text: "The Job pages that package's history out of NVD — minutes with an API key, hours without." },
+            { edges: ["e-compute-sql"], nodes: ["backfill"], text: "CVEs are written as each page arrives." },
+            { edges: ["e-compute-mon", "e-mon-inbox"], nodes: ["backfill"], text: "If automatic backfill exhausts its retries, a tier-1 alert emails the operator." },
+          ],
+        },
+        {
+          id: "deploy", name: "Deploy",
+          steps: [
+            { nodes: ["terraform"], text: "<code>deploy.sh</code> runs the TypeScript build and builds a git-SHA-tagged image." },
+            { nodes: ["registry"], text: "It pushes <code>walrus-api:&lt;sha&gt;</code> to Artifact Registry." },
+            { nodes: ["secrets"], text: "It writes runtime secrets and imports any that already exist into Terraform state." },
+            { nodes: ["terraform"], text: "Terraform applies the full plan — everything except the service's image." },
+            { edges: ["e-registry-compute"], nodes: ["api"], text: "The new image is rolled onto the Cloud Run service." },
+            { nodes: ["api", "sync", "backfill"], text: "<code>verify-deployment.sh</code> asserts health, matching image tags on all three, sizing, secrets, alerts and <code>/internal</code> auth rejection." },
+          ],
+        },
+      ];
+    </script>
+    <script>
+      (() => {
+        const NS = "http://www.w3.org/2000/svg";
+        const svg = document.getElementById("estate");
+        const wrap = document.getElementById("stage-wrap");
+        const pop = document.getElementById("pop");
+        const tip = document.getElementById("tip");
+        const stepsEl = document.getElementById("steps");
+        const badges = document.getElementById("badges");
+        const hint = stepsEl.innerHTML;
+
+        const nodeEls = [...svg.querySelectorAll("[data-node]")];
+        const edgeEls = [...svg.querySelectorAll(".edge")];
+        const nodeById = Object.fromEntries(nodeEls.map((n) => [n.dataset.node, n]));
+        const edgeById = Object.fromEntries(edgeEls.map((e) => [e.id, e]));
+
+        // Wide invisible stroke so thin lines are easy to hover.
+        for (const e of edgeEls) {
+          const hit = e.querySelector(".line").cloneNode();
+          hit.setAttribute("class", "hit");
+          e.appendChild(hit);
+        }
+
+        // ---------- graph helpers ----------
+        const pillEdges = (n) => (n.dataset.edges ? n.dataset.edges.split(" ") : null);
+
+        function edgesOf(id) {
+          const el = nodeById[id];
+          const explicit = pillEdges(el);
+          if (explicit) return explicit;
+          const ids = new Set([id]);
+          if (el.dataset.parent) ids.add(el.dataset.parent);
+          for (const n of nodeEls) if (n.dataset.parent === id) ids.add(n.dataset.node);
+          return edgeEls
+            .filter((e) => ids.has(e.dataset.from) || ids.has(e.dataset.to))
+            .map((e) => e.id);
+        }
+
+        function build(edgeIds, nodeIds, withPills) {
+          const nodes = new Set(nodeIds);
+          for (const id of edgeIds) {
+            const e = edgeById[id];
+            nodes.add(e.dataset.from);
+            nodes.add(e.dataset.to);
+            if (withPills)
+              for (const n of nodeEls) if ((pillEdges(n) || []).includes(id)) nodes.add(n.dataset.node);
+          }
+          for (const id of [...nodes]) {
+            const p = nodeById[id] && nodeById[id].dataset.parent;
+            if (p) nodes.add(p);
+          }
+          return { nodes, edges: new Set(edgeIds) };
+        }
+
+        const around = (id) => build(edgesOf(id), [id], !nodeById[id].dataset.edges);
+
+        // ---------- painting ----------
+        let pinned = null; // { type: "node" | "flow", id, sel }
+        let hover = null;
+
+        function paint() {
+          const sel = hover || (pinned && pinned.sel);
+          svg.classList.toggle("focus", !!sel);
+          svg.classList.toggle("flowing", !!(pinned && pinned.type === "flow"));
+          for (const n of nodeEls) {
+            n.classList.toggle("on", !!sel && sel.nodes.has(n.dataset.node));
+            n.classList.toggle("selected", !!pinned && pinned.type === "node" && pinned.id === n.dataset.node);
+          }
+          for (const e of edgeEls) e.classList.toggle("on", !!sel && sel.edges.has(e.id));
+        }
+
+        // ---------- popover ----------
+        function openPop(id) {
+          const d = DETAILS[id];
+          if (!d) return;
+          const conns = edgesOf(id)
+            .map((eid) => {
+              const e = edgeById[eid];
+              return `<li><i class="k k-${e.dataset.kind}"></i><span><b>${e.dataset.title}</b> — ${e.dataset.desc}</span></li>`;
+            })
+            .join("");
+          pop.innerHTML =
+            `<button class="x" aria-label="Close details">×</button>` +
+            `<div class="eyebrow" style="color:${d.color}">${d.kind}</div><h3>${d.title}</h3>${d.html}` +
+            (conns ? `<h4>Connections</h4><ul class="conns">${conns}</ul>` : "");
+          pop.querySelector(".x").addEventListener("click", clear);
+          pop.hidden = false;
+          placePop();
+        }
+
+        function placePop() {
+          if (pop.hidden || !pinned || pinned.type !== "node") return;
+          const box = nodeById[pinned.id].querySelector(".box").getBoundingClientRect();
+          const w = wrap.getBoundingClientRect();
+          const pw = pop.offsetWidth;
+          const ph = pop.offsetHeight;
+          const gap = 14;
+          let left = box.right - w.left + gap;
+          if (left + pw > w.width - 8) left = box.left - w.left - pw - gap;
+          if (left < 8) left = Math.min(Math.max(8, box.left - w.left), w.width - pw - 8);
+          let top = box.top - w.top;
+          top = Math.max(8, Math.min(top, w.height - ph - 8));
+          pop.style.left = left + "px";
+          pop.style.top = top + "px";
+        }
+
+        // ---------- selection ----------
+        function clear() {
+          pinned = null;
+          hover = null;
+          pop.hidden = true;
+          badges.replaceChildren();
+          stepsEl.innerHTML = hint;
+          for (const b of document.querySelectorAll("#flows .btn")) b.setAttribute("aria-pressed", "false");
+          paint();
+        }
+
+        function selectNode(id) {
+          if (pinned && pinned.type === "node" && pinned.id === id) return clear();
+          clear();
+          pinned = { type: "node", id, sel: around(id) };
+          paint();
+          openPop(id);
+        }
+
+        function stepSel(s) {
+          return build(s.edges || [], s.nodes || [], false);
+        }
+
+        function selectFlow(f) {
+          const wasSame = pinned && pinned.type === "flow" && pinned.id === f.id;
+          clear();
+          if (wasSame) return;
+          const edges = f.steps.flatMap((s) => s.edges || []);
+          const nodes = f.steps.flatMap((s) => s.nodes || []);
+          pinned = { type: "flow", id: f.id, sel: build(edges, nodes, false) };
+          document.querySelector(`#flows [data-flow="${f.id}"]`).setAttribute("aria-pressed", "true");
+          drawBadges(f);
+          renderSteps(f);
+          paint();
+        }
+
+        function drawBadges(f) {
+          const spots = new Map();
+          f.steps.forEach((s, i) => {
+            const targets = s.edges && s.edges.length
+              ? s.edges.map((id) => [id, edgeById[id].dataset.badge.split(",").map(Number)])
+              : s.nodes.map((id) => {
+                  const b = nodeById[id].querySelector(".box");
+                  return ["n:" + id, [+b.getAttribute("x") + 6, +b.getAttribute("y") + 6]];
+                });
+            for (const [key, xy] of targets) {
+              if (!spots.has(key)) spots.set(key, { xy, steps: [] });
+              spots.get(key).steps.push(i);
+            }
+          });
+          for (const { xy, steps } of spots.values()) {
+            const label = steps.map((i) => i + 1).join(" · ");
+            const w = Math.max(24, 12 + label.length * 7.4);
+            const g = document.createElementNS(NS, "g");
+            g.setAttribute("class", "badge");
+            g.dataset.steps = steps.join(" ");
+            const r = document.createElementNS(NS, "rect");
+            r.setAttribute("x", xy[0] - w / 2);
+            r.setAttribute("y", xy[1] - 12);
+            r.setAttribute("width", w);
+            r.setAttribute("height", 24);
+            r.setAttribute("rx", 12);
+            const t = document.createElementNS(NS, "text");
+            t.setAttribute("x", xy[0]);
+            t.setAttribute("y", xy[1] + 4.5);
+            t.setAttribute("text-anchor", "middle");
+            t.textContent = label;
+            g.append(r, t);
+            badges.appendChild(g);
+          }
+        }
+
+        function renderSteps(f) {
+          stepsEl.innerHTML = `<ol>${f.steps
+            .map((s, i) => `<li data-i="${i}"><span class="num">${i + 1}</span><span>${s.text}</span></li>`)
+            .join("")}</ol>`;
+          for (const li of stepsEl.querySelectorAll("li")) {
+            const i = +li.dataset.i;
+            li.addEventListener("mouseenter", () => {
+              hover = stepSel(f.steps[i]);
+              for (const b of badges.children) b.classList.toggle("hot", b.dataset.steps.split(" ").includes(String(i)));
+              paint();
+            });
+            li.addEventListener("mouseleave", () => {
+              hover = null;
+              for (const b of badges.children) b.classList.remove("hot");
+              paint();
+            });
+          }
+        }
+
+        // ---------- events ----------
+        for (const n of nodeEls) {
+          const id = n.dataset.node;
+          n.addEventListener("mouseenter", () => {
+            if (pinned && pinned.type === "flow") return;
+            hover = around(id);
+            paint();
+          });
+          n.addEventListener("mouseleave", () => {
+            hover = null;
+            paint();
+          });
+          n.addEventListener("click", (ev) => {
+            ev.stopPropagation();
+            selectNode(id);
+          });
+          n.addEventListener("keydown", (ev) => {
+            if (ev.key === "Enter" || ev.key === " ") {
+              ev.preventDefault();
+              selectNode(id);
+            }
+          });
+        }
+
+        for (const e of edgeEls) {
+          e.addEventListener("mouseenter", () => {
+            if (!(pinned && pinned.type === "flow")) {
+              hover = build([e.id], [], false);
+              paint();
+            }
+            tip.innerHTML = `<b>${e.dataset.title}</b>${e.dataset.desc}`;
+            tip.hidden = false;
+          });
+          e.addEventListener("mousemove", (ev) => {
+            const w = wrap.getBoundingClientRect();
+            let x = ev.clientX - w.left + 14;
+            if (x + tip.offsetWidth > w.width - 8) x = ev.clientX - w.left - tip.offsetWidth - 14;
+            tip.style.left = x + "px";
+            tip.style.top = ev.clientY - w.top + 16 + "px";
+          });
+          e.addEventListener("mouseleave", () => {
+            tip.hidden = true;
+            hover = null;
+            paint();
+          });
+        }
+
+        svg.addEventListener("click", clear);
+        document.addEventListener("keydown", (ev) => {
+          if (ev.key === "Escape") clear();
+        });
+        window.addEventListener("resize", placePop);
+        document.getElementById("stage").addEventListener("scroll", placePop);
+
+        // ---------- toolbar & legend ----------
+        const flowsEl = document.getElementById("flows");
+        for (const f of FLOWS) {
+          const b = document.createElement("button");
+          b.className = "btn";
+          b.type = "button";
+          b.dataset.flow = f.id;
+          b.setAttribute("aria-pressed", "false");
+          b.textContent = f.name;
+          b.addEventListener("click", () => selectFlow(f));
+          flowsEl.appendChild(b);
+        }
+        const clr = document.createElement("button");
+        clr.className = "btn clear";
+        clr.type = "button";
+        clr.textContent = "Clear";
+        clr.addEventListener("click", clear);
+        flowsEl.appendChild(clr);
+
+        const legend = document.getElementById("legend");
+        for (const [kind, [color, dash, label]] of Object.entries(KINDS)) {
+          const b = document.createElement("button");
+          b.className = "btn";
+          b.type = "button";
+          b.setAttribute("aria-pressed", "true");
+          b.title = "Show or hide " + label + " lines";
+          b.innerHTML = `<svg viewBox="0 0 28 8" aria-hidden="true"><line x1="1" y1="4" x2="27" y2="4" stroke="${color}" stroke-width="3" stroke-dasharray="${dash}"/></svg>${label}`;
+          b.addEventListener("click", () => {
+            const on = b.getAttribute("aria-pressed") === "true";
+            b.setAttribute("aria-pressed", String(!on));
+            svg.classList.toggle("hide-" + kind, on);
+          });
+          legend.appendChild(b);
+        }
+      })();
+    </script>
     </div>
   </body>
 </html>
