@@ -106,6 +106,26 @@ describe("admin routes", () => {
     expect(response.text).toContain('class="brand" href="/">Walrus</a>');
   });
 
+  it("offers a first-letter filter for only the initials present in the package list", async () => {
+    const deps = baseDeps();
+    deps.listConfiguredPackages = vi
+      .fn()
+      .mockReturnValue(["azure-cli", "bat", "curl", "3proxy", "zoxide"]);
+    const response = await request(createTestApp(deps)).get("/admin/v1/").expect(200);
+
+    // One button per present initial, plus "#" for names that do not begin with a letter.
+    expect(response.text).toContain('data-filter="A"');
+    expect(response.text).toContain('data-filter="B"');
+    expect(response.text).toContain('data-filter="C"');
+    expect(response.text).toContain('data-filter="Z"');
+    expect(response.text).toContain('data-filter="#"');
+    expect(response.text).not.toContain('data-filter="D"');
+
+    // Rows carry the initial used by the client-side filter.
+    expect(response.text).toContain('data-initial="A"');
+    expect(response.text).toContain('data-initial="#"');
+  });
+
   it("starts a targeted historical backfill", async () => {
     const deps = baseDeps();
     deps.listConfiguredPackages = vi.fn().mockReturnValue(["python"]);

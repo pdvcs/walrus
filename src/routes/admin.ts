@@ -1377,6 +1377,11 @@ function renderDashboardPage(
 ): string {
   const esc = escHtml;
 
+  const initialOf = (name: string): string => {
+    const c = name.charAt(0).toUpperCase();
+    return /[A-Z]/.test(c) ? c : "#";
+  };
+
   const rows = configuredPackages
     .map((name) => {
       const pkg = packageMap.get(name);
@@ -1394,7 +1399,7 @@ function renderDashboardPage(
         ? `<span class="btn btn-sm btn-secondary" style="cursor:default;opacity:0.6">running…</span>`
         : `<button class="btn btn-sm btn-primary" onclick="syncPkg('${esc(name)}')">Sync</button>`;
       const toggleBtn = `<button class="btn btn-sm btn-secondary" onclick="toggleEnabled('${esc(name)}',${enabled})">${enabled ? "Disable" : "Enable"}</button>`;
-      return `<tr>
+      return `<tr data-initial="${initialOf(name)}">
         <td><a href="${withBase(basePath, "/admin/v1/packages/")}${esc(name)}">${displayName}</a></td>
         <td>${vendor}</td>
         <td>${enabledBadge}</td>
@@ -1403,6 +1408,17 @@ function renderDashboardPage(
       </tr>`;
     })
     .join("");
+
+  const initials = [...new Set(configuredPackages.map(initialOf))].sort((a, b) =>
+    a === "#" ? 1 : b === "#" ? -1 : a.localeCompare(b),
+  );
+  const filterBar =
+    configuredPackages.length === 0
+      ? ""
+      : `<div class="filter-bar">
+        <button class="filter-btn active" data-filter="all" onclick="filterRows('all')">All</button>
+        ${initials.map((i) => `<button class="filter-btn" data-filter="${i}" onclick="filterRows('${i}')">${i}</button>`).join("")}
+      </div>`;
 
   const tableHtml =
     configuredPackages.length === 0
@@ -1419,6 +1435,7 @@ function renderDashboardPage(
       <h1 style="margin-bottom:0">Packages</h1>
       <button class="btn btn-primary" onclick="syncAll()">Sync All</button>
     </div>
+    ${filterBar}
     ${tableHtml}
     <div id="msg"></div>`;
 
@@ -1452,9 +1469,24 @@ function renderDashboardPage(
         else { const d = await r.json(); alert('Error: ' + (d.error || r.status)); }
       } catch(e) { alert('Error: ' + e.message); }
     }
-    ${hasRunning ? "setInterval(() => location.reload(), 5000);" : ""}`;
+    ${hasRunning ? "setInterval(() => location.reload(), 5000);" : ""}
+    function filterRows(initial) {
+      document.querySelectorAll('.filter-btn').forEach((b) => {
+        b.classList.toggle('active', b.dataset.filter === initial);
+      });
+      document.querySelectorAll('tbody tr[data-initial]').forEach((tr) => {
+        tr.style.display = (initial === 'all' || tr.dataset.initial === initial) ? '' : 'none';
+      });
+    }`;
 
-  return renderSharedHtml("Packages", "packages", body, basePath, scripts);
+  const styleTail = `<style>
+    .filter-bar { display:flex; flex-wrap:wrap; gap:4px; margin-top:12px; }
+    .filter-btn { padding:4px 9px; border-radius:6px; border:1px solid #e5e7eb; background:#fff; color:#374151; font-size:0.8rem; font-weight:600; cursor:pointer; font-family:inherit; }
+    .filter-btn:hover { background:#f3f4f6; }
+    .filter-btn.active { background:#1d4ed8; border-color:#1d4ed8; color:#fff; }
+  </style>`;
+
+  return renderSharedHtml("Packages", "packages", body, basePath, scripts, styleTail);
 }
 
 function renderPackageDetailPage(
