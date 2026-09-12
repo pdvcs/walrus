@@ -47,6 +47,15 @@ const configSchema = z.object({
   // 1.6 GB an attempt is expensive enough that a third is worse than waiting for the next
   // scheduled sync — the same reasoning as the sync job's `max_retries = 0`.
   DOWNLOAD_MAX_ATTEMPTS: z.coerce.number().int().min(1).default(2),
+  // Artifact fetches go straight through `fetchImpl`, not `fetchWithRetry` — a multi-GB
+  // transfer can legitimately run far longer than DISCOVERY_HTTP_TIMEOUT_MS, so a flat
+  // whole-request timeout isn't the right tool. This instead bounds *silence*: the timer
+  // rearms on the response starting and on every chunk received, so a connection that goes
+  // fully quiet (upstream never answers, or stalls mid-transfer) is aborted, while a slow but
+  // still-flowing download is left alone. Without this an artifact that stalls holds the
+  // package's sync advisory lock forever — nothing times it out, so every later retry dies
+  // instantly with "already running" before it can queue a single artifact.
+  DOWNLOAD_STALL_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
   DEFAULT_RETENTION: z.coerce.number().default(3),
   // Above this size a download must be ranged, and an unranged GET is refused rather than
   // served (WAL-66). The number is arithmetic, not taste: Cloud Run caps a request at 3600s
