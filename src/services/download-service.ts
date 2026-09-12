@@ -176,149 +176,182 @@ export class DownloadService {
   ): Promise<DownloadResult> {
     const transformer = req.transform ? getTransform(req.transform.type) : null;
 
-    const response = await this.fetchImpl(req.upstreamUrl);
+    // Guards against silence, not slowness (see DOWNLOAD_STALL_TIMEOUT_MS): rearmed on the
+    // response arriving and on every chunk, so it only fires when nothing is happening at all.
+    const controller = new AbortController();
+    let idleTimer: NodeJS.Timeout | undefined;
+    const armIdleTimer = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        controller.abort(
+          new Error(
+            `No data received from ${req.upstreamUrl} for ${config.DOWNLOAD_STALL_TIMEOUT_MS}ms`,
+          ),
+        );
+      }, config.DOWNLOAD_STALL_TIMEOUT_MS);
+    };
+    armIdleTimer();
+
+    let response: Response;
+    try {
+      response = await this.fetchImpl(req.upstreamUrl, {
+        signal: controller.signal,
+      });
+      armIdleTimer();
+    } catch (err) {
+      clearTimeout(idleTimer);
+      throw err;
+    }
     if (!response.ok) {
+      clearTimeout(idleTimer);
       throw new Error(`HTTP ${response.status} from ${req.upstreamUrl}`);
     }
 
     if (!response.body) {
+      clearTimeout(idleTimer);
       throw new Error(`Empty response body from ${req.upstreamUrl}`);
     }
+    const responseBody = response.body;
 
-    // Hash of the SOURCE bytes — what upstream published, and what its digest describes.
-    const sourceHash = crypto.createHash(algorithm);
-    let sourceSize = 0;
-    const sourceHashTransform = new Transform({
-      transform(chunk: Buffer, _enc, cb) {
-        sourceHash.update(chunk);
-        sourceSize += chunk.length;
-        cb(null, chunk);
-      },
-    });
-
-    let sink: Readable = sourceHashTransform;
-    let outputHash: crypto.Hash | null = null;
-    let outputSize = 0;
-    let transformMeta: Promise<TransformResultMeta> | null = null;
-
-    if (transformer && req.transform) {
-      const transformed = transformer.apply(sourceHashTransform, req.transform);
-      transformMeta = transformed.meta;
-      outputHash = crypto.createHash(algorithm);
-      const outputHashTransform = new Transform({
+    try {
+      // Hash of the SOURCE bytes — what upstream published, and what its digest describes.
+      const sourceHash = crypto.createHash(algorithm);
+      let sourceSize = 0;
+      const sourceHashTransform = new Transform({
         transform(chunk: Buffer, _enc, cb) {
-          outputHash!.update(chunk);
-          outputSize += chunk.length;
+          sourceHash.update(chunk);
+          sourceSize += chunk.length;
           cb(null, chunk);
         },
       });
-      transformed.output.on("error", (err) => outputHashTransform.destroy(err));
-      transformed.output.pipe(outputHashTransform);
-      sink = outputHashTransform;
-    }
 
-    const nodeStream = Readable.fromWeb(response.body);
-    nodeStream.on("error", (err) => sourceHashTransform.destroy(err));
-    nodeStream.pipe(sourceHashTransform);
+      let sink: Readable = sourceHashTransform;
+      let outputHash: crypto.Hash | null = null;
+      let outputSize = 0;
+      let transformMeta: Promise<TransformResultMeta> | null = null;
 
-    await this.storage.upload(req.storagePath, sink);
-
-    // A transfer that ends early produces a short object with a perfectly consistent
-    // checksum of the bytes that did arrive, so without this a truncated 1.6 GB artifact
-    // reaches `available` and is served. Compare against whatever size upstream committed
-    // to before the body was read — and note the number describes the SOURCE bytes: it is
-    // what upstream sent, not what the transform produced.
-    const advertisedSize = advertisedSourceSize(req.expectedSize, response);
-    if (advertisedSize !== undefined && advertisedSize !== sourceSize) {
-      throw new Error(
-        `Size mismatch: upstream advertised ${advertisedSize} bytes, received ${sourceSize}`,
-      );
-    }
-
-    const sourceChecksum = sourceHash.digest("hex");
-
-    const expectedChecksum =
-      req.expectedChecksum ??
-      (req.checksumUrl
-        ? await fetchChecksumFromUrl(req.checksumUrl, this.checksumFetchImpl, algorithm)
-        : undefined);
-
-    // The upstream digest is verified against the source bytes, always. What is recorded on
-    // the artifact is the digest of the stored bytes (WAL-57 AC3) — the same number as the
-    // source when no transform ran, permanently different when one did.
-    if (expectedChecksum && expectedChecksum !== sourceChecksum) {
-      throw new Error(`Checksum mismatch: expected ${expectedChecksum}, got ${sourceChecksum}`);
-    }
-
-    let meta: TransformResultMeta | null = null;
-    if (transformer && req.transform && transformMeta) {
-      meta = await transformMeta;
-      const problems = checkGate(meta, req.transform);
-      if (problems.length > 0) {
-        throw new Error(problems.join("; "));
+      if (transformer && req.transform) {
+        const transformed = transformer.apply(sourceHashTransform, req.transform);
+        transformMeta = transformed.meta;
+        outputHash = crypto.createHash(algorithm);
+        const outputHashTransform = new Transform({
+          transform(chunk: Buffer, _enc, cb) {
+            outputHash!.update(chunk);
+            outputSize += chunk.length;
+            cb(null, chunk);
+          },
+        });
+        transformed.output.on("error", (err) => outputHashTransform.destroy(err));
+        transformed.output.pipe(outputHashTransform);
+        sink = outputHashTransform;
       }
-    }
 
-    const actualChecksum = outputHash ? outputHash.digest("hex") : sourceChecksum;
-    const actualFileSize = outputHash ? outputSize : sourceSize;
+      const nodeStream = Readable.fromWeb(responseBody);
+      nodeStream.on("data", armIdleTimer);
+      nodeStream.on("error", (err) => sourceHashTransform.destroy(err));
+      nodeStream.pipe(sourceHashTransform);
 
-    if (dryRun) {
+      await this.storage.upload(req.storagePath, sink);
+
+      // A transfer that ends early produces a short object with a perfectly consistent
+      // checksum of the bytes that did arrive, so without this a truncated 1.6 GB artifact
+      // reaches `available` and is served. Compare against whatever size upstream committed
+      // to before the body was read — and note the number describes the SOURCE bytes: it is
+      // what upstream sent, not what the transform produced.
+      const advertisedSize = advertisedSourceSize(req.expectedSize, response);
+      if (advertisedSize !== undefined && advertisedSize !== sourceSize) {
+        throw new Error(
+          `Size mismatch: upstream advertised ${advertisedSize} bytes, received ${sourceSize}`,
+        );
+      }
+
+      const sourceChecksum = sourceHash.digest("hex");
+
+      const expectedChecksum =
+        req.expectedChecksum ??
+        (req.checksumUrl
+          ? await fetchChecksumFromUrl(req.checksumUrl, this.checksumFetchImpl, algorithm)
+          : undefined);
+
+      // The upstream digest is verified against the source bytes, always. What is recorded on
+      // the artifact is the digest of the stored bytes (WAL-57 AC3) — the same number as the
+      // source when no transform ran, permanently different when one did.
+      if (expectedChecksum && expectedChecksum !== sourceChecksum) {
+        throw new Error(`Checksum mismatch: expected ${expectedChecksum}, got ${sourceChecksum}`);
+      }
+
+      let meta: TransformResultMeta | null = null;
+      if (transformer && req.transform && transformMeta) {
+        meta = await transformMeta;
+        const problems = checkGate(meta, req.transform);
+        if (problems.length > 0) {
+          throw new Error(problems.join("; "));
+        }
+      }
+
+      const actualChecksum = outputHash ? outputHash.digest("hex") : sourceChecksum;
+      const actualFileSize = outputHash ? outputSize : sourceSize;
+
+      if (dryRun) {
+        return {
+          status: "skipped",
+          attempts: attempt,
+          transformReport: {
+            transform: transformer ? transformer.id : "(none)",
+            entryCount: meta?.entryCount ?? 0,
+            outputSize: actualFileSize,
+            outputChecksum: actualChecksum,
+            requirePathsPresent: meta?.pathsPresent ?? [],
+            requirePathsMissing: meta?.pathsMissing ?? [],
+            droppedSymlinks: meta?.droppedSymlinks ?? [],
+          },
+        };
+      }
+
+      await this.statusRepo.updateArtifactStatus(this.pool, req.artifactId, {
+        status: "available",
+        gcs_path: req.storagePath,
+        file_size: actualFileSize,
+        checksum: actualChecksum,
+        checksum_type: algorithm,
+        // Provenance (WAL-58): only a repackaged artifact carries the source side of the
+        // split; an untransformed one keeps the pre-transform shape, NULLs and all.
+        ...(transformer
+          ? {
+              source_checksum: sourceChecksum,
+              source_file_size: sourceSize,
+              transform: transformer.id,
+            }
+          : {}),
+        error_message: null,
+        download_completed_at: new Date(),
+      });
+
+      if (meta && meta.droppedSymlinks.length > 0) {
+        // A drop is config-approved, but it must be visible where syncs are audited.
+        log.info(
+          { artifactId: req.artifactId, droppedSymlinks: meta.droppedSymlinks },
+          "Transform dropped configured symlink entries",
+        );
+      }
+
       return {
-        status: "skipped",
+        status: "available",
         attempts: attempt,
-        transformReport: {
-          transform: transformer ? transformer.id : "(none)",
-          entryCount: meta?.entryCount ?? 0,
-          outputSize: actualFileSize,
-          outputChecksum: actualChecksum,
-          requirePathsPresent: meta?.pathsPresent ?? [],
-          requirePathsMissing: meta?.pathsMissing ?? [],
-          droppedSymlinks: meta?.droppedSymlinks ?? [],
-        },
+        storagePath: req.storagePath,
+        fileSize: actualFileSize,
+        checksum: actualChecksum,
+        ...(transformer
+          ? {
+              sourceChecksum,
+              sourceFileSize: sourceSize,
+              transform: transformer.id,
+            }
+          : {}),
       };
+    } finally {
+      clearTimeout(idleTimer);
     }
-
-    await this.statusRepo.updateArtifactStatus(this.pool, req.artifactId, {
-      status: "available",
-      gcs_path: req.storagePath,
-      file_size: actualFileSize,
-      checksum: actualChecksum,
-      checksum_type: algorithm,
-      // Provenance (WAL-58): only a repackaged artifact carries the source side of the
-      // split; an untransformed one keeps the pre-transform shape, NULLs and all.
-      ...(transformer
-        ? {
-            source_checksum: sourceChecksum,
-            source_file_size: sourceSize,
-            transform: transformer.id,
-          }
-        : {}),
-      error_message: null,
-      download_completed_at: new Date(),
-    });
-
-    if (meta && meta.droppedSymlinks.length > 0) {
-      // A drop is config-approved, but it must be visible where syncs are audited.
-      log.info(
-        { artifactId: req.artifactId, droppedSymlinks: meta.droppedSymlinks },
-        "Transform dropped configured symlink entries",
-      );
-    }
-
-    return {
-      status: "available",
-      attempts: attempt,
-      storagePath: req.storagePath,
-      fileSize: actualFileSize,
-      checksum: actualChecksum,
-      ...(transformer
-        ? {
-            sourceChecksum,
-            sourceFileSize: sourceSize,
-            transform: transformer.id,
-          }
-        : {}),
-    };
   }
 }
 
