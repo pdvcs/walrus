@@ -342,7 +342,7 @@ variable explicitly. The address is never committed: the repo holds the variable
 | Walrus scheduler job failed              | A Cloud Scheduler invocation fails                | ERROR    | The workload may be fine — check the target URL and the OIDC binding, since a revoked `run.invoker` looks like a failed attempt, not a deploy error |
 | Walrus vulnerability sync degraded       | One source fails **more than once** in four hours | WARNING  | Check `/app/status` for how far behind the source is; upstream rate limiting and an upstream outage want different responses                        |
 | Walrus automatic CVE backfill exhausted  | A package gives up on automatic backfill          | WARNING  | The package is outside self-healing until an operator intervenes                                                                                    |
-| Walrus blocked a version (informational) | A sync newly blocked one or more versions         | WARNING  | **No action needed** — this is the gate working. Sent so a blocked build is not a mystery                                                           |
+| Walrus blocked a version (informational) | A sync newly blocked one or more versions         | WARNING  | **No action needed** — this is the gate working. The notification names the package, version, and CVE directly; for a past fire, `GET /admin/v1/transitions?since=<timestamp>` finds it without knowing the package first |
 
 Two design points worth knowing before changing them:
 

@@ -394,6 +394,8 @@ Endpoints under `/admin/v1/` provide:
 - Version group retention management
 - Sync job history
 - CVE suppression preview/create/revoke and its audit trail
+- Gate-transition lookup across every package by time, for correlating an alert back to
+  what it blocked without already knowing which package
 
 ### GET /admin/v1/vuln-suppressions/active-count
 
@@ -414,6 +416,47 @@ and must be between 1 and 100; pass `next_before_id` back as `before_id` for the
 ```bash
 curl "$WALRUS_URL/admin/v1/vuln-suppressions/audit?cve_id=CVE-2099-0001&limit=20"
 ```
+
+### GET /admin/v1/transitions
+
+Gate transitions across **every** package since a point in time. `/api/v1/packages/:name/availability`
+above needs the package name up front, which is exactly what a "Walrus blocked a version" alert
+doesn't give you — this answers "what did it block?" from the timestamp alone. Required
+`?since=` (ISO 8601); optional `?limit=` (default 500).
+
+```bash
+curl -H "Authorization: Bearer $WALRUS_ADMIN_TOKEN" \
+  "$WALRUS_URL/admin/v1/transitions?since=2026-09-11T22:00:00Z"
+```
+
+```json
+{
+  "since": "2026-09-11T22:00:00.000Z",
+  "transitions": [
+    {
+      "package_name": "vscode",
+      "version": "1.136.0",
+      "status": "blocked",
+      "cve_id": "CVE-2026-81376",
+      "cvss_v3_score": 9.6,
+      "cvss_v4_score": null,
+      "cvss_v2_score": null,
+      "severity": "CRITICAL",
+      "severity_source": "nvd-cvss-v3",
+      "source": "nvd",
+      "trigger": "internal",
+      "at": "2026-09-11T22:20:29.946Z"
+    }
+  ]
+}
+```
+
+Same row shape as `/api/v1/packages/:name/availability`, plus `package_name` since results span
+every package.
+
+**Status codes**
+
+- `400` — missing or unparseable `since`
 
 ---
 
