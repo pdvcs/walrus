@@ -1,0 +1,72 @@
+name = "difftastic"
+display_name = "difftastic"
+vendor = "Wilfred"
+website = "https://github.com/Wilfred/difftastic"
+description = "Structural diff that understands syntax"
+
+# GitHub Releases API capabilities:
+#   Release date: "published_at" field on each release (ISO 8601) — captured automatically
+#   Checksum:     per-asset "digest" field ("sha256:…") — configured below
+
+[discovery]
+type = "github-releases"
+repo = "Wilfred/difftastic"
+include_prereleases = false
+# Tags carry no prefix (0.70.0).
+tag_pattern = "^(\\d+\\.\\d+\\.\\d+)$"
+
+[versioning]
+type = "semver"
+# One group, by major. difftastic's release cadence is a minor bump every time, so grouping
+# by minor would produce a long tail of single-version groups and leave versions_per_group
+# with nothing to do.
+version_group_extract = "^(\\d+)"
+# Digest floor: 0.64.0 (2025-06-15) is the oldest release whose assets carry a GitHub
+# per-asset digest.
+min_version = "0.64.0"
+lts_support = false
+
+[retention]
+versions_per_group = 3
+groups_to_keep = 1
+cooling_off_days = 21
+
+[checksum]
+type = "github-asset-digest"
+algorithm = "sha256"
+
+# The binary is named difft, not difftastic, and asset names carry no version.
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "pc-windows-msvc"
+arch_upstream = "x86_64"
+extension = "zip"
+filename_template = "difft-{arch}-{os}.{ext}"
+
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "unknown-linux-gnu"
+arch_upstream = "x86_64"
+extension = "tar.gz"
+filename_template = "difft-{arch}-{os}.{ext}"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "apple-darwin"
+arch_upstream = "aarch64"
+extension = "tar.gz"
+filename_template = "difft-{arch}-{os}.{ext}"
+
+[vulnerabilities]
+# No NVD CPE presence for difftastic (verified absent 2026-09-12: "difftastic_project:
+# difftastic" and "wilfred:difftastic" both return zero dictionary entries, and a keyword
+# search for "difftastic" returns nothing) — OSV-only tracking.
+# OSV crates.io "difftastic" has no advisories today; the crate name is verified correct
+# (repository github.com/wilfred/difftastic), so a future RustSec advisory lands here
+# without a config change.
+osv = { ecosystem = "crates.io", name = "difftastic" }
+aliases = ["difftastic", "difft", "structural diff"]
