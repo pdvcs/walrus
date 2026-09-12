@@ -1,0 +1,73 @@
+name = "starship"
+display_name = "Starship"
+vendor = "starship"
+website = "https://github.com/starship/starship"
+description = "Minimal, fast, customizable shell prompt"
+
+# GitHub Releases API capabilities:
+#   Release date: "published_at" field on each release (ISO 8601) — captured automatically
+#   Checksum:     separate asset file with suffix ".sha256" — configured below
+
+[discovery]
+type = "github-releases"
+repo = "starship/starship"
+include_prereleases = false
+tag_pattern = "^v(\\d+\\.\\d+\\.\\d+)$"
+
+[versioning]
+type = "semver"
+version_group_extract = "^(\\d+\\.\\d+)"
+# No digest floor needed here: the .sha256 sidecars below are present for all three targets
+# in every release back to at least v1.20.1 (2024-07-27), well past the point where GitHub
+# started populating per-asset digests. This floor just keeps the served window recent.
+min_version = "1.24.0"
+lts_support = false
+
+[retention]
+versions_per_group = 2
+groups_to_keep = 2
+cooling_off_days = 7
+
+[checksum]
+# Sidecar files, preferred over the per-asset digest precisely because they reach further
+# back than the digest field does.
+#
+# NB: starship's sidecars contain a BARE hash with no filename, unlike ripgrep's
+# "hash␠␠filename". Harmless — fetchChecksumFromUrl takes the first 64-hex token in the file.
+type = "github-asset"
+algorithm = "sha256"
+asset_suffix = ".sha256"
+
+# Asset names carry no version.
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "pc-windows-msvc"
+arch_upstream = "x86_64"
+extension = "zip"
+filename_template = "starship-{arch}-{os}.{ext}"
+
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "unknown-linux-gnu"
+arch_upstream = "x86_64"
+extension = "tar.gz"
+filename_template = "starship-{arch}-{os}.{ext}"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "apple-darwin"
+arch_upstream = "aarch64"
+extension = "tar.gz"
+filename_template = "starship-{arch}-{os}.{ext}"
+
+[vulnerabilities]
+# CPE starship:starship — 142 dictionary entries (verified live against the NVD CPE
+# dictionary 2026-09-12), titles "Starship <version>", versions 0.2.0–1.20.1.
+cpes = ["starship:starship"]
+# OSV crates.io "starship" carries CVE-2024-41815 (GHSA-vx24-x4mv-vwr5 / RUSTSEC-2024-0446).
+osv = { ecosystem = "crates.io", name = "starship" }
+aliases = ["starship", "starship prompt"]
