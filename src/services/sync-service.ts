@@ -224,6 +224,13 @@ export class SyncService {
   private async _doSync(job: SyncJobRow, options: SyncRunOptions): Promise<SyncRunResult> {
     const triggerType = options.triggerType ?? "scheduled";
     try {
+      // A launcher can create the row well before this ever runs — a Cloud Run Job execution
+      // has no warm pool, so the gap between `prepareJob` and reaching here can be tens of
+      // seconds with nothing to show for it. This is the signal the admin job page uses to tell
+      // "queued, cold-starting" apart from "running": stamped once, unconditionally, so its
+      // meaning stays the same whether this run was launched, resumed locally, or started
+      // in-process the old way.
+      await this.deps.updateSyncJob(this.pool, job.id, { container_started_at: new Date() });
       log.info(
         {
           package: this.packageConfig.name,

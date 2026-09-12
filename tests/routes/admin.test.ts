@@ -615,6 +615,54 @@ describe("admin routes", () => {
     });
   });
 
+  describe("GET /admin/v1/jobs/:id — cold-start visibility (WAL-119)", () => {
+    function runningJobDetail(container_started_at: Date | null) {
+      return {
+        job: {
+          id: 700,
+          package_name: "rust",
+          trigger_type: "admin",
+          status: "running",
+          versions_found: 0,
+          artifacts_queued: 0,
+          artifacts_downloaded: 0,
+          artifacts_failed: 0,
+          error_message: null,
+          started_at: new Date(),
+          container_started_at,
+          completed_at: null,
+        },
+        artifacts: [],
+        elapsed_ms: 45_000,
+      };
+    }
+
+    it("passes container_started_at through to the JSON response", async () => {
+      const deps = baseDeps();
+      deps.getJob = vi.fn().mockResolvedValue(runningJobDetail(null));
+      const res = await request(createTestApp(deps))
+        .get("/admin/v1/jobs/700")
+        .set("Accept", "application/json");
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe("running");
+      expect(res.body.container_started_at).toBeNull();
+    });
+
+    it("embeds container_started_at in the HTML page's initial data, for the client to render", async () => {
+      const deps = baseDeps();
+      deps.getJob = vi.fn().mockResolvedValue(runningJobDetail(null));
+      const res = await request(createTestApp(deps))
+        .get("/admin/v1/jobs/700")
+        .set("Accept", "text/html");
+
+      expect(res.status).toBe(200);
+      expect(res.text).toContain('"container_started_at":null');
+      // The client-side logic that turns that into a "queued" badge lives in the same template.
+      expect(res.text).toContain("waiting for the sync container to start");
+    });
+  });
+
   describe("GET /admin/v1/packages/:name — cooling off display", () => {
     it("shows an embargoed pending artifact as cooling off, with its available-at date", async () => {
       const until = new Date(Date.now() + 2 * 86_400_000);

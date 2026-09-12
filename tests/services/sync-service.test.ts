@@ -855,6 +855,41 @@ describe("SyncService job-row handoff", () => {
       /Sync job 404 not found/,
     );
   });
+
+  it("stamps container_started_at before discovery, so a cold-starting launch is distinguishable from a hang", async () => {
+    const order: string[] = [];
+    const deps = {
+      discoverVersions: vi.fn().mockImplementation(async () => {
+        order.push("discoverVersions");
+        return [];
+      }),
+      upsertPackage: vi.fn().mockResolvedValue({}),
+      createSyncJob: vi.fn(),
+      getSyncJob: vi.fn().mockResolvedValue({ id: 900 }),
+      updateSyncJob: vi.fn().mockImplementation(async (_pool, _id, update) => {
+        if ("container_started_at" in update) order.push("container_started_at");
+        return {};
+      }),
+      downloadArtifact: vi.fn(),
+      enforceRetention: vi
+        .fn()
+        .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
+      getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+    };
+
+    const service = new SyncService(
+      lockablePool(),
+      pkg,
+      {} as DownloadService,
+      {} as RetentionService,
+      { deps },
+    );
+
+    await service.run({ triggerType: "admin", existingJobId: 900 });
+
+    expect(order[0]).toBe("container_started_at");
+    expect(order).toContain("discoverVersions");
+  });
 });
 
 describe("SyncService concurrency", () => {

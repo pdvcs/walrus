@@ -44,6 +44,7 @@ export interface SyncJobUpdate {
   artifacts_downloaded?: number;
   artifacts_failed?: number;
   error_message?: string | null;
+  container_started_at?: Date | null;
   completed_at?: Date | null;
 }
 
@@ -62,6 +63,7 @@ export async function updateSyncJob(
     ["artifacts_downloaded", "artifacts_downloaded"],
     ["artifacts_failed", "artifacts_failed"],
     ["error_message", "error_message"],
+    ["container_started_at", "container_started_at"],
     ["completed_at", "completed_at"],
   ];
 

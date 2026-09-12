@@ -896,6 +896,7 @@ function buildJobResponse(detail: JobDetail): Record<string, unknown> {
     cooling_off_days: cooling_off_days ?? null,
     error_message: job.error_message,
     started_at: job.started_at,
+    container_started_at: job.container_started_at,
     completed_at: job.completed_at,
     elapsed_ms,
     artifacts: enrichedArtifacts,
@@ -931,6 +932,8 @@ function renderJobStatusPage(detail: JobDetail, basePath: string): string {
     .badge-running { background: #dbeafe; color: #1d4ed8; }
     .badge-completed { background: #dcfce7; color: #15803d; }
     .badge-failed { background: #fee2e2; color: #b91c1c; }
+    .badge-queued { background: #fef3c7; color: #92400e; }
+    .queued-note { font-size: 0.8rem; color: #92400e; margin-left: 6px; }
     .cards { display: flex; gap: 12px; flex-wrap: wrap; margin: 16px 0; }
     .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 14px 20px; min-width: 130px; }
     .card-label { font-size: 0.75rem; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; }
@@ -984,7 +987,14 @@ function renderJobStatusPage(detail: JobDetail, basePath: string): string {
 
     function render(data) {
       const badge = document.getElementById('status-badge');
-      badge.innerHTML = '<span class="badge badge-' + esc(data.status) + '">' + esc(data.status) + '</span>';
+      // A launched Cloud Run Job execution has no warm pool: the row can sit at 'running' with
+      // nothing populated for tens of seconds while the container cold-starts. Without this,
+      // that gap is indistinguishable from a hang. container_started_at is stamped the moment
+      // the sync code itself begins (SyncService._doSync), so its absence means exactly that.
+      const queued = data.status === 'running' && !data.container_started_at;
+      const displayStatus = queued ? 'queued' : data.status;
+      badge.innerHTML = '<span class="badge badge-' + esc(displayStatus) + '">' + esc(displayStatus) + '</span>'
+        + (queued ? ' <span class="queued-note">waiting for the sync container to start…</span>' : '');
 
       const cards = document.getElementById('cards');
       const cardDefs = [

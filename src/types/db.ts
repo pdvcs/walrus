@@ -80,6 +80,9 @@ export interface SyncJobRow {
   artifacts_failed: number;
   error_message: string | null;
   started_at: Date;
+  /** Set once _doSync begins, distinct from `started_at` (when the row was created) — see
+   *  migration 0017. NULL means the job is still queued: created, but not yet actually running. */
+  container_started_at: Date | null;
   completed_at: Date | null;
 }
 
