@@ -1,0 +1,73 @@
+name = "mise"
+display_name = "mise"
+vendor = "jdx"
+website = "https://github.com/jdx/mise"
+description = "Polyglot dev tool and environment manager"
+
+# GitHub Releases API capabilities:
+#   Release date: "published_at" field on each release (ISO 8601) — captured automatically
+#   Checksum:     per-asset "digest" field ("sha256:…") — configured below
+
+[discovery]
+type = "github-releases"
+repo = "jdx/mise"
+include_prereleases = false
+# CalVer tags carry a "v" prefix. Pattern both strips it and rejects any future
+# prerelease/suffixed tag (e.g. v2026.9.5-rc1) that GitHub may not flag as a prerelease.
+tag_pattern = "^v(\\d{4}\\.\\d+\\.\\d+)$"
+
+[versioning]
+# Calendar versioning YYYY.M.PATCH; `type` is descriptive only.
+type = "calver"
+# Group by year.month; retention keeps the 2 newest releases in the newest month.
+version_group_extract = "^(\\d{4}\\.\\d+)"
+# mise has releases back to 2023; keep discovery/backfill scoped to the served window.
+min_version = "2025.1.1"
+lts_support = false
+
+[retention]
+versions_per_group = 2
+groups_to_keep = 1
+cooling_off_days = 3
+
+[checksum]
+# Per-asset digest from the GitHub API ("sha256:…"). SHASUMS256.txt is not usable:
+# github-releases has no separate-file wiring, and the download service takes the
+# first digest in a file, which in a 36-line manifest is the wrong asset.
+type = "github-asset-digest"
+algorithm = "sha256"
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "windows"
+arch_upstream = "x64"
+extension = "zip"
+filename_template = "mise-v{version}-{os}-{arch}.{ext}"
+
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "linux"
+arch_upstream = "x64"
+extension = "tar.gz"
+filename_template = "mise-v{version}-{os}-{arch}.{ext}"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "macos"
+arch_upstream = "arm64"
+extension = "tar.gz"
+filename_template = "mise-v{version}-{os}-{arch}.{ext}"
+
+[vulnerabilities]
+# CPE jdx:mise — 566 dictionary entries (verified live against the NVD CPE
+# dictionary 2026-09-12). OSV crates.io "mise" maps to the same repo and carries
+# CVE aliases for all 5 current advisories.
+cpes = ["jdx:mise"]
+osv = { ecosystem = "crates.io", name = "mise" }
+aliases = ["mise", "rtx", "mise-en-place"]
+
+# No cve_version_extract: served versions (2026.9.5) are the same versions the
+# NVD/OSV ranges name, so no normalisation is warranted.
