@@ -313,6 +313,91 @@ describe("GitHubReleasesStrategy", () => {
   });
 });
 
+describe("GitHubReleasesStrategy — min_version in tag-based mode", () => {
+  /** Releases carrying the version-less asset names UV_CONFIG's templates expect. */
+  function releasesFor(tags: string[]) {
+    return tags.map((tag) => ({
+      tag_name: tag,
+      prerelease: false,
+      draft: false,
+      published_at: "2024-03-15T10:00:00Z",
+      assets: [
+        {
+          name: "uv-x86_64-unknown-linux-gnu.tar.gz",
+          browser_download_url: `https://github.com/astral-sh/uv/releases/download/${tag}/uv-x86_64-unknown-linux-gnu.tar.gz`,
+          size: 1000,
+        },
+        {
+          name: "uv-aarch64-apple-darwin.tar.gz",
+          browser_download_url: `https://github.com/astral-sh/uv/releases/download/${tag}/uv-aarch64-apple-darwin.tar.gz`,
+          size: 1000,
+        },
+      ],
+    }));
+  }
+
+  function stubReleases(tags: string[]) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve(releasesFor(tags)),
+        text: () => Promise.resolve(""),
+      }),
+    );
+  }
+
+  function configWith(minVersion: string, retention?: PackageConfig["retention"]): PackageConfig {
+    return {
+      ...UV_CONFIG,
+      versioning: { ...UV_CONFIG.versioning, min_version: minVersion },
+      ...(retention ? { retention } : {}),
+    };
+  }
+
+  it("excludes versions below the threshold", async () => {
+    stubReleases(["0.6.2", "0.6.1", "0.6.0"]);
+
+    const versions = await new GitHubReleasesStrategy().discoverVersions(configWith("0.6.1"));
+
+    expect(versions.map((v) => v.version)).toEqual(["0.6.2", "0.6.1"]);
+  });
+
+  it("compares on version order rather than string order", async () => {
+    // The regression this guards: a byte-wise compare of the raw strings reads "9.0.0" as
+    // greater than "10.0.0" (because "9" > "1") and lets it past a 10.0.0 floor.
+    stubReleases(["10.0.0", "9.0.0"]);
+
+    const versions = await new GitHubReleasesStrategy().discoverVersions(configWith("10.0.0"));
+
+    expect(versions.map((v) => v.version)).toEqual(["10.0.0"]);
+  });
+
+  it("keeps an excluded version from consuming a retention slot", async () => {
+    // The floor is a discovery filter, not a post-retention trim: with it applied first, both
+    // surviving versions get artifacts resolved. If it ran after retention, 1.0.0 would take
+    // one of the two slots and 1.0.1 would come back with an empty artifact map.
+    stubReleases(["1.0.2", "1.0.1", "1.0.0"]);
+
+    const versions = await new GitHubReleasesStrategy().discoverVersions(
+      configWith("1.0.1", { versions_per_group: 2 }),
+    );
+
+    expect(versions.map((v) => v.version)).toEqual(["1.0.2", "1.0.1"]);
+    for (const v of versions) {
+      expect(v.artifacts.get("linux/x86-64")).toBeDefined();
+    }
+  });
+
+  it("keeps every version when no min_version is set", async () => {
+    stubReleases(["0.6.2", "0.6.1", "0.6.0"]);
+
+    const versions = await new GitHubReleasesStrategy().discoverVersions(UV_CONFIG);
+
+    expect(versions.map((v) => v.version)).toEqual(["0.6.2", "0.6.1", "0.6.0"]);
+  });
+});
+
 describe("GitHubReleasesStrategy — asset_version_pattern mode", () => {
   beforeEach(() => {
     vi.stubGlobal(

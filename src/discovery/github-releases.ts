@@ -7,7 +7,12 @@ import {
   PlatformKey,
   platformKey,
 } from "./types.js";
-import { applyTagPattern, parseVersion, extractVersionGroup } from "../common/version-utils.js";
+import {
+  applyTagPattern,
+  parseVersion,
+  extractVersionGroup,
+  generateSortKey,
+} from "../common/version-utils.js";
 import { RetainableVersion, selectRetentionWindow } from "../common/retention-window.js";
 import { log } from "../common/log.js";
 import { fetchJsonWithRetry } from "../common/http.js";
@@ -47,6 +52,7 @@ export class GitHubReleasesStrategy implements DiscoveryStrategy {
       options.releasePage,
     );
     const ltsGroups = this.extractLtsGroups(config, releases);
+    const minVersion = config.versioning.min_version;
 
     if (asset_version_pattern) {
       return this.discoverByAssetVersion(
@@ -84,6 +90,16 @@ export class GitHubReleasesStrategy implements DiscoveryStrategy {
         version = extracted;
       } else {
         version = parseVersion(version);
+      }
+
+      // min_version is a *discovery* floor, applied before retention: a version below it is
+      // never a candidate, so it cannot occupy a retention slot or have artifacts resolved.
+      // This is what lets a config exclude releases that are structurally unservable — an
+      // upstream that published no assets, or one predating the per-asset digests a package
+      // relies on for checksums — rather than only trimming the tail of a healthy history.
+      if (minVersion && generateSortKey(version) < generateSortKey(minVersion)) {
+        log.debug({ version, minVersion }, "Version below min_version, skipping");
+        continue;
       }
 
       const versionGroup = extractVersionGroup(version, config.versioning.version_group_extract);
@@ -164,12 +180,11 @@ export class GitHubReleasesStrategy implements DiscoveryStrategy {
         if (!m || !m[1]) continue;
         const version = m[1];
 
-        // Apply min_version filter
-        if (minVersion) {
-          const parsed = parseVersion(version);
-          const parsedMin = parseVersion(minVersion);
-          if (parsed < parsedMin) continue;
-        }
+        // Apply min_version filter. Sort keys, not raw strings: a byte-wise compare of
+        // "3.9.1" against "3.11" says 3.9.1 is the greater of the two and lets it past a
+        // 3.11 floor, because "9" > "1". Zero-padding each numeric segment is what makes the
+        // comparison agree with version order.
+        if (minVersion && generateSortKey(version) < generateSortKey(minVersion)) continue;
 
         if (!versionToRelease.has(version)) {
           versionToRelease.set(version, release);
