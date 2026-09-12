@@ -1,0 +1,75 @@
+name = "fd"
+display_name = "fd"
+vendor = "sharkdp"
+website = "https://github.com/sharkdp/fd"
+description = "Fast, user-friendly alternative to find"
+
+# GitHub Releases API capabilities:
+#   Release date: "published_at" field on each release (ISO 8601) — captured automatically
+#   Checksum:     per-asset "digest" field ("sha256:…") — configured below
+
+[discovery]
+type = "github-releases"
+repo = "sharkdp/fd"
+include_prereleases = false
+tag_pattern = "^v(\\d+\\.\\d+\\.\\d+)$"
+
+[versioning]
+type = "semver"
+version_group_extract = "^(\\d+)" # group by major; fd is on 10.x
+# Two reasons, and the stricter one wins.
+#   Digest floor: v10.3.0 (2025-08-26) is the oldest release whose assets carry a GitHub
+#   per-asset digest, below which an artifact would be served unverified.
+#   v10.4.0 is an EMPTY release — the tag exists and is not flagged prerelease, but it has
+#   zero assets attached. At 10.3.0 it lands inside the retention window and produces a
+#   version with no artifacts on any platform; 10.4.1 excludes it outright.
+min_version = "10.4.1"
+lts_support = false
+
+[retention]
+versions_per_group = 3
+groups_to_keep = 1
+cooling_off_days = 21
+
+[checksum]
+type = "github-asset-digest"
+algorithm = "sha256"
+
+# Filenames keep the tag's "v" prefix, which the tag_pattern capture strips — hence the
+# literal "v" in each template.
+
+# fd also ships an x86_64-pc-windows-gnu zip; msvc is the estate-consistent choice.
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "pc-windows-msvc"
+arch_upstream = "x86_64"
+extension = "zip"
+filename_template = "fd-v{version}-{arch}-{os}.{ext}"
+
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "unknown-linux-gnu"
+arch_upstream = "x86_64"
+extension = "tar.gz"
+filename_template = "fd-v{version}-{arch}-{os}.{ext}"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "apple-darwin"
+arch_upstream = "aarch64"
+extension = "tar.gz"
+filename_template = "fd-v{version}-{arch}-{os}.{ext}"
+
+[vulnerabilities]
+# No NVD CPE presence for fd (verified absent 2026-09-12: "fd_project:fd" and "sharkdp:fd"
+# both return zero dictionary entries) — OSV-only tracking. Worth noting that sharkdp's
+# other tool DOES have a CPE, under bat_project:bat; there is no per-author convention to
+# extrapolate from here.
+# OSV crates.io "fd-find" has no advisories today; the crate name is verified correct
+# (repository github.com/sharkdp/fd), so a future RustSec advisory lands here without a
+# config change.
+osv = { ecosystem = "crates.io", name = "fd-find" }
+aliases = ["fd", "fd-find", "fdfind", "find replacement"]
