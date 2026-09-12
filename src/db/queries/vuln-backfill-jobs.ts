@@ -17,6 +17,28 @@ export interface VulnBackfillJobRow {
   created_at: Date;
 }
 
+/**
+ * `since_date` is a DATE column, and pg parses DATE into a JS `Date` — so a row straight from the
+ * driver does not match `since_date: string` above, however cleanly it type-checks. Same class of
+ * mismatch as the BIGINT `id` documented in vuln/backfill-launcher.ts, and it bit harder: the only
+ * consumer (`runVulnBackfillJob`) hands the value to `backfillNvd`, which requires YYYY-MM-DD and
+ * validates it, so an uncoerced Date arrived as "Mon Jan 01 2024 00:00:00 GMT+0000" and failed
+ * every since-bounded backfill at the first step — over the API, in dev and in Cloud Run alike,
+ * since both launchers run this same path.
+ *
+ * Coerced here rather than at the consumer so the declared type is true for every caller.
+ */
+function normalizeJob(row: VulnBackfillJobRow): VulnBackfillJobRow {
+  const since: unknown = row.since_date;
+  if (!(since instanceof Date)) return row;
+  // Local getters, not toISOString(): pg returns a DATE as midnight *local* time, so in any
+  // negative-offset zone the UTC form of that instant lands on the previous calendar day and
+  // would silently shift the window back 24 hours.
+  const month = String(since.getMonth() + 1).padStart(2, "0");
+  const day = String(since.getDate()).padStart(2, "0");
+  return { ...row, since_date: `${since.getFullYear()}-${month}-${day}` };
+}
+
 export async function createVulnBackfillJob(
   q: Queryable,
   since?: string,
@@ -26,7 +48,7 @@ export async function createVulnBackfillJob(
     `INSERT INTO vuln_backfill_jobs (since_date, package_name) VALUES ($1, $2) RETURNING *`,
     [since ?? null, packageName ?? null],
   );
-  return rows[0];
+  return normalizeJob(rows[0]);
 }
 
 export async function getVulnBackfillJob(
@@ -37,14 +59,14 @@ export async function getVulnBackfillJob(
     `SELECT * FROM vuln_backfill_jobs WHERE id = $1`,
     [id],
   );
-  return rows[0] ?? null;
+  return rows[0] ? normalizeJob(rows[0]) : null;
 }
 
 export async function getActiveVulnBackfillJob(q: Queryable): Promise<VulnBackfillJobRow | null> {
   const { rows } = await q.query<VulnBackfillJobRow>(
     `SELECT * FROM vuln_backfill_jobs WHERE status IN ('queued', 'running') ORDER BY created_at LIMIT 1`,
   );
-  return rows[0] ?? null;
+  return rows[0] ? normalizeJob(rows[0]) : null;
 }
 
 export async function updateVulnBackfillJob(

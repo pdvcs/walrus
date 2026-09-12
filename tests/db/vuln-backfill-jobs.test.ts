@@ -90,6 +90,39 @@ describe("targeted vuln backfill jobs", () => {
     expect(finished?.cpe_pairs_done).toBe(2);
   });
 
+  it("reads since_date back as a YYYY-MM-DD string, not a Date", async () => {
+    // since_date is a DATE column and pg parses DATE into a JS Date, so the row did not match its
+    // own declared `since_date: string` type. backfillNvd validates the format, so the Date
+    // reached it as "Mon Jan 01 2024 …" and failed every since-bounded backfill at the first step.
+    const created = await createVulnBackfillJob(pool, "2024-01-01");
+    expect(created.since_date).toBe("2024-01-01");
+
+    const fetched = await getVulnBackfillJob(pool, created.id);
+    expect(fetched?.since_date).toBe("2024-01-01");
+    expect(typeof fetched?.since_date).toBe("string");
+  });
+
+  it("runs a since-bounded backfill through to success", async () => {
+    // The end-to-end shape of the bug above: the job must reach "succeeded" rather than failing
+    // on its own stored since_date.
+    const cvePages = vi.fn(async function* () {});
+    const job = await createVulnBackfillJob(pool, "2024-01-01", PKG);
+
+    await runVulnBackfillJob(pool, job.id, { cvePages } as unknown as NvdClient);
+
+    const finished = await getVulnBackfillJob(pool, job.id);
+    expect(finished?.status).toBe("succeeded");
+    expect(finished?.error_message).toBeNull();
+    // A bounded walk pages per publication window, so it must have asked for at least one.
+    expect(cvePages.mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it("leaves since_date null for a full-history backfill", async () => {
+    const job = await createVulnBackfillJob(pool);
+    expect(job.since_date).toBeNull();
+    expect((await getVulnBackfillJob(pool, job.id))?.since_date).toBeNull();
+  });
+
   it("records failure without losing the package scope", async () => {
     // An async iterable whose first `next()` rejects — an upstream failure on the first page.
     // Written out rather than as a generator, which would need an unreachable `yield` to satisfy
