@@ -87,6 +87,7 @@ import {
   createVulnBackfillJob,
   getActiveVulnBackfillJob,
   getVulnBackfillJob,
+  listVulnBackfillJobs,
   updateVulnBackfillJob,
 } from "./db/queries/vuln-backfill-jobs.js";
 import { CloudRunBackfillLauncher, LocalBackfillLauncher } from "./vuln/backfill-launcher.js";
@@ -261,6 +262,8 @@ export interface CreateAppOptions {
   };
   /** Defaults to config.WALRUS_BASE_PATH; overridable so tests don't need to touch env/config. */
   basePath?: string;
+  /** Landing-page product name. Defaults to config.WALRUS_BRANDING; same test override pattern. */
+  branding?: string;
   metrics?: {
     loadSnapshot?: () => Promise<MetricsSnapshot>;
     now?: () => Date;
@@ -283,6 +286,7 @@ export interface SecurityTierMount {
 
 export function createApp(options: CreateAppOptions = {}): express.Express {
   const basePath = options.basePath ?? config.WALRUS_BASE_PATH;
+  const branding = options.branding ?? config.WALRUS_BRANDING;
   const app = express();
   const metrics = createMetricsRuntime({
     pool,
@@ -319,7 +323,11 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
   publicRouter.get("/", (_req, res) => {
     res
       .type("html")
-      .send(LandingPageResponseSchema.parse(renderLandingPage(packageMetadata.version, basePath)));
+      .send(
+        LandingPageResponseSchema.parse(
+          renderLandingPage(packageMetadata.version, basePath, branding),
+        ),
+      );
   });
 
   publicRouter.get("/admin", (_req, res) => {
@@ -406,6 +414,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
           recordAvailabilityTransitions(pool, { source, trigger: "admin" }),
         startVulnBackfill,
         getVulnBackfill: (id) => getVulnBackfillJob(pool, id),
+        listVulnBackfills: (opts) => listVulnBackfillJobs(pool, opts),
         resetBackfillAttempts: (packageName) => resetBackfillAttempts(pool, packageName),
         getActiveSuppressionCount: () => countActiveCveSuppressions(pool),
         listActiveSuppressions: () => listActiveCveSuppressions(pool),

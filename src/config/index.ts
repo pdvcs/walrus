@@ -182,6 +182,11 @@ const configSchema = z.object({
         "WALRUS_BASE_PATH must be empty, or a path made of /-separated segments of letters, " +
         "digits, '-' and '_' (e.g. /foo or /corp/walrus) with no trailing slash",
     }),
+  // Adopter branding: the product name on the public landing page. Defaults to the project name,
+  // but a deployer presenting walrus under their own internal name overrides just this. Trimmed
+  // and required non-empty, so `WALRUS_BRANDING=" "` is a startup failure rather than a blank
+  // heading; everything else is free text and is HTML-escaped at render time.
+  WALRUS_BRANDING: z.string().trim().min(1).default("Walrus"),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;

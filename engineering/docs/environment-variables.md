@@ -25,7 +25,7 @@ actually checks — which is a different question:
 | `✓`  | Declared with a type, enum, or range. A malformed value fails the parse and stops the process.                                                                                                       |
 | `~`  | Declared, but as a free-form string (`z.string()`): it is read and defaulted, and **every** value passes. A typo here is silent. The two credentials additionally normalise an empty value to unset. |
 
-27 variables are `✓` and 16 are `~`. Several `~` entries do have real constraints — a session
+28 variables are `✓` and 16 are `~`. Several `~` entries do have real constraints — a session
 key must be 32 bytes, `GCS_BUCKET` must exist when the backend is GCS — but those are enforced
 by hand after the parse, not by Zod; see [Boot-time validation](#boot-time-validation).
 
@@ -147,6 +147,15 @@ See [enterprise.md](enterprise.md) for the rule file format and the full design.
 
 See [enterprise.md](enterprise.md#serving-under-a-path-prefix-walrus_base_path) for what gets
 prefixed and the `/health` carve-out for Cloud Run's own probe.
+
+## Adopter branding
+
+| Variable          | Zod | Default  | Description                                                                                                                                                                                            |
+| ----------------- | --- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `WALRUS_BRANDING` | ✓   | `Walrus` | Product name shown as the big heading and browser title of the public landing page. Free text, trimmed, and must be non-empty; escaped at render time. The small top-left nav wordmark stays `Walrus`. |
+
+Only the landing page is branded: it is the page an adopter's own users see first, while the
+nav wordmark and `Walrus Admin` titles identify the software itself.
 
 ## Boot-time validation
 

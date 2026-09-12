@@ -13,6 +13,7 @@ import { generateSortKey } from "../../src/common/version-utils.js";
 import { createAdminVulnsRouter } from "../../src/routes/admin-vulns.js";
 import { createApp } from "../../src/main.js";
 import type { VulnQueryResult } from "../../src/services/vuln-query.js";
+import type { VulnBackfillJobRow } from "../../src/db/queries/vuln-backfill-jobs.js";
 import { VulnSyncAlreadyRunningError } from "../../src/vuln/sync/lock.js";
 import { testOperatorAuth } from "../helpers/authn.js";
 
@@ -110,6 +111,7 @@ describe("admin vuln explorer + sync (isolated)", () => {
             },
           }),
           getVulnBackfill: async () => null,
+          listVulnBackfills: async () => [],
           resetBackfillAttempts: async (packageName?: string) =>
             packageName ? [packageName] : ["azuljdk", "maven3"],
           queryVulns: async (product) =>
@@ -923,6 +925,94 @@ describe("admin vuln explorer + sync (isolated)", () => {
    * access. These cover the route that closes that, and in particular the two decisions in it that
    * are easy to get wrong later.
    */
+  /**
+   * WAL-121. The backfill collection gained a read side: the listing is a client of the same
+   * handler an API client reads, and a browser following a job id gets a page, not raw JSON.
+   */
+  describe("GET /vuln-backfill (WAL-121)", () => {
+    function makeJob(overrides: Partial<VulnBackfillJobRow> = {}): VulnBackfillJobRow {
+      return {
+        id: "18",
+        status: "queued",
+        since_date: null,
+        package_name: null,
+        cpe_pairs_total: 0,
+        cpe_pairs_done: 0,
+        error_message: null,
+        execution_name: null,
+        started_at: null,
+        finished_at: null,
+        created_at: new Date("2026-09-12T10:00:00Z"),
+        ...overrides,
+      };
+    }
+
+    it("renders the Vuln Jobs page with the nav item active", async () => {
+      const app = buildApp({
+        listVulnBackfills: async () => [
+          makeJob(),
+          makeJob({
+            id: "17",
+            status: "succeeded",
+            package_name: "vscode",
+            cpe_pairs_total: 3,
+            cpe_pairs_done: 3,
+          }),
+        ],
+      });
+      const res = await request(app).get("/admin/v1/vuln-backfill").set("Accept", "text/html");
+
+      expect(res.status).toBe(200);
+      expect(res.headers["content-type"]).toMatch(/text\/html/);
+      expect(res.text).toContain("<h1>Vulnerability Fetch Jobs</h1>");
+      expect(res.text).toContain('<a href="/admin/v1/vuln-backfill" class="active">Vuln Jobs</a>');
+      expect(res.text).toContain('href="/admin/v1/vuln-backfill/18"');
+      expect(res.text).toContain("vscode");
+      expect(res.text).toContain("3/3");
+    });
+
+    it("keeps the JSON contract and passes the status filter through", async () => {
+      const seen: Array<{ status?: string }> = [];
+      const app = buildApp({
+        listVulnBackfills: async (opts) => {
+          seen.push(opts);
+          return [makeJob()];
+        },
+      });
+      const res = await request(app).get("/admin/v1/vuln-backfill?status=queued");
+
+      expect(res.status).toBe(200);
+      expect(res.body.jobs).toHaveLength(1);
+      expect(res.body.jobs[0].id).toBe("18");
+      expect(seen[0].status).toBe("queued");
+    });
+
+    it("ignores an unknown status filter rather than erroring", async () => {
+      const app = buildApp({ listVulnBackfills: async () => [] });
+      const res = await request(app).get("/admin/v1/vuln-backfill?status=bogus");
+
+      expect(res.status).toBe(200);
+      expect(res.body.jobs).toEqual([]);
+    });
+
+    it("renders an HTML detail page for a browser and JSON for an API client", async () => {
+      const app = buildApp({
+        getVulnBackfill: async () =>
+          makeJob({ id: "18", status: "running", cpe_pairs_total: 5, cpe_pairs_done: 2 }),
+      });
+
+      const html = await request(app).get("/admin/v1/vuln-backfill/18").set("Accept", "text/html");
+      expect(html.status).toBe(200);
+      expect(html.headers["content-type"]).toMatch(/text\/html/);
+      expect(html.text).toContain("Vuln Backfill Job #18");
+      expect(html.text).toContain("2 / 5");
+
+      const json = await request(app).get("/admin/v1/vuln-backfill/18");
+      expect(json.status).toBe(200);
+      expect(json.body.job.id).toBe("18");
+    });
+  });
+
   describe("POST /vuln-backfill/reset-attempts (WAL-100)", () => {
     it("resets one named package and reports what changed", async () => {
       const res = await request(buildApp())

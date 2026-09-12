@@ -1,6 +1,6 @@
 import { withBase } from "../common/base-path.js";
 
-export type AdminNavItem = "packages" | "jobs" | "validate" | "vulns";
+export type AdminNavItem = "packages" | "jobs" | "vuln-jobs" | "validate" | "vulns";
 
 export const BASE_PAGE_STYLES = `
   *, *::before, *::after { box-sizing: border-box; }
@@ -17,6 +17,16 @@ export const BASE_PAGE_STYLES = `
   .nav form { display: inline; margin: 0; }
   .nav-link { appearance: none; border: 0; padding: 0; background: transparent; color: #6b7280; cursor: pointer; font: inherit; font-size: 0.9rem; }
   .nav-link:hover { color: #111; text-decoration: underline; }
+  .nav-menu { position: relative; }
+  .nav-menu > summary { list-style: none; cursor: pointer; font-size: 0.9rem; color: #6b7280; }
+  .nav-menu > summary::-webkit-details-marker { display: none; }
+  .nav-menu > summary::after { content: " \\25BE"; margin-left: 2px; }
+  .nav-menu[open] > summary, .nav-menu > summary:hover, .nav-menu-active > summary { color: #111; }
+  .nav-menu-active > summary { font-weight: 700; }
+  .nav-menu-list { position: absolute; top: calc(100% + 10px); left: 0; min-width: 150px; display: flex; flex-direction: column; gap: 2px; padding: 6px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; box-shadow: 0 8px 24px rgb(15 23 42 / 0.12); z-index: 50; }
+  .nav-menu-list a { display: block; padding: 6px 10px; border-radius: 6px; font-size: 0.88rem; }
+  .nav-menu-list a:hover { background: #f3f4f6; text-decoration: none; }
+  .nav-menu-list a.active { background: #eff6ff; color: #1d4ed8; font-weight: 700; }
   .nav-status { display: inline-flex; align-items: center; gap: 10px; }
   .nav .nav-chip { display: inline-flex; align-items: center; padding: 2px 9px; border-radius: 999px; background: #c2410c; color: #fff; font-size: 0.78rem; font-weight: 700; }
   .nav .nav-chip:hover { background: #9a3412; color: #fff; text-decoration: none; }
@@ -64,8 +74,14 @@ export function renderAdminNav(basePath: string, active?: AdminNavItem): string 
   return `<nav class="nav" aria-label="Admin navigation">
     <a class="brand" href="${withBase(basePath, "/")}">Walrus</a>
     <a href="${withBase(basePath, "/admin/v1/")}"${active === "packages" ? ' class="active"' : ""}>Packages</a>
-    <a href="${withBase(basePath, "/admin/v1/jobs")}"${active === "jobs" ? ' class="active"' : ""}>Jobs</a>
-    <a href="${withBase(basePath, "/admin/v1/validate")}"${active === "validate" ? ' class="active"' : ""}>Validate TOML</a>
+    <details class="nav-menu${active === "jobs" || active === "vuln-jobs" ? " nav-menu-active" : ""}">
+      <summary class="nav-link nav-menu-trigger">Jobs</summary>
+      <div class="nav-menu-list">
+        <a href="${withBase(basePath, "/admin/v1/jobs")}"${active === "jobs" ? ' class="active"' : ""}>Sync Jobs</a>
+        <a href="${withBase(basePath, "/admin/v1/vuln-backfill")}"${active === "vuln-jobs" ? ' class="active"' : ""}>Vuln Jobs</a>
+      </div>
+    </details>
+    <a href="${withBase(basePath, "/admin/v1/validate")}"${active === "validate" ? ' class="active"' : ""}>Config</a>
     <a href="${withBase(basePath, "/admin/v1/vulns")}"${active === "vulns" ? ' class="active"' : ""}>Vulnerabilities</a>
     <a href="${withBase(basePath, "/api")}">API Docs</a>
     <span class="nav-status">
@@ -134,15 +150,16 @@ export function renderPage(options: {
 </html>`;
 }
 
-export function renderLandingPage(version: string, basePath: string): string {
+export function renderLandingPage(version: string, basePath: string, branding: string): string {
   const safeVersion = escapeHtml(version);
+  const safeBranding = escapeHtml(branding);
   const returnTo = encodeURIComponent(withBase(basePath, "/admin/v1/"));
   return renderPage({
-    title: "Walrus",
+    title: branding,
     nav: renderPublicNav(basePath),
     body: `<section class="hero">
       <span class="version">v${safeVersion}</span>
-      <h1>Walrus</h1>
+      <h1>${safeBranding}</h1>
       <p class="hero-copy">A policy-aware package ingress service for discovering, verifying, retaining, and serving trusted software artifacts.</p>
       <div class="actions">
         <a class="btn btn-primary" href="${withBase(basePath, "/admin/v1/login")}?return_to=${returnTo}">Log in as admin</a>

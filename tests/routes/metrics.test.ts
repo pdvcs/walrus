@@ -1,6 +1,7 @@
 import request from "supertest";
 import express from "express";
 import { describe, expect, it, vi } from "vitest";
+import packageMetadata from "../../package.json";
 import { pool } from "../../src/db/client.js";
 import { createApp } from "../../src/main.js";
 import { createMetricsRuntime } from "../../src/metrics/index.js";
@@ -56,7 +57,9 @@ describe("Prometheus metrics", () => {
     );
     expect(initialResponse.headers["cache-control"]).toBe("no-store");
     expect(initialResponse.text).toContain("# HELP walrus_build_info");
-    expect(initialResponse.text).toContain('walrus_build_info{version="0.2.0"} 1');
+    expect(initialResponse.text).toContain(
+      `walrus_build_info{version="${packageMetadata.version}"} 1`,
+    );
     expect(initialResponse.text).toContain(
       'walrus_metrics_collection_age_seconds{collector="database"} +Inf',
     );

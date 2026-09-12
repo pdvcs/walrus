@@ -1097,6 +1097,8 @@ export function renderSharedHtml(
     .badge-running  { background: #dbeafe; color: #1d4ed8; }
     .badge-completed { background: #dcfce7; color: #15803d; }
     .badge-failed   { background: #fee2e2; color: #b91c1c; }
+    .badge-queued   { background: #fef3c7; color: #92400e; }
+    .badge-succeeded { background: #dcfce7; color: #15803d; }
     .badge-enabled  { background: #dcfce7; color: #15803d; }
     .badge-disabled { background: #f3f4f6; color: #6b7280; }
     .badge-lts      { background: #ede9fe; color: #6d28d9; }
@@ -1209,7 +1211,7 @@ function renderValidatePage(configuredPackages: string[], basePath: string): str
     .join("");
 
   const body = `
-    <h1>Validate TOML Config</h1>
+    <h1>Validate Package Configuration</h1>
     <p class="meta" style="margin-bottom:16px">Paste a package TOML config to validate it without writing to disk.</p>
     <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px">
       <label style="font-size:0.85rem;font-weight:600;color:#374151;white-space:nowrap">Load existing:</label>
@@ -1365,7 +1367,14 @@ function renderValidatePage(configuredPackages: string[], basePath: string): str
   };
 </script>`;
 
-  return renderSharedHtml("Validate TOML", "validate", body, basePath, "", rawTail);
+  return renderSharedHtml(
+    "Validate Package Configuration",
+    "validate",
+    body,
+    basePath,
+    "",
+    rawTail,
+  );
 }
 
 function renderDashboardPage(
@@ -1760,7 +1769,7 @@ function renderJobsListPage(
         </div>`;
 
   const body = `
-    <h1>Sync Jobs</h1>
+    <h1>Package Sync Jobs</h1>
     ${tableHtml}
     ${pager}
     <div id="ts" style="font-size:0.75rem;color:#9ca3af;margin-top:12px"></div>`;
@@ -1776,7 +1785,7 @@ function renderJobsListPage(
     .pager-state { color:#6b7280; font-size:0.8rem; }
   </style>`;
 
-  return renderSharedHtml("Sync Jobs", "jobs", body, basePath, scripts, styleTail);
+  return renderSharedHtml("Package Sync Jobs", "jobs", body, basePath, scripts, styleTail);
 }
 
 export function escHtml(str: string): string {

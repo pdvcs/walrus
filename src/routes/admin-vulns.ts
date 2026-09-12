@@ -11,7 +11,10 @@ import {
 } from "../vuln/sync/index.js";
 import { VulnSyncAlreadyRunningError } from "../vuln/sync/lock.js";
 import type { VulnSourceStatus, VulnSyncStatus } from "../db/queries/vuln-sync-state.js";
-import type { VulnBackfillJobRow } from "../db/queries/vuln-backfill-jobs.js";
+import type {
+  VulnBackfillJobRow,
+  VulnBackfillJobStatus,
+} from "../db/queries/vuln-backfill-jobs.js";
 import { buildPublicationWindows } from "../vuln/sync/nvd-sync.js";
 import { VERSION_NA } from "../vuln/version-ranges.js";
 import { meetsCriticalGate } from "../services/vuln-service.js";
@@ -41,6 +44,12 @@ export interface AdminVulnsRouteDeps {
     packageName?: string,
   ) => Promise<{ job?: VulnBackfillJobRow; alreadyRunning?: boolean }>;
   getVulnBackfill: (id: string) => Promise<VulnBackfillJobRow | null>;
+  /** Newest-first backfill listing backing GET /admin/v1/vuln-backfill (WAL-121). */
+  listVulnBackfills: (opts: {
+    status?: VulnBackfillJobStatus;
+    limit?: number;
+    offset?: number;
+  }) => Promise<VulnBackfillJobRow[]>;
   /** WAL-100: clear the retry budget so the sweep picks a stuck package up again. */
   resetBackfillAttempts: (packageName?: string) => Promise<string[]>;
   getActiveSuppressionCount: () => Promise<number>;
@@ -410,10 +419,46 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps, basePath: stri
     }
   });
 
+  // WAL-121. The backfill collection had no read side: a queued job was only visible as a
+  // transient banner link and the detail endpoint returned raw JSON. This is the list resource,
+  // content-negotiated exactly like GET /admin/v1/jobs — HTML for browsers, { jobs } for API
+  // clients (ADR-007: one handler, the page is a client of it).
+  router.get("/vuln-backfill", async (req, res, next) => {
+    try {
+      const status = parseVulnBackfillStatus(req.query.status);
+      const wantsHtml = req.headers.accept?.includes("text/html");
+      // The HTML page mirrors the Sync Jobs page: fixed 100/page, 1-based `page`. JSON keeps an
+      // optional unbounded-by-default limit.
+      const page = wantsHtml ? Math.max(1, optionalInteger(req.query.page) ?? 1) : undefined;
+      const limit = wantsHtml ? 100 : optionalInteger(req.query.limit);
+
+      const jobs = await deps.listVulnBackfills({
+        status,
+        ...(limit !== undefined ? { limit } : {}),
+        ...(page !== undefined ? { offset: (page - 1) * (limit ?? 100) } : {}),
+      });
+
+      if (wantsHtml) {
+        res.setHeader("Content-Type", "text/html; charset=utf-8");
+        res.send(renderVulnJobsPage(jobs, { page: page ?? 1, pageSize: 100, status }, basePath));
+        return;
+      }
+
+      res.json({ jobs });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.get("/vuln-backfill/:id", async (req, res, next) => {
     try {
       const job = await deps.getVulnBackfill(req.params.id);
       if (!job) return void res.status(404).json({ error: "Backfill job not found" });
+      if (req.headers.accept?.includes("text/html")) {
+        res.setHeader("Content-Type", "text/html; charset=utf-8");
+        res.send(renderVulnJobPage(job, basePath));
+        return;
+      }
       res.json({ job });
     } catch (error) {
       next(error);
@@ -1072,6 +1117,163 @@ function renderExplorer(
   return renderSharedHtml("Vulnerabilities", "vulns", body, basePath, scripts, styleTail);
 }
 
+/** Badge class/label for a backfill status; `queued`/`succeeded` styles live in renderSharedHtml. */
+function vulnJobStatusBadge(status: VulnBackfillJobStatus): string {
+  return `<span class="badge badge-${escHtml(status)}">${escHtml(status)}</span>`;
+}
+
+/**
+ * WAL-121. Newest-first listing of vulnerability backfill jobs. Deliberately mirrors the Sync
+ * Jobs page (fixed 100/page, status filter, auto-refresh while work is active) so the two job
+ * families behave the same way; only the columns differ, because the rows are a different shape.
+ */
+function renderVulnJobsPage(
+  jobs: VulnBackfillJobRow[],
+  paging: { page: number; pageSize: number; status?: VulnBackfillJobStatus },
+  basePath: string,
+): string {
+  const esc = escHtml;
+  const rows = jobs
+    .map((j) => {
+      const scope = j.package_name
+        ? `<a href="${withBase(basePath, "/admin/v1/packages/")}${esc(j.package_name)}">${esc(j.package_name)}</a>`
+        : `<span class="muted">all packages</span>`;
+      const error = j.error_message ? `<div class="error-msg">${esc(j.error_message)}</div>` : "";
+      const pairs = j.cpe_pairs_total > 0 ? `${j.cpe_pairs_done}/${j.cpe_pairs_total}` : "—";
+      return `<tr>
+        <td><a href="${withBase(basePath, "/admin/v1/vuln-backfill/")}${esc(j.id)}">#${esc(j.id)}</a></td>
+        <td>${scope}</td>
+        <td>${j.since_date ? esc(j.since_date) : `<span class="muted">all history</span>`}</td>
+        <td>${vulnJobStatusBadge(j.status)}${error}</td>
+        <td>${esc(pairs)}</td>
+        <td class="ts">${esc(fmtTs(j.created_at.toISOString()))}</td>
+        <td class="ts">${j.started_at ? esc(fmtTs(j.started_at.toISOString())) : "—"}</td>
+        <td class="ts">${j.finished_at ? esc(fmtTs(j.finished_at.toISOString())) : "—"}</td>
+      </tr>`;
+    })
+    .join("");
+
+  const tableHtml =
+    jobs.length === 0
+      ? `<p class="empty">No vulnerability backfill jobs found.</p>`
+      : `<table>
+        <thead><tr>
+          <th>ID</th><th>Package</th><th>Since</th><th>Status</th><th>CPE pairs</th>
+          <th>Queued</th><th>Started</th><th>Finished</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+
+  const hasActive = jobs.some((j) => j.status === "queued" || j.status === "running");
+
+  const pageUrl = (p: number) => {
+    const params = new URLSearchParams({ page: String(p) });
+    if (paging.status) params.set("status", paging.status);
+    return `${withBase(basePath, "/admin/v1/vuln-backfill")}?${params.toString()}`;
+  };
+  const pager =
+    jobs.length === 0 && paging.page === 1
+      ? ""
+      : `<div class="pager">
+          ${paging.page > 1 ? `<a href="${pageUrl(paging.page - 1)}">&larr; Previous</a>` : `<span class="pager-off">&larr; Previous</span>`}
+          <span class="pager-state">Page ${paging.page} · ${jobs.length} job(s)</span>
+          ${jobs.length >= paging.pageSize ? `<a href="${pageUrl(paging.page + 1)}">Next &rarr;</a>` : `<span class="pager-off">Next &rarr;</span>`}
+        </div>`;
+
+  const statusFilter = `<form method="get" action="${withBase(basePath, "/admin/v1/vuln-backfill")}" class="filters">
+    <label>Status
+      <select name="status">
+        ${(["", "queued", "running", "succeeded", "failed"] as const)
+          .map(
+            (s) =>
+              `<option value="${s}"${(paging.status ?? "") === s ? " selected" : ""}>${s === "" ? "all" : s}</option>`,
+          )
+          .join("")}
+      </select>
+    </label>
+    <button class="btn btn-sm btn-secondary" type="submit">Filter</button>
+  </form>`;
+
+  const body = `
+    <h1>Vulnerability Fetch Jobs</h1>
+    <p class="meta">NVD backfill runs. Feed downloads (NVD, KEV, OSV, CVSS) are not jobs — see the
+    <a href="${withBase(basePath, "/admin/v1/vulns")}">Vulnerability Explorer</a> for their freshness.</p>
+    ${statusFilter}
+    ${tableHtml}
+    ${pager}
+    <div id="ts" style="font-size:0.75rem;color:#9ca3af;margin-top:12px"></div>`;
+
+  const scripts = `
+    document.getElementById('ts').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
+    ${hasActive ? "setInterval(() => location.reload(), 3000);" : ""}`;
+
+  const styleTail = `<style>
+    .muted { color:#9ca3af; }
+    .filters { display:flex; gap:10px; align-items:center; margin:12px 0; font-size:0.85rem; }
+    .filters select { padding:4px 8px; border:1px solid #d1d5db; border-radius:6px; font:inherit; background:#fff; }
+    td.ts { color:#9ca3af; font-size:0.78rem; white-space:nowrap; }
+    .pager { display:flex; gap:16px; align-items:center; margin-top:12px; font-size:0.85rem; }
+    .pager a { text-decoration:none; }
+    .pager-off { color:#d1d5db; }
+    .pager-state { color:#6b7280; font-size:0.8rem; }
+    .error-msg { color:#b91c1c; font-size:0.78rem; margin-top:3px; }
+  </style>`;
+
+  return renderSharedHtml(
+    "Vulnerability Fetch Jobs",
+    "vuln-jobs",
+    body,
+    basePath,
+    scripts,
+    styleTail,
+  );
+}
+
+/** WAL-121. Detail page so a job id is not a link into a raw JSON body for a browser. */
+function renderVulnJobPage(job: VulnBackfillJobRow, basePath: string): string {
+  const esc = escHtml;
+  const active = job.status === "queued" || job.status === "running";
+  const field = (label: string, value: string) =>
+    `<tr><th>${esc(label)}</th><td>${value}</td></tr>`;
+  const scope = job.package_name
+    ? `<a href="${withBase(basePath, "/admin/v1/packages/")}${esc(job.package_name)}">${esc(job.package_name)}</a>`
+    : "all packages";
+
+  const body = `
+    <p class="meta"><a href="${withBase(basePath, "/admin/v1/vuln-backfill")}">&larr; All vuln jobs</a></p>
+    <h1>Vuln Backfill Job #${esc(job.id)}</h1>
+    <table class="detail">
+      <tbody>
+        ${field("Status", vulnJobStatusBadge(job.status))}
+        ${field("Package", scope)}
+        ${field("Since", job.since_date ? esc(job.since_date) : "all history")}
+        ${field("CPE pairs", `${job.cpe_pairs_done} / ${job.cpe_pairs_total}`)}
+        ${field("Execution", job.execution_name ? esc(job.execution_name) : "—")}
+        ${field("Queued", esc(fmtTs(job.created_at.toISOString())))}
+        ${field("Started", job.started_at ? esc(fmtTs(job.started_at.toISOString())) : "—")}
+        ${field("Finished", job.finished_at ? esc(fmtTs(job.finished_at.toISOString())) : "—")}
+        ${job.error_message ? field("Error", `<span class="error-msg">${esc(job.error_message)}</span>`) : ""}
+      </tbody>
+    </table>`;
+
+  const scripts = active ? "setInterval(() => location.reload(), 3000);" : "";
+  const styleTail = `<style>
+    table.detail { max-width: 760px; }
+    table.detail th { width: 150px; vertical-align: top; }
+    table.detail td { vertical-align: top; }
+    table.detail a { text-decoration:none; }
+  </style>`;
+
+  return renderSharedHtml(
+    `Vuln Backfill #${job.id}`,
+    "vuln-jobs",
+    body,
+    basePath,
+    scripts,
+    styleTail,
+  );
+}
+
 /**
  * Per-package NVD backfill, offered where the operator already is: looking at one package.
  *
@@ -1200,6 +1402,27 @@ function fmtTs(ts: string | null): string {
 function optionalString(value: unknown): string | undefined {
   if (typeof value === "string" && value.length > 0) return value;
   return undefined;
+}
+
+function optionalInteger(value: unknown): number | undefined {
+  const raw = optionalString(value);
+  if (raw === undefined || !/^\d+$/.test(raw)) return undefined;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
+const VULN_BACKFILL_STATUSES: readonly VulnBackfillJobStatus[] = [
+  "queued",
+  "running",
+  "succeeded",
+  "failed",
+];
+
+function parseVulnBackfillStatus(value: unknown): VulnBackfillJobStatus | undefined {
+  const raw = optionalString(value);
+  return raw && (VULN_BACKFILL_STATUSES as readonly string[]).includes(raw)
+    ? (raw as VulnBackfillJobStatus)
+    : undefined;
 }
 
 function requiredTrimmedString(

@@ -218,3 +218,11 @@ variable "github_token_configured" {
   type        = bool
   default     = false
 }
+
+# Product name shown on the public landing page (WALRUS_BRANDING). This estate is a dev
+# deployment, so the default labels it as such; set TF_VAR_walrus_branding to present a real name.
+variable "walrus_branding" {
+  description = "Product name shown on the public landing page"
+  type        = string
+  default     = "Walrus (Dev)"
+}

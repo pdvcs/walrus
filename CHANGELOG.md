@@ -2,6 +2,44 @@
 
 All notable changes to Walrus are documented here.
 
+## Version 0.4.0: More packages and deeper test coverage
+
+Broadens the catalogue with sixteen new package definitions and backs each new discovery path
+with its own test suite.
+
+**New packages**
+
+- **`rust`** — the Rust toolchain, with versions resolved from rustup's TOML channel manifests.
+- **`dotnetsdk`** / **`asp-hosting`** — the .NET SDK and the ASP.NET Core hosting bundle.
+- **`postgresql`** — PostgreSQL Windows and macOS binaries from EnterpriseDB, served through the
+  now-real `directory-listing` strategy (version history and artifacts live on separate hosts).
+- **`mise`** — the polyglot dev-tool manager.
+- **`powershell`** — PowerShell LTS, with the LTS channel read from upstream's `metadata.json`.
+- **`bat`**, **`difftastic`**, **`eza`**, **`fd`**, **`git-delta`**, **`jq`**, **`micro`**,
+  **`ms-edit`**, **`starship`**, **`zoxide`** — small CLI tools served for Windows, Linux x64, and,
+  where upstream publishes them, macOS arm64.
+
+**Testing**
+
+- Dedicated suites for the new discovery paths: `tests/discovery/directory-listing.test.ts`,
+  `dotnet-releases.test.ts`, and `rust-channel.test.ts`.
+- `tests/scripts/vuln-ingest-all.test.ts` covers the new fleet-wide CVE ingestion script.
+- Expanded coverage for `github-releases` (LTS documents and `min_version` tag handling), the
+  download service, `/internal/vuln-sync`, and CVE version handling.
+
+**Other changes**
+
+- **WAL-117 (Added):** `WALRUS_BASE_PATH` serves the whole app under an adopter's own path prefix.
+- **WAL-121 (Added):** the Admin nav's Jobs item is a dropdown, and a **Vulnerability Fetch Jobs**
+  page lists vulnerability backfill runs; the package jobs page is retitled and the config page
+  becomes **Validate Package Configuration**.
+- **WALRUS_BRANDING** overrides the public landing page's product name (default `Walrus`).
+- **Fixed:** `POST /internal/vuln-sync/:source` no longer fails when its audit row cannot be
+  written, and a backfill job's `since_date` is read back as the `YYYY-MM-DD` string its type
+  declares.
+- **`npm run vuln:ingest-all`** ingests CVEs for every tracked package over the API, and the admin
+  package list can be filtered by first letter.
+
 ## Version 0.2.0: Vulnerability intelligence
 
 Add CVE-lookup capability into walrus, keyed to walrus packages. Also add an admin UI and the ability to cross-reference CVEs against the package versions walrus has cached (i.e. which of the versions walrus is actually serving carry known CVEs).

@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import request from "supertest";
+import packageMetadata from "../../package.json";
 import { pool, runMigrations } from "../../src/db/client.js";
 import { createApp } from "../../src/main.js";
 import { upsertPackage } from "../../src/db/queries/packages.js";
@@ -37,7 +38,7 @@ describe("application health and status", () => {
       ts: "2026-08-29T15:14:03.662Z",
       started: "2026-08-29T15:10:00.000Z",
       inGracePeriod: true,
-      version: "0.2.0",
+      version: packageMetadata.version,
     });
     expect(health.body).not.toHaveProperty("status");
     expect(health.body).not.toHaveProperty("service");

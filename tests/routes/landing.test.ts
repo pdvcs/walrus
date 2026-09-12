@@ -25,6 +25,34 @@ describe("public landing page", () => {
     }
   });
 
+  it("uses WALRUS_BRANDING for the hero when an adopter overrides it", async () => {
+    const branded = createApp({
+      operatorAuth: auth.runtime,
+      internalAuth: (_req, res) => res.status(401).end(),
+      health: { checkDatabase: async () => undefined },
+      branding: "Acme Software Registry",
+    });
+    const response = await request(branded).get("/").expect(200);
+
+    expect(response.text).toContain("<h1>Acme Software Registry</h1>");
+    expect(response.text).toContain("<title>Acme Software Registry</title>");
+    // The small top-left nav wordmark is deliberately untouched.
+    expect(response.text).toContain('class="brand" href="/">Walrus</a>');
+  });
+
+  it("escapes an adopter-supplied branding string", async () => {
+    const branded = createApp({
+      operatorAuth: auth.runtime,
+      internalAuth: (_req, res) => res.status(401).end(),
+      health: { checkDatabase: async () => undefined },
+      branding: "<img src=x onerror=alert(1)>",
+    });
+    const response = await request(branded).get("/").expect(200);
+
+    expect(response.text).toContain("<h1>&lt;img src=x onerror=alert(1)&gt;</h1>");
+    expect(response.text).not.toContain("<img src=x");
+  });
+
   it("takes the landing-page login flow to the admin dashboard", async () => {
     await request(app)
       .get("/admin/v1/login?return_to=%2Fadmin%2Fv1%2F")

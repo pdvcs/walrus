@@ -536,9 +536,11 @@ describe("admin routes", () => {
         .set("Accept", "text/html");
 
       expect(res.status).toBe(200);
-      expect(res.text).toContain('<a href="/admin/v1/jobs" class="active">Jobs</a>');
+      expect(res.text).toContain('class="nav-menu nav-menu-active"');
+      expect(res.text).toContain('<a href="/admin/v1/jobs" class="active">Sync Jobs</a>');
+      expect(res.text).toContain('<a href="/admin/v1/vuln-backfill">Vuln Jobs</a>');
       expect(res.text).toContain('<a href="/admin/v1/">Packages</a>');
-      expect(res.text).toContain('<a href="/admin/v1/validate">Validate TOML</a>');
+      expect(res.text).toContain('<a href="/admin/v1/validate">Config</a>');
     });
 
     it("returns cooling_off_until = null when no embargo was recorded", async () => {

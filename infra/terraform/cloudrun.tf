@@ -53,6 +53,13 @@ resource "google_cloud_run_v2_service" "walrus" {
         name  = "NODE_ENV"
         value = "production"
       }
+      # Adopter branding for the public landing page (src/config/index.ts). This estate is a dev
+      # deployment, so the default labels it as such; override TF_VAR_walrus_branding to present a
+      # real product name.
+      env {
+        name  = "WALRUS_BRANDING"
+        value = var.walrus_branding
+      }
       env {
         name  = "DOWNLOAD_CONCURRENCY"
         value = "8"

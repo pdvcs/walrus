@@ -6,6 +6,7 @@ import { reconcilePackageVuln } from "../../src/db/queries/package-aliases.js";
 import {
   createVulnBackfillJob,
   getVulnBackfillJob,
+  listVulnBackfillJobs,
 } from "../../src/db/queries/vuln-backfill-jobs.js";
 import { runVulnBackfillJob } from "../../src/services/vuln-backfill.js";
 import type { NvdClient } from "../../src/vuln/sync/nvd-client.js";
@@ -63,6 +64,9 @@ describe("targeted vuln backfill jobs", () => {
   it("defaults package_name to null (full backfill)", async () => {
     const job = await createVulnBackfillJob(pool);
     expect(job.package_name).toBeNull();
+    // BIGSERIAL comes back as a JS number through db/client.ts's BIGINT parser; normalizeJob
+    // coerces it to the string the row type promises (WAL-121's render crash).
+    expect(typeof job.id).toBe("string");
   });
 
   it("persists the package scope on the job row", async () => {
@@ -142,5 +146,38 @@ describe("targeted vuln backfill jobs", () => {
     expect(failed?.status).toBe("failed");
     expect(failed?.package_name).toBe(PKG);
     expect(failed?.error_message).toMatch(/boom/);
+  });
+
+  // Explicit created_at so "newest first" is deterministic; createVulnBackfillJob uses now(),
+  // and ties there would leave the order up to the database.
+  async function seedJobs(): Promise<void> {
+    await pool.query(
+      `INSERT INTO vuln_backfill_jobs (status, package_name, created_at) VALUES
+         ('queued', $1, '2026-09-01T00:00:00Z'),
+         ('succeeded', $1, '2026-09-02T00:00:00Z'),
+         ('failed', NULL, '2026-09-03T00:00:00Z')`,
+      [PKG],
+    );
+  }
+
+  it("lists newest-first and filters by status (WAL-121)", async () => {
+    await seedJobs();
+
+    const all = await listVulnBackfillJobs(pool);
+    expect(all.map((j) => j.status)).toEqual(["failed", "succeeded", "queued"]);
+
+    const queued = await listVulnBackfillJobs(pool, { status: "queued" });
+    expect(queued).toHaveLength(1);
+    expect(queued[0].status).toBe("queued");
+  });
+
+  it("honours limit and offset", async () => {
+    await seedJobs();
+
+    const first = await listVulnBackfillJobs(pool, { limit: 2 });
+    expect(first.map((j) => j.status)).toEqual(["failed", "succeeded"]);
+
+    const second = await listVulnBackfillJobs(pool, { limit: 2, offset: 2 });
+    expect(second.map((j) => j.status)).toEqual(["queued"]);
   });
 });
