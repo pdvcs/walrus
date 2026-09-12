@@ -16,7 +16,12 @@ import { buildArtifactPath } from "../storage/types.js";
 import { PackageConfig } from "../types/package-config.js";
 import { renderServedFilename } from "../transform/index.js";
 import { SyncJobRow } from "../types/db.js";
-import { DownloadRequest, DownloadResult, DownloadService } from "./download-service.js";
+import {
+  ChecksumAlgorithm,
+  DownloadRequest,
+  DownloadResult,
+  DownloadService,
+} from "./download-service.js";
 import { RetentionResult, RetentionService } from "./retention-service.js";
 
 export interface SyncRunOptions {
@@ -381,6 +386,7 @@ export class SyncService {
       version_group: version.versionGroup,
       is_lts: version.isLts,
       version_sort: generateSortKey(version.version),
+      cve_version: version.cveVersion ?? null,
     });
 
     // versionRow.discovered_at, not the clock: this is the one call site whose result is persisted,
@@ -521,8 +527,8 @@ function hashConfig(config: PackageConfig): string {
   return crypto.createHash("sha256").update(JSON.stringify(config)).digest("hex");
 }
 
-function normalizeChecksumType(type?: string): "sha256" | "sha1" | undefined {
+function normalizeChecksumType(type?: string): ChecksumAlgorithm | undefined {
   if (!type) return undefined;
-  if (type === "sha1" || type === "sha256") return type;
+  if (type === "sha1" || type === "sha256" || type === "sha512") return type;
   return undefined;
 }

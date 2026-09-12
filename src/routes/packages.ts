@@ -140,7 +140,11 @@ export function createPackagesRouter(deps: PackagesRouteDeps, basePath: string):
             };
           });
 
-          const cveStatus = getVersionAvailabilityStatus(version.version, affects);
+          const cveStatus = getVersionAvailabilityStatus(
+            version.version,
+            affects,
+            version.cve_version,
+          );
           const embargoed = platforms.filter((platform) => platform.status === "cooling_off");
           // The CVE gate wins: a blocked version stays blocked whatever its embargo says. Only
           // when *every* platform is embargoed is the version itself withheld -- one servable
@@ -191,7 +195,9 @@ export function createPackagesRouter(deps: PackagesRouteDeps, basePath: string):
         deps.listAffectsForPackage(packageName),
       ]);
       const version = candidates.find(
-        (candidate) => getVersionAvailabilityStatus(candidate.version, affects) !== "blocked",
+        (candidate) =>
+          getVersionAvailabilityStatus(candidate.version, affects, candidate.cve_version) !==
+          "blocked",
       );
       if (!version) {
         // An embargo is a temporary, dated withholding -- distinct from "not synced yet" (202,

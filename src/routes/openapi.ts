@@ -193,6 +193,10 @@ registry.registerPath({
           description: "SHA-1 checksum (if available)",
           schema: { type: "string" },
         },
+        "X-Checksum-Sha512": {
+          description: "SHA-512 checksum (if available)",
+          schema: { type: "string" },
+        },
       },
       content: { "application/octet-stream": { schema: { type: "string", format: "binary" } } },
     },

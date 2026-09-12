@@ -373,6 +373,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     listAffectsForPackage: (name) => listAffectsWithCveForPackage(pool, name),
     getDataFreshness: () => getDataFreshness(pool),
     logUnresolved: (query, top) => logUnresolvedQuery(pool, query, top),
+    getStoredCveVersion: async (packageName, version) => {
+      const row = await getVersion(pool, packageName, version);
+      return row?.cve_version ?? null;
+    },
   };
 
   publicRouter.use(
@@ -433,7 +437,11 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       isTracked: (name) => isPackageTracked(pool, name),
       listCachedVersions: async (name, version) => {
         const rows = await listVersions(pool, name, {});
-        const mapped = rows.map((r) => ({ version: r.version, version_group: r.version_group }));
+        const mapped = rows.map((r) => ({
+          version: r.version,
+          version_group: r.version_group,
+          cve_version: r.cve_version,
+        }));
         return version ? mapped.filter((v) => v.version === version) : mapped;
       },
       listAffectsForPackage: (name) => listAffectsWithCveForPackage(pool, name),
@@ -604,8 +612,13 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
           if (!(await isPackageTracked(pool, name))) return { tracked: false, byVersion: {} };
           const versionRows = await listVersions(pool, name, {});
           const affects = await listAffectsWithCveForPackage(pool, name);
+          const cveVersionByVersion = new Map(versionRows.map((r) => [r.version, r.cve_version]));
           const perVersion = crossReferenceVersions(
-            versionRows.map((r) => ({ version: r.version, version_group: r.version_group })),
+            versionRows.map((r) => ({
+              version: r.version,
+              version_group: r.version_group,
+              cve_version: r.cve_version,
+            })),
             affects,
           );
           const byVersion: Record<
@@ -619,7 +632,12 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
               high: v.counts.high,
               kev: v.counts.kev,
               // Same predicate the download route enforces, over the affects rows already loaded.
-              blocked: getVersionAvailabilityStatus(v.version, affects) === "blocked",
+              blocked:
+                getVersionAvailabilityStatus(
+                  v.version,
+                  affects,
+                  cveVersionByVersion.get(v.version),
+                ) === "blocked",
             };
           }
           return { tracked: true, byVersion };

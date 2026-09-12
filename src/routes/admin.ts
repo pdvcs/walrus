@@ -1879,7 +1879,7 @@ export function buildRedownloadRequest(
 }
 
 function normalizeChecksumType(type: string | null): ChecksumAlgorithm | undefined {
-  if (type === "sha256" || type === "sha1") {
+  if (type === "sha256" || type === "sha1" || type === "sha512") {
     return type;
   }
   return undefined;

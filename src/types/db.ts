@@ -26,6 +26,12 @@ export interface VersionRow {
   is_lts: boolean;
   discovered_at: Date;
   version_sort: string;
+  /**
+   * The version CVE ranges are evaluated against when it differs from `version` (ADR-008
+   * generalised). NULL = derive it from the package's `cve_version_extract`, or compare the
+   * served version directly. Only range evaluation reads it.
+   */
+  cve_version: string | null;
 }
 
 export type ArtifactStatus = "pending" | "downloading" | "available" | "failed" | "removed";

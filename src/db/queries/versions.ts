@@ -4,14 +4,14 @@ import { generateSortKey } from "../../common/version-utils.js";
 
 export async function insertVersion(
   pool: Pool,
-  v: Omit<VersionRow, "id" | "discovered_at">,
+  v: Omit<VersionRow, "id" | "discovered_at" | "cve_version"> & { cve_version?: string | null },
 ): Promise<VersionRow> {
   const { rows } = await pool.query<VersionRow>(
-    `INSERT INTO versions (package_name, version, version_group, is_lts, version_sort)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO versions (package_name, version, version_group, is_lts, version_sort, cve_version)
+     VALUES ($1, $2, $3, $4, $5, $6)
      ON CONFLICT (package_name, version) DO NOTHING
      RETURNING *`,
-    [v.package_name, v.version, v.version_group, v.is_lts, v.version_sort],
+    [v.package_name, v.version, v.version_group, v.is_lts, v.version_sort, v.cve_version ?? null],
   );
   if (rows[0]) return rows[0];
   // Already exists — fetch and return it
@@ -178,6 +178,7 @@ export interface GroupVersionRow {
   version: string;
   version_group: string;
   is_lts: boolean;
+  cve_version: string | null;
 }
 
 /**
@@ -206,7 +207,7 @@ export async function listAvailableVersionsByGroup(
   }
 
   const { rows } = await pool.query<GroupVersionRow>(
-    `SELECT v.version, v.version_group, v.is_lts
+    `SELECT v.version, v.version_group, v.is_lts, v.cve_version
      FROM versions v
      WHERE v.package_name = $1
        AND EXISTS (

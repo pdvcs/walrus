@@ -168,6 +168,19 @@ const DiscoverySchema = z.discriminatedUnion("type", [
     // (rustc + cargo + rust-std + rust-docs).
     package: z.string().default("rust"),
   }),
+  z.object({
+    type: z.literal("dotnet-releases"),
+    // The channel document(s), one per major.minor. e.g.
+    // "https://raw.githubusercontent.com/dotnet/core/main/release-notes/10.0/releases.json".
+    // Carries the whole channel unpaginated, with inline SHA-512 hashes and no sidecar files.
+    // A list tracks several channels in one package (e.g. the hosting bundle across 8.0 and 10.0),
+    // since .NET publishes a separate document per channel rather than one index.
+    url: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]),
+    // Which component of each release to serve. "sdk" walks `sdks[]` (one entry per active
+    // feature band, each with its bundled runtime version); "runtime" and "aspnetcore-runtime"
+    // read that single object from the release.
+    component: z.enum(["sdk", "runtime", "aspnetcore-runtime"]),
+  }),
 ]);
 
 const VersioningSchema = z.object({

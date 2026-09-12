@@ -93,7 +93,7 @@ export async function recordAvailabilityTransitions(
 
     for (const version of versions) {
       result.versionsChecked += 1;
-      const blocking = findBlockingCve(version.version, affects);
+      const blocking = findBlockingCve(version.version, affects, version.cve_version);
       const status: VersionAvailabilityStatus = blocking === null ? "available" : "blocked";
       const before = previous.get(version.version) ?? "available";
       if (status === before) continue;

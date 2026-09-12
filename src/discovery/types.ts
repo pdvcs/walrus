@@ -22,6 +22,13 @@ export interface DiscoveredVersion {
   isLts: boolean;
   artifacts: Map<PlatformKey, ArtifactInfo>;
   releasedAt?: Date; // Upstream publish timestamp, when known
+  /**
+   * The version CVE ranges should be evaluated against, when the served version embeds one
+   * and upstream publishes the mapping per release (ADR-008 generalised). The .NET SDK serves
+   * 10.0.401 while its bundled runtime — the thing NVD files CVEs against — is 10.0.12.
+   * Absent = compare the served version directly, or derive it from `cve_version_extract`.
+   */
+  cveVersion?: string;
 }
 
 export interface DiscoveryStrategy {

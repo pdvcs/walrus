@@ -85,6 +85,17 @@ describe("migrations", () => {
     expect(indexes[0].indexdef).toContain("revoked_at IS NULL");
   });
 
+  it("adds the per-version CVE version column (migration 0016)", async () => {
+    const { rows } = await pool.query<{ column_name: string; data_type: string }>(
+      `SELECT column_name, data_type
+         FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'versions'
+          AND column_name = 'cve_version'`,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].data_type).toBe("text");
+  });
+
   it("adds the osv mapping columns to packages", async () => {
     const { rows } = await pool.query<{ column_name: string }>(
       `SELECT column_name FROM information_schema.columns

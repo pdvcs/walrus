@@ -5,6 +5,7 @@ import { JsonApiStrategy } from "./json-api.js";
 import { DirectoryListingStrategy } from "./directory-listing.js";
 import { XmlApiStrategy } from "./xml-api.js";
 import { RustChannelStrategy } from "./rust-channel.js";
+import { DotnetReleasesStrategy } from "./dotnet-releases.js";
 
 export function getStrategy(config: PackageConfig): DiscoveryStrategy {
   switch (config.discovery.type) {
@@ -18,6 +19,8 @@ export function getStrategy(config: PackageConfig): DiscoveryStrategy {
       return new DirectoryListingStrategy();
     case "rust-channel":
       return new RustChannelStrategy();
+    case "dotnet-releases":
+      return new DotnetReleasesStrategy();
     default:
       throw new Error(`Unknown discovery type: ${(config.discovery as { type: string }).type}`);
   }

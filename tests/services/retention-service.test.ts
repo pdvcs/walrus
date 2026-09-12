@@ -13,6 +13,7 @@ function version(id: number, group: string, v: string): VersionRow {
     is_lts: false,
     discovered_at: new Date(),
     version_sort: v,
+    cve_version: null,
   };
 }
 

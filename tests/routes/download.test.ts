@@ -19,7 +19,13 @@ function baseDeps(): DownloadRouteDeps {
   };
 }
 
-function makeAvailableArtifact(overrides: Partial<{ cooling_off_until: Date | null }> = {}) {
+function makeAvailableArtifact(
+  overrides: Partial<{
+    cooling_off_until: Date | null;
+    checksum: string | null;
+    checksum_type: string | null;
+  }> = {},
+) {
   return {
     id: 10,
     version_id: 1,
@@ -95,6 +101,7 @@ function makeVersionRow() {
     is_lts: false,
     discovered_at: new Date(),
     version_sort: "0000.0010.0010",
+    cve_version: null,
   };
 }
 
@@ -142,6 +149,22 @@ describe("download routes", () => {
     const body = response.body as Buffer;
     expect(Buffer.isBuffer(body)).toBe(true);
     expect(body.toString("utf8")).toBe("hello");
+  });
+
+  it("emits the sha512 header for a sha512-digested artifact", async () => {
+    const deps = baseDeps();
+    deps.getVersion = vi.fn().mockResolvedValue(makeVersionRow());
+    deps.getArtifact = vi
+      .fn()
+      .mockResolvedValue(makeAvailableArtifact({ checksum: "deadbeef", checksum_type: "sha512" }));
+    deps.streamFromStorage = vi.fn().mockReturnValue(Readable.from(Buffer.from("hello")));
+    const app = createTestApp(deps);
+
+    const response = await request(app).get("/download/uv/0.10.10/linux/x86-64");
+
+    expect(response.status).toBe(200);
+    expect(response.headers["x-checksum-sha512"]).toBe("deadbeef");
+    expect(response.headers["x-checksum-sha256"]).toBeUndefined();
   });
 
   it("returns 404 when version is missing", async () => {

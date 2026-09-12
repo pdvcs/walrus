@@ -212,8 +212,8 @@ export async function previewGateDelta(
 
     const newly: string[] = [];
     for (const v of await listVersions(pool, pkg.name, {})) {
-      const before = getVersionAvailabilityStatus(v.version, affects);
-      const after = getVersionAvailabilityStatus(v.version, patched);
+      const before = getVersionAvailabilityStatus(v.version, affects, v.cve_version);
+      const after = getVersionAvailabilityStatus(v.version, patched, v.cve_version);
       if (before !== "blocked" && after === "blocked") newly.push(v.version);
     }
     if (newly.length > 0) deltas.push({ package_name: pkg.name, newly_blocked: newly });

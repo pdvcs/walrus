@@ -195,6 +195,51 @@ describe("DownloadService", () => {
     expect(vi.mocked(storage.upload)).toHaveBeenCalledOnce();
   });
 
+  it("verifies a sha512 sidecar using a 128-character digest", async () => {
+    const storage: StorageBackend = {
+      upload: makeUploadMock(),
+      download: vi.fn(),
+      delete: vi.fn(),
+      exists: vi.fn(),
+    };
+
+    const statusRepo = {
+      updateArtifactStatus: vi.fn().mockResolvedValue(null),
+    };
+
+    const body = "dotnet-sdk-binary";
+    const expected = crypto.createHash("sha512").update(body).digest("hex");
+    expect(expected).toHaveLength(128);
+    const checksumFileContent = `${expected}  dotnet-sdk-10.0.401-win-x64.zip\n`;
+
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse(body)) // artifact
+      .mockResolvedValueOnce(makeResponse(checksumFileContent)); // checksum sidecar
+
+    const service = new DownloadService({} as Pool, storage, {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      statusRepo,
+      maxRetries: 0,
+    });
+
+    const result = await service.downloadArtifact({
+      artifactId: 57,
+      upstreamUrl: "https://example.test/dotnet-sdk-10.0.401-win-x64.zip",
+      storagePath: "dotnetsdk/10.0.401/windows/x86-64/dotnet-sdk-10.0.401-win-x64.zip",
+      checksumUrl: "https://example.test/dotnet-sdk-10.0.401-win-x64.zip.sha512",
+      checksumType: "sha512",
+    });
+
+    expect(result.status).toBe("available");
+    expect(vi.mocked(storage.upload)).toHaveBeenCalledOnce();
+    expect(statusRepo.updateArtifactStatus).toHaveBeenLastCalledWith(
+      expect.anything(),
+      57,
+      expect.objectContaining({ checksum: expected, checksum_type: "sha512" }),
+    );
+  });
+
   it("retries failed fetches until success", async () => {
     const storage: StorageBackend = {
       upload: makeUploadMock(),

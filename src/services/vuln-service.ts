@@ -14,6 +14,12 @@ import {
 export interface CachedVersionInput {
   version: string;
   version_group: string;
+  /**
+   * Per-version CVE version override (ADR-008 generalised), when the row carries one. The
+   * loader that reads `versions` includes it; callers that only know the served version leave
+   * it out and fall back to the package's regex.
+   */
+  cve_version?: string | null;
 }
 
 export interface VersionVuln {
@@ -72,7 +78,7 @@ export function crossReferenceVersions(
   // ADR-008: the package's normalisation rule travels on the rows it governs.
   const pattern = patternFromAffects(affects);
   return versions.map((v) => {
-    const cveVersion = deriveCveVersion(v.version, pattern);
+    const cveVersion = deriveCveVersion(v.version, pattern, v.cve_version);
     const byCve = new Map<string, { matched: AffectsWithCveRow; reason: string }>();
     for (const row of affects) {
       const existing = byCve.get(row.cve_id);
@@ -117,6 +123,8 @@ export interface GroupVersionInput {
   version: string;
   version_group: string;
   is_lts: boolean;
+  /** Per-version CVE version override (ADR-008 generalised); see `CachedVersionInput`. */
+  cve_version?: string | null;
 }
 
 export interface VersionGroupSummary {
@@ -146,8 +154,9 @@ export interface BlockingCveMatch {
 export function getVersionAvailabilityStatus(
   version: string,
   affects: AffectsWithCveRow[],
+  cveVersion?: string | null,
 ): VersionAvailabilityStatus {
-  return findBlockingCveMatch(version, affects) === null ? "available" : "blocked";
+  return findBlockingCveMatch(version, affects, cveVersion) === null ? "available" : "blocked";
 }
 
 /**
@@ -178,10 +187,12 @@ export function getVersionAvailabilityStatus(
 export function findBlockingCveMatch(
   version: string,
   affects: AffectsWithCveRow[],
+  cveVersionOverride?: string | null,
 ): BlockingCveMatch | null {
   // ADR-008: evaluate against the upstream version the served one embeds, where the package
-  // declares how. Absent a rule this is the served version and nothing changes.
-  const cveVersion = deriveCveVersion(version, patternFromAffects(affects));
+  // declares how — either a per-version override (discovery data) or a package regex. Absent
+  // both this is the served version and nothing changes.
+  const cveVersion = deriveCveVersion(version, patternFromAffects(affects), cveVersionOverride);
   let worst: BlockingCveMatch | null = null;
   for (const row of affects) {
     if (!isKnownCritical(row)) continue;
@@ -209,8 +220,9 @@ export function findBlockingCveMatch(
 export function findBlockingCve(
   version: string,
   affects: AffectsWithCveRow[],
+  cveVersion?: string | null,
 ): AffectsWithCveRow | null {
-  return findBlockingCveMatch(version, affects)?.cve ?? null;
+  return findBlockingCveMatch(version, affects, cveVersion)?.cve ?? null;
 }
 
 /**
@@ -275,7 +287,10 @@ export function summarizeGroupsWithVulnGate(
       groups.set(v.version_group, group);
     }
     group.is_lts ||= v.is_lts;
-    if (group.latest_available === null && !hasConcreteCriticalMatch(v.version, critical)) {
+    if (
+      group.latest_available === null &&
+      !hasConcreteCriticalMatch(v.version, critical, v.cve_version)
+    ) {
       group.latest_available = v.version;
     }
   }
@@ -330,10 +345,14 @@ function suppressionDetails(row: AffectsWithCveRow): VersionVuln["suppression"] 
   };
 }
 
-function hasConcreteCriticalMatch(version: string, criticalRows: AffectsWithCveRow[]): boolean {
+function hasConcreteCriticalMatch(
+  version: string,
+  criticalRows: AffectsWithCveRow[],
+  cveVersion?: string | null,
+): boolean {
   // criticalRows is pre-filtered by callers; findBlockingCve re-checks, which is harmless
   // and keeps the match rule in one place.
-  return findBlockingCve(version, criticalRows) !== null;
+  return findBlockingCve(version, criticalRows, cveVersion) !== null;
 }
 
 function countBySeverity(vulns: VersionVuln[]): VersionCounts {

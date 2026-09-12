@@ -12,7 +12,7 @@ import { Semaphore } from "../common/semaphore.js";
 import { log } from "../common/log.js";
 import { createEgressFetch } from "../common/http.js";
 
-export type ChecksumAlgorithm = "sha256" | "sha1";
+export type ChecksumAlgorithm = "sha256" | "sha1" | "sha512";
 
 export interface DownloadRequest {
   artifactId: number;
@@ -366,7 +366,7 @@ async function fetchChecksumFromUrl(
     throw new Error(`Empty checksum file at ${url}`);
   }
 
-  const digestLength = algorithm === "sha1" ? 40 : 64;
+  const digestLength = algorithm === "sha1" ? 40 : algorithm === "sha512" ? 128 : 64;
   const digestRegex = new RegExp(`[a-fA-F0-9]{${digestLength}}`);
   const match = text.match(digestRegex);
 

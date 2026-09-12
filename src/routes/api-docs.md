@@ -213,6 +213,7 @@ CVEs known to be exploited in the wild (CISA KEV) are flagged but do not block o
 | X-Content-Length    | Size of the **whole** artifact in bytes, on `206` as well        |
 | X-Checksum-Sha256   | SHA-256 of the **whole** artifact (when available)               |
 | X-Checksum-Sha1     | SHA-1 of the **whole** artifact (when available)                 |
+| X-Checksum-Sha512   | SHA-512 of the **whole** artifact (when available)               |
 | Content-Range       | `206` only: `bytes <start>-<end>/<total>`                        |
 
 Neither a `200` nor a `206` carries `Content-Length`. Cloud Run buffers a response that declares

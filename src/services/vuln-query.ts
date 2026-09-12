@@ -31,6 +31,12 @@ export interface VulnQueryDeps {
   listAffectsForPackage: (packageName: string) => Promise<AffectsWithCveRow[]>;
   getDataFreshness: () => Promise<DataFreshness>;
   logUnresolved: (query: string, top?: { slug: string; score: number }) => Promise<void>;
+  /**
+   * The per-version CVE version override (ADR-008 generalised) for a cached version, if the
+   * queried version is known. This endpoint accepts arbitrary versions, so the override is
+   * simply absent for anything not in the catalogue — the package regex still applies.
+   */
+  getStoredCveVersion?: (packageName: string, version: string) => Promise<string | null>;
 }
 
 export interface VulnItem {
@@ -116,9 +122,14 @@ export async function queryVulns(
       ? `version "${version}" could not be parsed; range checks are inconclusive and matching CVEs are included flagged as range-uncomparable`
       : undefined;
 
-  // ADR-008: the package's normalisation rule travels on the rows it governs.
+  // ADR-008: the package's normalisation rule travels on the rows it governs; a per-version
+  // override, when the queried version is cached, takes precedence.
+  const storedCveVersion =
+    versionGiven && deps.getStoredCveVersion
+      ? await deps.getStoredCveVersion(match.slug, version!)
+      : null;
   const cveVersion = versionGiven
-    ? deriveCveVersion(version!, patternFromAffects(rows))
+    ? deriveCveVersion(version!, patternFromAffects(rows), storedCveVersion)
     : { value: version ?? "", normalisedFrom: null };
 
   const byCve = new Map<

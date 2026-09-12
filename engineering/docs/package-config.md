@@ -76,6 +76,7 @@ Choose one `type`. The strategies in preference order:
 3. `xml-api` — there is a Maven/XML metadata endpoint
 4. `directory-listing` — there is a browsable directory of files (rarely needed)
 5. `rust-channel` — the upstream publishes Rust-style TOML channel manifests (currently only Rust)
+6. `dotnet-releases` — the upstream publishes .NET channel JSON with inline hashes (currently only `dotnetsdk` / `asp-hosting`)
 
 ### `github-releases`
 
@@ -410,6 +411,74 @@ extension = "tar.gz"                # "tar.gz" or "tar.xz"
 
 ---
 
+### `dotnet-releases`
+
+**When to use:** The upstream is .NET and publishes a channel document under
+`dotnet/core/release-notes/<channel>/releases.json` rather than GitHub release assets. The
+document covers the whole channel unpaginated and carries inline SHA-512 hashes, so it replaces
+the unusable GitHub Releases API (zero assets) and the `.sha512` sidecars .NET does not publish.
+
+**What to gather:**
+
+- The channel document URL(s), e.g.
+  `https://raw.githubusercontent.com/dotnet/core/main/release-notes/10.0/releases.json`
+- Which component to serve: `sdk`, `runtime`, or `aspnetcore-runtime`
+
+```toml
+[discovery]
+type = "dotnet-releases"
+url = "https://raw.githubusercontent.com/dotnet/core/main/release-notes/10.0/releases.json"
+component = "sdk"   # "sdk" | "runtime" | "aspnetcore-runtime"
+```
+
+.NET publishes one document per channel, not one index, so `url` also accepts a list to track
+several channels in one package. The hosting bundle serves both the .NET 10 and .NET 8 LTS lines:
+
+```toml
+[discovery]
+type = "dotnet-releases"
+url = [
+  "https://raw.githubusercontent.com/dotnet/core/main/release-notes/10.0/releases.json",
+  "https://raw.githubusercontent.com/dotnet/core/main/release-notes/8.0/releases.json",
+]
+component = "aspnetcore-runtime"
+```
+
+Each document is fetched, their releases merged and sorted together, and `min_version` /
+`groups_to_keep` then decide which channels survive — set the latter high enough to cover every
+served channel (2 here, for 10.0 and 8.0).
+
+`component = "sdk"` walks each release's `sdks[]` and emits one version per SDK feature band
+(reading `version`, `files` and — as a per-version CVE mapping — `runtime-version`). The other
+components emit one version per release from that component object. Each `[[platforms]]` block
+selects a file by `rid === os_upstream`, extension and optional `name_must_contain`, and takes the
+inline SHA-512. No `[checksum]` section and no `filename_template` are needed — the checksum is
+inline and the filename is the URL's tail.
+
+```toml
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "win-x64"   # matched against the file's rid
+arch_upstream = "x64"
+extension = "zip"         # excludes dotnet-sdk-*-win-x64.exe
+```
+
+The hosting bundle is the special case: its file carries `rid: ""`, so `os_upstream = ""`, with
+`extension = "exe"` and `name_must_contain = "hosting"` to select it:
+
+```toml
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = ""
+arch_upstream = "x64"
+extension = "exe"
+name_must_contain = "hosting"
+```
+
+---
+
 ## `[versioning]`
 
 Controls how version strings are parsed, grouped, and compared.
@@ -732,12 +801,12 @@ If the schema check fails, the first output line will be:
 
 Common schema errors and what they mean:
 
-| Error                                                    | Fix                                                                                          |
-| -------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `name: Name must be lowercase alphanumeric with hyphens` | Rename — no uppercase, no underscores                                                        |
-| `discovery.type: Invalid discriminator value`            | Must be one of `github-releases`, `json-api`, `xml-api`, `directory-listing`, `rust-channel` |
-| `platforms: Array must contain at least 1 element(s)`    | Need at least one `[[platforms]]` block                                                      |
-| `versioning.type: Invalid enum value`                    | Must be `semver`, `major-minor`, or `calver`                                                 |
+| Error                                                    | Fix                                                                                                             |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `name: Name must be lowercase alphanumeric with hyphens` | Rename — no uppercase, no underscores                                                                           |
+| `discovery.type: Invalid discriminator value`            | Must be one of `github-releases`, `json-api`, `xml-api`, `directory-listing`, `rust-channel`, `dotnet-releases` |
+| `platforms: Array must contain at least 1 element(s)`    | Need at least one `[[platforms]]` block                                                                         |
+| `versioning.type: Invalid enum value`                    | Must be `semver`, `major-minor`, or `calver`                                                                    |
 
 ### Verifying CPE pairs against NVD
 
@@ -876,6 +945,18 @@ for a specific block that proves wrong.
 revision exactly (`2.55.0.3`) is compared against the normalised `2.55.0` and
 misses. For `gitwindows` this is low risk, since such a CVE would need a
 `git_for_windows` CPE and NVD has none.
+
+**When the mapping is not a fixed regex, use a per-version CVE version.** Some
+packages change which upstream version each served version embeds from release
+to release, so no single regex can express it. The .NET SDK is the example: NVD
+files .NET CVEs against the bundled runtime under `microsoft:.net` (there is no
+`microsoft:.net_sdk` product), and SDK `10.0.401` bundles runtime `10.0.12`
+while `10.0.400` bundles `10.0.11`. A discovery strategy can carry that mapping
+out as `DiscoveredVersion.cveVersion` (the `dotnet-releases` strategy reads it
+from `runtime-version`); sync stores it in `versions.cve_version`, and range
+evaluation prefers it over `cve_version_extract`. Nothing in the TOML configures
+it — it is upstream release data. When a block is caused by this mapping, the
+match reason names both versions (`10.0.400 evaluated as 10.0.11`).
 
 Only range evaluation sees the normalised form. The served version,
 `version_sort`, retention and the download path all keep using the full version,

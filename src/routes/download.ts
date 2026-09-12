@@ -64,7 +64,7 @@ export function createDownloadRouter(deps: DownloadRouteDeps): Router {
       res.locals.metricsPackage = versionRow.package_name;
 
       const affects = await deps.listAffectsForPackage(packageName);
-      const blocking = findBlockingCveMatch(versionRow.version, affects);
+      const blocking = findBlockingCveMatch(versionRow.version, affects, versionRow.cve_version);
       if (blocking !== null) {
         res.status(403).json(blockedVersionBody(versionRow.version, blocking));
         return;
@@ -295,6 +295,9 @@ function setEntityHeaders(res: Response, artifact: ArtifactRow): void {
     }
     if (checksumType === "sha1") {
       res.setHeader("X-Checksum-Sha1", artifact.checksum);
+    }
+    if (checksumType === "sha512") {
+      res.setHeader("X-Checksum-Sha512", artifact.checksum);
     }
   }
 }

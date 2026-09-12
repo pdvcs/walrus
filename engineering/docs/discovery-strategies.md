@@ -321,6 +321,63 @@ There is no `filename_template`: the served filename is the artifact URL's tail,
 
 ---
 
+## `dotnet-releases`
+
+**Implementation:** `src/discovery/dotnet-releases.ts`
+
+**Packages:** `dotnetsdk`, `asp-hosting`
+
+`dotnet/sdk`, `dotnet/aspnetcore` and `dotnet/core` attach no assets to their GitHub Releases, so `github-releases` would discover versions with nothing to download. .NET instead publishes one channel document per major.minor under `dotnet/core/release-notes/<channel>/releases.json`, carrying the whole channel unpaginated with inline SHA-512 hashes and no sidecar checksum files:
+
+```json
+{
+  "releases": [
+    {
+      "release-date": "2026-09-08",
+      "sdk": { "version": "10.0.401", "runtime-version": "10.0.12", "files": [] },
+      "sdks": [
+        {
+          "version": "10.0.401",
+          "runtime-version": "10.0.12",
+          "files": [
+            {
+              "name": "dotnet-sdk-win-x64.zip",
+              "rid": "win-x64",
+              "url": "…/dotnet-sdk-10.0.401-win-x64.zip",
+              "hash": "…128 hex…"
+            }
+          ]
+        },
+        { "version": "10.0.112", "runtime-version": "10.0.12", "files": [] }
+      ],
+      "runtime": { "version": "10.0.12", "files": [] },
+      "aspnetcore-runtime": {
+        "version": "10.0.12",
+        "files": [
+          {
+            "name": "dotnet-hosting-win.exe",
+            "rid": "",
+            "url": "…/dotnet-hosting-10.0.12-win.exe",
+            "hash": "…"
+          }
+        ]
+      }
+    }
+  ]
+}
+```
+
+The strategy:
+
+1. `GET` each configured `url` (a string, or a list to track several channels — .NET publishes one document per channel, and the hosting bundle serves both 8.0 and 10.0), parse `releases[]`, and merge the channels.
+2. `component = "sdk"` emits one `DiscoveredVersion` per `sdks[]` entry: `version` from `version`, `cveVersion` from `runtime-version`, `releasedAt` from the enclosing `release-date`, files from the entry's `files`. `component = "runtime"` / `"aspnetcore-runtime"` emits one version per release from that component object, with no `cveVersion`.
+3. Per `[[platforms]]` block, select the file whose `rid === os_upstream`, whose `name` ends with `.<extension>`, and (when set) contains `name_must_contain`. Binaries and installers share a rid and differ only in the filename, so `extension` is what excludes the installer (`.zip` vs `.exe`, `.tar.gz` vs `.pkg`). The served filename is the URL tail, which carries the version the `name` field omits. `hash` is returned inline as `checksumType = "sha512"`, so no `[checksum]` section is needed. A missing file is logged and skipped per platform, not fatal.
+4. `versionGroup` comes from `version_group_extract`; because a release's `sdks[]` names several feature bands and the bands interleave across releases, results are de-duplicated by version and sorted semver-descending.
+
+`releases[]` is newest-first and an SDK version appears once across a channel, so no pagination or per-version fetch is needed. `cveVersion` is the ADR-008 generalisation for packages whose CVE version mapping is per-release data rather than a fixed regex: see the `versions.cve_version` column and `deriveCveVersion` in `src/vuln/cve-version.ts`.
+
+---
+
 ## Checksum strategies
 
 Checksums are resolved separately from discovery, but the discovery strategy sets up how they'll be fetched by populating `ArtifactInfo.checksum` (known now) or `ArtifactInfo.checksumUrl` (fetch later).
@@ -335,6 +392,8 @@ Checksums are resolved separately from discovery, but the discovery strategy set
 | `none`                | No checksum available from upstream                                               | `azuljdk`                    |
 
 When `file_checksum_field` is set on the discovery config, no `[checksum]` section is needed — the hash is already in `ArtifactInfo.checksum` by the time the sync service picks up the result.
+
+The inline hash is not necessarily SHA-256: the strategy sets `ArtifactInfo.checksumType` too, and `dotnet-releases` returns SHA-512 (the `hash` field in .NET's channel document). `DownloadService` supports `sha256`, `sha1` and `sha512`, and the download route emits the matching `X-Checksum-Sha256` / `X-Checksum-Sha1` / `X-Checksum-Sha512` header.
 
 ---
 
