@@ -313,6 +313,124 @@ describe("GitHubReleasesStrategy", () => {
   });
 });
 
+describe('GitHubReleasesStrategy — lts_source = "api"', () => {
+  const LTS_URL = "https://example.test/metadata.json";
+
+  function releasesFor(tags: string[]) {
+    return tags.map((tag) => ({
+      tag_name: tag,
+      prerelease: false,
+      draft: false,
+      published_at: "2024-03-15T10:00:00Z",
+      assets: [
+        {
+          name: "uv-x86_64-unknown-linux-gnu.tar.gz",
+          browser_download_url: `https://example.test/${tag}/uv-x86_64-unknown-linux-gnu.tar.gz`,
+          size: 1000,
+        },
+      ],
+    }));
+  }
+
+  /** Dispatches on URL: the releases list and the LTS document are two separate fetches. */
+  function stub(tags: string[], ltsDoc: unknown) {
+    const fn = vi.fn((url: string) => {
+      const body = url === LTS_URL ? ltsDoc : releasesFor(tags);
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(body),
+        text: () => Promise.resolve(""),
+      });
+    });
+    vi.stubGlobal("fetch", fn);
+    return fn;
+  }
+
+  function configWith(versioning: Partial<PackageConfig["versioning"]>): PackageConfig {
+    return { ...UV_CONFIG, versioning: { ...UV_CONFIG.versioning, ...versioning } };
+  }
+
+  const API_TAGS = {
+    lts_support: true,
+    lts_source: "api" as const,
+    lts_api_url: LTS_URL,
+    lts_api_path: "$.LTSReleaseTag",
+    lts_api_shape: "tags" as const,
+  };
+
+  it("reduces LTS release tags to version groups and marks those versions", async () => {
+    // Upstream names the current patch of each LTS line (PowerShell's LTSReleaseTag shape);
+    // "0.6.2" must mark the whole 0.6 group, not just that one version.
+    stub(["0.7.0", "0.6.2", "0.6.1"], { LTSReleaseTag: ["0.6.2"] });
+
+    const versions = await new GitHubReleasesStrategy().discoverVersions(configWith(API_TAGS));
+
+    const lts = Object.fromEntries(versions.map((v) => [v.version, v.isLts]));
+    expect(lts).toEqual({ "0.7.0": false, "0.6.2": true, "0.6.1": true });
+  });
+
+  it("treats values as groups already when lts_api_shape is omitted", async () => {
+    // The pre-existing shape, as Adoptium's $.available_lts_releases returns it.
+    stub(["0.7.0", "0.6.2"], { available_lts_releases: ["0.6"] });
+
+    const versions = await new GitHubReleasesStrategy().discoverVersions(
+      configWith({
+        lts_support: true,
+        lts_source: "api",
+        lts_api_url: LTS_URL,
+        lts_api_path: "$.available_lts_releases",
+      }),
+    );
+
+    const lts = Object.fromEntries(versions.map((v) => [v.version, v.isLts]));
+    expect(lts).toEqual({ "0.7.0": false, "0.6.2": true });
+  });
+
+  it("does not fetch the LTS document when lts_support is false", async () => {
+    const fn = stub(["0.6.2"], { LTSReleaseTag: ["0.6.2"] });
+
+    const versions = await new GitHubReleasesStrategy().discoverVersions(
+      configWith({ ...API_TAGS, lts_support: false }),
+    );
+
+    expect(versions[0].isLts).toBe(false);
+    expect(fn.mock.calls.map((c) => c[0])).not.toContain(LTS_URL);
+  });
+
+  it("skips an LTS tag it cannot reduce without discarding the rest", async () => {
+    // An upstream that changed tag style should cost that one entry, not the whole package.
+    stub(["0.7.0", "0.6.2"], { LTSReleaseTag: ["not-a-version", "0.6.2"] });
+
+    const versions = await new GitHubReleasesStrategy().discoverVersions(configWith(API_TAGS));
+
+    const lts = Object.fromEntries(versions.map((v) => [v.version, v.isLts]));
+    expect(lts).toEqual({ "0.7.0": false, "0.6.2": true });
+  });
+
+  it("propagates an LTS fetch failure rather than reporting nothing as LTS", async () => {
+    // Degrading to "no version is LTS" would persist a wrong is_lts on the version row, and
+    // silently: a loud failure is the recoverable outcome.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) =>
+        url === LTS_URL
+          ? Promise.resolve({ ok: false, status: 500, text: () => Promise.resolve("boom") })
+          : Promise.resolve({
+              ok: true,
+              status: 200,
+              json: () => Promise.resolve(releasesFor(["0.6.2"])),
+              text: () => Promise.resolve(""),
+            }),
+      ),
+    );
+
+    await expect(
+      new GitHubReleasesStrategy().discoverVersions(configWith(API_TAGS)),
+    ).rejects.toThrow();
+  });
+});
+
 describe("GitHubReleasesStrategy — min_version in tag-based mode", () => {
   /** Releases carrying the version-less asset names UV_CONFIG's templates expect. */
   function releasesFor(tags: string[]) {

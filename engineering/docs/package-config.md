@@ -517,8 +517,27 @@ Set `lts_support = true` only if the project has a meaningful LTS concept. Then 
 | -------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `"none"`       | No LTS (default)                                              | —                                                                                                                                                                                                                  |
 | `"api"`        | The discovery API indicates which releases are LTS            | Two-step mode: `lts_api_path` — JSONPath into the version-list response. Inline mode: `release_lts_field` in `[discovery]` — field on each release object whose truthy string value (e.g. `"Jod"`) marks it as LTS |
-| `"even_major"` | LTS = even-numbered major versions (older Node.js convention) | `lts_min_group` — lowest qualifying major                                                                                                                                                                          |
+| `"even_major"` | LTS = even-numbered major versions (older Node.js convention) | `lts_min_group` — lowest qualifying major. **Not implemented for `github-releases`** — nothing configures it today                                                                                                 |
 | `"explicit"`   | Fixed list of LTS groups                                      | `lts_groups = ["21", "17", "11"]`                                                                                                                                                                                  |
+
+**`lts_api_shape`** (`"groups"` default, or `"tags"`) — what the values at `lts_api_path`
+actually are. `"groups"` means each value already _is_ a version group, which is how Adoptium's
+`$.available_lts_releases` behaves (`[8, 11, 17, 21, 25]` against openjdk's major-number
+groups). `"tags"` means they are release tags needing reduction to groups, which is how
+PowerShell's `$.LTSReleaseTag` behaves (`["v7.4.20", "v7.6.6"]` names the current patch of each
+LTS line, not the line). Under `"tags"` each value is put through the same `tag_pattern` and
+`version_group_extract` a discovered release goes through, so `"v7.6.6"` becomes `"7.6"` and
+matches the group its versions are filed under.
+
+The shape is named rather than sniffed per value, for the same reason `files_shape` is: a
+guess that went wrong would quietly mark the wrong versions LTS, and a silently incorrect
+`is_lts` is worse than a loud failure. A value that cannot be reduced is skipped with a
+warning rather than failing the sync, but a failed _fetch_ of the LTS document propagates —
+degrading to "nothing is LTS" would persist a wrong flag on the version row.
+
+Note `is_lts` is **metadata only**: it is stored on the version and filterable in queries, but
+nothing in discovery or retention selects on it. To serve only LTS releases, restrict
+`tag_pattern` — see `walrus-powershell.toml`, which admits only even minors.
 
 **Examples:**
 
@@ -537,6 +556,13 @@ lts_source = "api"
 lts_support = true
 lts_source = "explicit"
 lts_groups = ["8", "11", "17", "21"]
+
+# PowerShell (github-releases): a separate document lists the LTS *tags*
+lts_support = true
+lts_source = "api"
+lts_api_url = "https://raw.githubusercontent.com/PowerShell/PowerShell/master/tools/metadata.json"
+lts_api_path = "$.LTSReleaseTag"
+lts_api_shape = "tags"
 ```
 
 ---

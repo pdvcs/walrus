@@ -191,6 +191,17 @@ const VersioningSchema = z.object({
   lts_source: z.enum(["none", "api", "even_major", "explicit"]).default("none"),
   lts_api_url: z.string().optional(),
   lts_api_path: z.string().optional(),
+  // Shape of the values `lts_api_path` points at. "groups" is every mode that predates this
+  // field and stays the default: each value already IS a version group, as Adoptium's
+  // `$.available_lts_releases` returns ([8, 11, 17, 21, 25] against openjdk's major-number
+  // groups). "tags" says the values are release tags that must be reduced to groups the same
+  // way a discovered release is — PowerShell's `$.LTSReleaseTag` returns ["v7.4.20", "v7.6.6"],
+  // which names the current patch of each LTS line rather than the line itself.
+  //
+  // Named rather than inferred, for the reason `files_shape` is: deciding per value whether it
+  // looks like a tag or a group would quietly mark the wrong versions LTS the first time an
+  // upstream changed its tag style, and a silently wrong `is_lts` is worse than a loud failure.
+  lts_api_shape: z.enum(["groups", "tags"]).default("groups"),
   lts_min_group: z.number().optional(),
   lts_groups: z.array(z.string()).optional(),
 });

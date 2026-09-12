@@ -84,6 +84,16 @@ Two config options address this:
 
 The `[checksum]` type is `github-asset-digest`, which reads the `digest` field directly from the GitHub asset object (GitHub populates this with a `sha256:hex` string) rather than fetching a sidecar file.
 
+**LTS for `powershell`**
+
+A GitHub release carries no LTS field — the API has nowhere to put one — so unlike `json-api` this strategy cannot read LTS off the release it is already looking at. `lts_source = "api"` therefore names a separate document: `lts_api_url` is fetched once per discovery run and `lts_api_path` (JSONPath) selects the LTS values from it. For PowerShell that document is the repo's own `tools/metadata.json`, whose `LTSReleaseTag` Microsoft updates with every release.
+
+Those values are release _tags_ (`["v7.4.20", "v7.6.6"]`), not version groups, so the config sets `lts_api_shape = "tags"` and each one is reduced through the same `tag_pattern` and `version_group_extract` a discovered release goes through — `v7.6.6` → `7.6.6` → `7.6`. The default `lts_api_shape = "groups"` keeps the pre-existing behaviour, where each value already is a group (Adoptium's `$.available_lts_releases`). An unreducible value is skipped with a warning; a failed fetch of the document propagates rather than silently marking everything non-LTS, since `is_lts` is persisted on the version row.
+
+`lts_source = "even_major"` is accepted by the schema but not implemented here: it would need a predicate over groups rather than a set, because the groups are not known until discovery has run. Nothing configures it.
+
+Note that `is_lts` only labels. Serving _only_ LTS releases is a `tag_pattern` job — `walrus-powershell.toml` admits just even minors, which is PowerShell's LTS convention, and `groups_to_keep = 1` then follows whichever even-minor line is newest.
+
 ---
 
 ## `json-api`
