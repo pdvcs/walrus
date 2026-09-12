@@ -773,6 +773,68 @@ describe("admin vuln explorer + sync (isolated)", () => {
     expect(res.text).toContain("<code>npm run vuln:backfill</code>"); // backtick → code
   });
 
+  describe("GET /transitions", () => {
+    it("400s without since", async () => {
+      const res = await request(buildApp()).get("/admin/v1/transitions");
+      expect(res.status).toBe(400);
+    });
+
+    it("400s on an unparseable since", async () => {
+      const res = await request(buildApp()).get("/admin/v1/transitions?since=not-a-date");
+      expect(res.status).toBe(400);
+    });
+
+    it("503s when the dependency isn't wired up", async () => {
+      const res = await request(buildApp({ listTransitionsSince: undefined })).get(
+        "/admin/v1/transitions?since=2026-01-01T00:00:00Z",
+      );
+      expect(res.status).toBe(503);
+    });
+
+    it("passes since and limit through, and shapes the response for correlation without a package name", async () => {
+      let received: { since: Date; limit: number | undefined } | undefined;
+      const app = buildApp({
+        listTransitionsSince: async (since, limit) => {
+          received = { since, limit };
+          return [
+            {
+              package_name: "vscode",
+              version: "1.136.0",
+              status: "blocked",
+              cve_id: "CVE-2026-81376",
+              cvss_v3_score: "9.6",
+              cvss_v4_score: null,
+              cvss_v2_score: null,
+              severity: "CRITICAL",
+              severity_source: "nvd-cvss-v3",
+              source: "nvd",
+              trigger_type: "internal",
+              created_at: new Date("2026-09-11T22:20:29.946Z"),
+            },
+          ];
+        },
+      });
+
+      const res = await request(app).get(
+        "/admin/v1/transitions?since=2026-09-11T22:00:00Z&limit=50",
+      );
+
+      expect(res.status).toBe(200);
+      expect(received?.since).toEqual(new Date("2026-09-11T22:00:00Z"));
+      expect(received?.limit).toBe(50);
+      expect(res.body.transitions[0]).toMatchObject({
+        package_name: "vscode",
+        version: "1.136.0",
+        status: "blocked",
+        cve_id: "CVE-2026-81376",
+        cvss_v3_score: 9.6,
+        source: "nvd",
+        trigger: "internal",
+        at: "2026-09-11T22:20:29.946Z",
+      });
+    });
+  });
+
   it("sync trigger runs, records an admin_actions row, returns outcomes", async () => {
     const res = await request(buildApp()).post("/admin/v1/vuln-sync/kev");
     expect(res.status).toBe(200);

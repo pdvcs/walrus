@@ -24,6 +24,7 @@ import type {
 } from "../db/queries/cve-suppressions.js";
 import type { SuppressionPreview } from "../services/cve-suppression-service.js";
 import type { AdminActionRow, ListSuppressionAuditOptions } from "../db/queries/admin-actions.js";
+import type { AvailabilityTransition } from "../services/availability-history.js";
 
 export interface AdminVulnsRouteDeps {
   /** Bound /vulns query (same code path as the public API). */
@@ -37,6 +38,10 @@ export interface AdminVulnsRouteDeps {
     newlyBlocked: Array<{ package_name: string; version: string; cve_id: string | null }>;
     newlyAvailable: Array<{ package_name: string; version: string }>;
   }>;
+  /** Backs GET /admin/v1/transitions — every package's gate transitions since a point in
+   * time, for correlating a "blocked a version" alert back to what it actually blocked
+   * without already knowing which package to ask. */
+  listTransitionsSince?: (since: Date, limit?: number) => Promise<AvailabilityTransition[]>;
   /** Operator hints (e.g. "run vuln:backfill") shown above the freshness panel. */
   getHints?: () => Promise<string[]>;
   startVulnBackfill: (
@@ -111,6 +116,48 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps, basePath: stri
           basePath,
         ),
       );
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get("/transitions", async (req, res, next) => {
+    try {
+      const sinceParam = optionalString(req.query.since);
+      if (!sinceParam) {
+        res.status(400).json({ error: "since is required (ISO 8601 timestamp)" });
+        return;
+      }
+      const since = new Date(sinceParam);
+      if (Number.isNaN(since.getTime())) {
+        res.status(400).json({ error: `Invalid since: ${sinceParam}` });
+        return;
+      }
+      if (!deps.listTransitionsSince) {
+        res.status(503).json({ error: "Transition history is not available" });
+        return;
+      }
+
+      const limit = optionalInteger(req.query.limit);
+      const rows = await deps.listTransitionsSince(since, limit);
+
+      res.json({
+        since: since.toISOString(),
+        transitions: rows.map((r) => ({
+          package_name: r.package_name,
+          version: r.version,
+          status: r.status,
+          cve_id: r.cve_id,
+          cvss_v3_score: r.cvss_v3_score === null ? null : Number(r.cvss_v3_score),
+          cvss_v4_score: r.cvss_v4_score === null ? null : Number(r.cvss_v4_score),
+          cvss_v2_score: r.cvss_v2_score === null ? null : Number(r.cvss_v2_score),
+          severity: r.severity,
+          severity_source: r.severity_source,
+          source: r.source,
+          trigger: r.trigger_type,
+          at: new Date(r.created_at).toISOString(),
+        })),
+      });
     } catch (err) {
       next(err);
     }

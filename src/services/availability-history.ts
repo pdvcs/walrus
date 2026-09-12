@@ -187,3 +187,28 @@ export async function listRecentTransitions(
   );
   return rows;
 }
+
+/**
+ * Every package's transitions since a point in time, newest first.
+ *
+ * `listRecentTransitions` and the /api/v1/packages/:name/availability route above it both
+ * require the package name up front — fine once you know what to look for, useless for
+ * "an alert fired, what did it block?" before you do. This is the query an operator actually
+ * needs at that moment, run once across every package instead of looped per package name.
+ */
+export async function listTransitionsSince(
+  pool: Pool,
+  since: Date,
+  limit = 500,
+): Promise<AvailabilityTransition[]> {
+  const { rows } = await pool.query<AvailabilityTransition>(
+    `SELECT package_name, version, status, cve_id, cvss_v3_score, cvss_v4_score,
+            cvss_v2_score, severity, severity_source, source, trigger_type, created_at
+       FROM version_availability_events
+      WHERE created_at >= $1
+      ORDER BY id DESC
+      LIMIT $2`,
+    [since, limit],
+  );
+  return rows;
+}

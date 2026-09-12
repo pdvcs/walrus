@@ -6,6 +6,7 @@ import { insertVersion } from "../../src/db/queries/versions.js";
 import { upsertCveFull, insertAffects } from "../../src/db/queries/cves.js";
 import {
   listAvailabilityHistory,
+  listTransitionsSince,
   recordAvailabilityTransitions,
 } from "../../src/services/availability-history.js";
 
@@ -207,5 +208,30 @@ describe("version availability history", () => {
     expect(result.newlyBlocked).toEqual([
       { package_name: PKG, version, cve_id: CVE },
     ]);
+  });
+
+  it("finds a package's transition across every package, by time, without knowing its name", async () => {
+    await seedPackageWithVersion(pool, version);
+    const before = new Date();
+    await addCriticalCve(pool, version, "9.6");
+
+    await recordAvailabilityTransitions(pool, { source: "nvd", trigger: "internal" });
+
+    const rows = await listTransitionsSince(pool, before);
+    const match = rows.find((r) => r.package_name === PKG);
+    expect(match).toBeDefined();
+    expect(match?.status).toBe("blocked");
+    expect(match?.cve_id).toBe(CVE);
+    expect(match?.source).toBe("nvd");
+  });
+
+  it("excludes transitions recorded before the since cutoff", async () => {
+    await seedPackageWithVersion(pool, version);
+    await addCriticalCve(pool, version, "9.6");
+    await recordAvailabilityTransitions(pool, { source: "nvd", trigger: "internal" });
+
+    const after = new Date(Date.now() + 1000);
+    const rows = await listTransitionsSince(pool, after);
+    expect(rows.find((r) => r.package_name === PKG)).toBeUndefined();
   });
 });

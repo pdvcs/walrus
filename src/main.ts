@@ -39,6 +39,7 @@ import {
 import {
   listAvailabilityHistory,
   listRecentTransitions,
+  listTransitionsSince,
   recordAvailabilityTransitions,
 } from "./services/availability-history.js";
 import { insertAdminAction, listSuppressionAuditActions } from "./db/queries/admin-actions.js";
@@ -460,6 +461,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
           }),
         recordAvailability: (source) =>
           recordAvailabilityTransitions(pool, { source, trigger: "admin" }),
+        listTransitionsSince: (since, limit) => listTransitionsSince(pool, since, limit),
         startVulnBackfill,
         getVulnBackfill: (id) => getVulnBackfillJob(pool, id),
         listVulnBackfills: (opts) => listVulnBackfillJobs(pool, opts),
