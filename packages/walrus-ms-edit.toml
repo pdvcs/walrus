@@ -1,0 +1,78 @@
+# Named ms-edit, not edit: "edit" is far too generic for a download path and an alias
+# namespace shared with every other package in the estate.
+name = "ms-edit"
+display_name = "Microsoft Edit"
+vendor = "Microsoft"
+website = "https://github.com/microsoft/edit"
+description = "Simple modal text editor, a reimagining of MS-DOS Editor"
+
+# GitHub Releases API capabilities:
+#   Release date: "published_at" field on each release (ISO 8601) — captured automatically
+#   Checksum:     per-asset "digest" field ("sha256:…") — configured below
+
+[discovery]
+type = "github-releases"
+repo = "microsoft/edit"
+include_prereleases = false
+tag_pattern = "^v(\\d+\\.\\d+\\.\\d+)$"
+
+[versioning]
+type = "semver"
+version_group_extract = "^(\\d+)" # group by major
+# A PLATFORM floor, not a digest floor (digests go back to v1.2.0). v1.2.1 and v1.2.0 publish
+# Windows x86-64 only; v2.0.0 is the first release with Linux and macOS assets. Consequence
+# worth knowing: this package serves exactly one version until 2.0.1 ships, so there is no
+# older version to fall back to if a release turns out bad.
+min_version = "2.0.0"
+lts_support = false
+
+[retention]
+versions_per_group = 2
+groups_to_keep = 1
+cooling_off_days = 21
+
+[checksum]
+type = "github-asset-digest"
+algorithm = "sha256"
+
+# Note the Windows discriminator is plain "windows", not an MSVC target triple, and Linux is
+# "linux-gnu" rather than "unknown-linux-gnu" — microsoft/edit does not use Rust's triples
+# verbatim even though it is a Rust program.
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "windows"
+arch_upstream = "x86_64"
+extension = "zip"
+filename_template = "edit-{version}-{arch}-{os}.{ext}"
+
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "linux-gnu"
+arch_upstream = "x86_64"
+extension = "tar.gz"
+filename_template = "edit-{version}-{arch}-{os}.{ext}"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "apple-darwin"
+arch_upstream = "aarch64"
+extension = "tar.gz"
+filename_template = "edit-{version}-{arch}-{os}.{ext}"
+
+[vulnerabilities]
+# This package has NO vulnerability source at all — neither CPE nor OSV. Stated plainly so
+# that nobody later reads the silence as coverage.
+#
+# No NVD CPE presence (verified absent 2026-09-12: "microsoft:edit" returns zero dictionary
+# entries; a keyword search for "microsoft edit" returns 1470 Microsoft products, none of
+# them this tool).
+#
+# No OSV mapping is possible either. microsoft/edit is Rust but is not published to
+# crates.io: the "edit" crate is milkey-mouse/edit ("Open a file in the default text
+# editor"), a different project, and "microsoft-edit" does not exist. Mapping either would
+# attribute someone else's advisories to this package.
+aliases = ["edit", "msedit", "ms-edit", "microsoft edit"]
