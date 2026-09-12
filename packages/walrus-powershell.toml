@@ -1,0 +1,117 @@
+name = "powershell"
+display_name = "PowerShell"
+vendor = "Microsoft"
+website = "https://github.com/PowerShell/PowerShell"
+description = "Cross-platform automation shell and scripting language"
+
+# GitHub Releases API capabilities:
+#   Release date: "published_at" field on each release (ISO 8601) — captured automatically
+#   Checksum:     per-asset "digest" field ("sha256:…") — configured below
+#
+# PowerShell ships three maintained lines in lockstep — 7.6.x, 7.5.x and 7.4.x all released
+# on the same day — and this package deliberately serves LTS only. See tag_pattern.
+
+[discovery]
+type = "github-releases"
+repo = "PowerShell/PowerShell"
+include_prereleases = false
+# LTS-ONLY, AND AUTOMATICALLY SO. PowerShell's LTS lines are the even minors, and this
+# pattern admits only those: it matches 7.4.x / 7.6.x / 7.8.x and rejects 7.5.x / 7.7.x
+# along with every `-preview` tag. Combined with groups_to_keep = 1 below, walrus tracks
+# whichever even-minor line is newest with no config change when 7.8 LTS arrives — and,
+# importantly, does not silently follow 7.7 onto a non-LTS line when it GAs (7.7.0-preview.4
+# already exists upstream).
+#
+# The even-minor rule is upstream's, not an inference. Two independent signals confirm it,
+# both checked 2026-09-12:
+#   1. tools/metadata.json in this repo publishes the authoritative list —
+#      "LTSReleaseTag": ["v7.4.20", "v7.6.6"] — naming the current patch of each LTS line.
+#   2. An LTS line's releases carry `-lts` named packages (powershell-lts-*.rpm/.deb/.pkg,
+#      PowerShell-LTS-*.msixbundle); a non-LTS line's carry none.
+# Verified to agree for every line from 7.0 to 7.6: 7.0 (9 lts assets), 7.2 (6), 7.4 (7),
+# 7.6 (8) are LTS; 7.1, 7.3, 7.5 have zero and are not. Should Microsoft ever abandon the
+# convention, this pattern fails safe — it would hold an older LTS line rather than start
+# serving a non-LTS one.
+tag_pattern = "^v(\\d+\\.\\d*[02468]\\.\\d+)$"
+
+[versioning]
+type = "semver"
+version_group_extract = "^(\\d+\\.\\d+)" # 7.4, 7.6, … — one group per LTS line
+# Digest floor: v7.4.11 (2025-06-24) is the oldest release whose assets carry a GitHub
+# per-asset digest, below which an artifact would be served unverified.
+min_version = "7.4.11"
+# Left false deliberately, even though every version this package serves IS an LTS release.
+# `is_lts` is metadata only — nothing in discovery or retention filters on it, so it would
+# not help enforce the LTS-only rule the tag_pattern already enforces. Setting it would
+# require lts_source = "explicit" with a hand-maintained lts_groups list that goes stale the
+# day 7.8 ships. Reading upstream's own LTSReleaseTag would need lts_source = "api" support
+# in the github-releases strategy, which does not exist yet (only json-api implements it).
+lts_support = false
+
+[retention]
+# The last 2 versions of the newest LTS line. Note that a third is held transiently whenever
+# the newest release is still inside its cooling-off window: embargoed versions are retained
+# on top of the quota rather than against it, so users keep two downloadable versions while
+# the freshest one waits.
+versions_per_group = 2
+groups_to_keep = 1
+cooling_off_days = 7
+
+[checksum]
+# Per-asset digest from the GitHub API. The release's aggregate hashes.sha256 is NOT usable:
+# the download service takes the first digest in a sidecar file, which in a 33-asset manifest
+# is the wrong asset (same constraint recorded in walrus-mise.toml and walrus-jq.toml).
+type = "github-asset-digest"
+algorithm = "sha256"
+
+# Asset stems differ in CASE by platform — Windows assets are "PowerShell-", Linux and macOS
+# are "powershell-" — and asset matching is exact filename equality, so each platform spells
+# its own stem. Serving the portable archives (.zip / .tar.gz) rather than the .msi, .pkg,
+# .deb or .rpm installers, consistent with the rest of the estate.
+#
+# The `-lts` named assets are NOT used here: upstream publishes those only as OS-installer
+# formats (rpm/deb/pkg/msixbundle), which exist to install side-by-side under an `-lts` path.
+# The .zip and .tar.gz archives are line-neutral — the same binaries either way.
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "win"
+arch_upstream = "x64"
+extension = "zip"
+filename_template = "PowerShell-{version}-{os}-{arch}.{ext}"
+
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "linux"
+arch_upstream = "x64"
+extension = "tar.gz"
+filename_template = "powershell-{version}-{os}-{arch}.{ext}"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "osx"
+arch_upstream = "arm64"
+extension = "tar.gz"
+filename_template = "powershell-{version}-{os}-{arch}.{ext}"
+
+[vulnerabilities]
+# The best NVD coverage of any package in this batch. CPE microsoft:powershell — 406
+# dictionary entries (verified live 2026-09-12), and unlike most of the small CLI tools the
+# dictionary actually tracks the lines walrus serves: entries exist for 7.6.1–7.6.5,
+# 7.5.1–7.5.9 and 7.4.1–7.4.18, so a CVE filed against the current line will match rather
+# than fall into a version gap.
+#
+# microsoft:powershell_core (17 entries, "Microsoft PowerShell Core 6.x/7.x") is the legacy
+# product name NVD used through 7.1; kept as a secondary so older CVE configurations still
+# resolve. powershell_project:powershell has no entries.
+cpes = ["microsoft:powershell", "microsoft:powershell_core"]
+# NuGet "PowerShell" is the official PowerShell global tool — authors Microsoft, projectUrl
+# this repo, versions tracking releases exactly (upper 7.6.6), verified 2026-09-12 so it is
+# not a namesake package. Only one advisory today (GHSA-jcmq-5rrv-j2g4 / CVE-2020-0605,
+# fixed in 7.0.0) which cannot match a served 7.6.x, but the mapping is correct and future
+# advisories land without a config change.
+osv = { ecosystem = "NuGet", name = "PowerShell" }
+aliases = ["powershell", "pwsh", "powershell core", "ps"]
