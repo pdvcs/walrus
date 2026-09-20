@@ -21,6 +21,9 @@ set -euo pipefail
 #                                tenants, so that budget runs out and fails a whole sync. A
 #                                fine-grained PAT with public read-only access is enough.
 #   WALRUS_SESSION_SECRET_PREVIOUS - old session key during rotation
+#   WALRUS_CREATE_STATE_BUCKET - set to 1 to create a missing Terraform state bucket without
+#                                prompting. For non-interactive runs only; it accepts whatever
+#                                TERRAFORM_STATE_BUCKET says, typo included.
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -101,6 +104,33 @@ npm --prefix "${REPO_ROOT}" run build
 
 echo "==> Phase 2: Ensure Terraform state bucket exists"
 if ! gcloud storage buckets describe "gs://${TERRAFORM_STATE_BUCKET}" --project="${PROJECT_ID}" &>/dev/null; then
+  # Creating this silently made a typo in TERRAFORM_STATE_BUCKET indistinguishable from a genuine
+  # first deploy: the run bootstrapped an empty state under the wrong name and then built a
+  # second, parallel copy of the entire deployment against it. Confirm first, and print the name
+  # being created so a typo is visible at the point of decision.
+  echo ""
+  echo "Terraform state bucket gs://${TERRAFORM_STATE_BUCKET} does not exist."
+  echo "  project:  ${PROJECT_ID}"
+  echo "  location: ${REGION}"
+  echo ""
+  echo "Creating it is correct for a first deploy. If this project already has a state bucket,"
+  echo "the name is wrong: answer no and fix TERRAFORM_STATE_BUCKET, because deploying against"
+  echo "an empty state builds a second copy of the deployment rather than updating the first."
+  echo ""
+  if [[ "${WALRUS_CREATE_STATE_BUCKET:-}" == "1" ]]; then
+    echo "WALRUS_CREATE_STATE_BUCKET=1 — creating without prompting."
+  elif [[ ! -t 0 ]]; then
+    # read would hit EOF here and, under `set -e`, abort with nothing explaining why.
+    echo "ERROR: no terminal to confirm on. Create the bucket first, or re-run with" >&2
+    echo "       WALRUS_CREATE_STATE_BUCKET=1 to accept the name above." >&2
+    exit 1
+  else
+    read -rp "Type 'yes' to create it: " CREATE_STATE_BUCKET
+    if [[ "${CREATE_STATE_BUCKET}" != "yes" ]]; then
+      echo "Aborted." >&2
+      exit 1
+    fi
+  fi
   # Versioned: this bucket is the only record of the whole deployment, and a truncated or
   # corrupted state write is otherwise unrecoverable (WAL-40, 2026-08-30).
   gcloud storage buckets create "gs://${TERRAFORM_STATE_BUCKET}" \
