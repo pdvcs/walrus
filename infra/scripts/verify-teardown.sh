@@ -9,16 +9,13 @@
 # not removed is simply gone. That is the same argument `windows-endpoint-test.ps1` made and won:
 # a manual test is usually a script someone runs once by hand, so write the script first.
 #
-# Run it immediately after teardown.sh and keep the output. It asserts the two halves of the
-# script's own closing claim — that everything Terraform manages is destroyed, and that exactly
-# three things survive on purpose:
-#
-#   - the Terraform state bucket
-#   - the GCS artifact bucket
-#   - the Artifact Registry images
-#
-# The second half matters as much as the first. A teardown that also took the artifact bucket
-# would look like a clean success here and be a data-loss incident.
+# Run it immediately after teardown.sh and keep the output. Everything Terraform manages,
+# including the GCS artifact bucket, is destroyed by `terraform destroy` and must be gone — treat
+# any of it surviving as a hard failure. Two things teardown.sh does NOT touch, by design, and says
+# so in its own closing output: the Terraform state bucket (it's the backend, not a managed
+# resource — destroy can't remove what it needs to read to know what to destroy) and the Artifact
+# Registry images. Those are reported, not asserted: still being there isn't a bug, but it does mean
+# they're still capable of billing, so surface it instead of silently passing.
 #
 #   ./infra/scripts/verify-teardown.sh            # after sourcing ~/.config/walrus/deploy.env
 #   ./infra/scripts/verify-teardown.sh --project X
@@ -98,6 +95,15 @@ gone "WAL-93" "Cloud SQL instances" \
 gone "WAL-92" "Secret Manager secrets" \
   "$(count "$(gcloud secrets list --project="$PROJECT" --format='value(name)' 2>/dev/null)")"
 
+# Terraform-managed (storage.tf), targeted explicitly in teardown.sh's destroy with
+# gcs_force_destroy=true — this must actually be gone, not just "emptied and left standing".
+if [ -n "${TF_VAR_gcs_bucket_name:-}" ]; then
+  gone "WAL-93" "artifact bucket (gs://${TF_VAR_gcs_bucket_name})" \
+    "$(count "$(gcloud storage buckets describe "gs://${TF_VAR_gcs_bucket_name}" --format='value(name)' 2>/dev/null)")"
+else
+  warn "WAL-93" "TF_VAR_gcs_bucket_name unset — source deploy.env to check the artifact bucket"
+fi
+
 SA=$(gcloud iam service-accounts list --project="$PROJECT" \
   --format='value(email)' 2>/dev/null | grep -E 'walrus' || true)
 gone "WAL-93" "walrus service accounts" "$(count "$SA")"
@@ -125,33 +131,28 @@ LM=$(gcloud logging metrics list --project="$PROJECT" --format='value(name)' 2>/
 gone "WAL-43" "walrus log-based metrics" "$(count "$LM")"
 
 # =========================================================================================
-head_ "Deliberately retained — must still be here"
+head_ "Not touched by teardown.sh — report only, does not fail the run"
 # =========================================================================================
-# teardown.sh names these three in its closing output. Asserting they survived is not pedantry:
-# the artifact bucket holds every cached upstream binary, and `gcs_force_destroy=true` is set
-# during teardown precisely so the bucket *could* be emptied. A teardown that took it would print
-# "Teardown complete" and look identical to a good one.
-check_kept() {
+# These two are known to outlive teardown.sh: the state bucket because it's the backend Terraform
+# itself reads from (destroy can't remove what it needs to know what to destroy), and the Artifact
+# Registry images because teardown.sh never targets that repository. teardown.sh's own closing
+# output calls both out as needing manual cleanup. Still being present isn't a failure, but it
+# does mean they can still be billing — report it so it doesn't go unnoticed, the way the leftover
+# artifact bucket did.
+report_presence() {
   local tag="$1" what="$2" present="$3"
-  if [ -n "$present" ]; then ok "$tag" "$what: retained as documented"
-  else no "$tag" "$what: MISSING — teardown removed something it documents as kept"; fi
+  if [ -n "$present" ]; then warn "$tag" "$what: still present — not removed by teardown.sh; delete manually if you don't want it billing"
+  else ok "$tag" "$what: gone"; fi
 }
 
 if [ -n "${TERRAFORM_STATE_BUCKET:-}" ]; then
-  check_kept "WAL-93" "Terraform state bucket (gs://${TERRAFORM_STATE_BUCKET})" \
+  report_presence "WAL-93" "Terraform state bucket (gs://${TERRAFORM_STATE_BUCKET})" \
     "$(gcloud storage buckets describe "gs://${TERRAFORM_STATE_BUCKET}" --format='value(name)' 2>/dev/null)"
 else
   warn "WAL-93" "TERRAFORM_STATE_BUCKET unset — source deploy.env to check the state bucket"
 fi
 
-if [ -n "${TF_VAR_gcs_bucket_name:-}" ]; then
-  check_kept "WAL-93" "artifact bucket (gs://${TF_VAR_gcs_bucket_name})" \
-    "$(gcloud storage buckets describe "gs://${TF_VAR_gcs_bucket_name}" --format='value(name)' 2>/dev/null)"
-else
-  warn "WAL-93" "TF_VAR_gcs_bucket_name unset — source deploy.env to check the artifact bucket"
-fi
-
-check_kept "WAL-93" "Artifact Registry 'walrus' repository" \
+report_presence "WAL-93" "Artifact Registry 'walrus' repository" \
   "$(gcloud artifacts repositories describe walrus --location="$REGION" --project="$PROJECT" --format='value(name)' 2>/dev/null)"
 
 # =========================================================================================
