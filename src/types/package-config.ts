@@ -225,10 +225,15 @@ const RetentionSchema = z.object({
 
 const ChecksumSchema = z.object({
   type: z.enum(["inline-api", "separate-file", "github-asset", "github-asset-digest", "none"]),
-  algorithm: z.enum(["sha256", "sha1", "sha512"]).default("sha256"),
+  algorithm: z.enum(["sha256", "sha1", "sha512", "md5"]).default("sha256"),
   // separate-file
   url_template: z.string().optional(),
   parse_pattern: z.string().optional(),
+  // separate-file: how to read the document at url_template. "text" (default) is a bare digest
+  // or sha256sum-style lines; "gcs-object-metadata" is the JSON object-metadata document of a
+  // Google Cloud Storage object (`{"md5Hash": "<base64>"}`), which publishes MD5 and CRC32C only.
+  // Named rather than sniffed from the response, so a wrong guess cannot mis-verify an artifact.
+  format: z.enum(["text", "gcs-object-metadata"]).default("text"),
   // github-asset
   asset_suffix: z.string().optional(),
   // inline-api

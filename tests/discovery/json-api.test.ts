@@ -380,6 +380,54 @@ function stubFetchJson(payload: unknown) {
   );
 }
 
+describe("JsonApiStrategy — template mode with a [checksum] sidecar", () => {
+  const TF_CONFIG: PackageConfig = {
+    ...VSCODE_CONFIG,
+    name: "terraform",
+    checksum: {
+      type: "separate-file",
+      algorithm: "sha256",
+      format: "text",
+      url_template:
+        "https://releases.example.test/terraform/{version}/terraform_{version}_SHA256SUMS",
+    },
+    platforms: [
+      {
+        os: "linux",
+        arch: "x86-64",
+        os_upstream: "linux",
+        arch_upstream: "amd64",
+        extension: "zip",
+        url_template:
+          "https://releases.example.test/terraform/{version}/terraform_{version}_{os}_{arch}.{ext}",
+      },
+    ],
+  };
+
+  it("derives the sidecar URL per version", async () => {
+    stubFetchJson(MOCK_VSCODE_RESPONSE);
+
+    const versions = await new JsonApiStrategy().discoverVersions(TF_CONFIG);
+    const art = versions.find((v) => v.version === "1.135.0")!.artifacts.get("linux/x86-64")!;
+
+    expect(art.filename).toBe("terraform_1.135.0_linux_amd64.zip");
+    expect(art.checksumUrl).toBe(
+      "https://releases.example.test/terraform/1.135.0/terraform_1.135.0_SHA256SUMS",
+    );
+    expect(art.checksumType).toBe("sha256");
+  });
+
+  it("leaves checksum fields unset without a separate-file sidecar", async () => {
+    stubFetchJson(MOCK_VSCODE_RESPONSE);
+
+    const versions = await new JsonApiStrategy().discoverVersions(VSCODE_CONFIG);
+    const art = versions[0].artifacts.get("linux/x86-64")!;
+
+    expect(art.checksumUrl).toBeUndefined();
+    expect(art.checksumType).toBeUndefined();
+  });
+});
+
 describe("JsonApiStrategy — version-list submode (VS Code)", () => {
   it("treats bare strings in the releases array as versions", async () => {
     stubFetchJson(MOCK_VSCODE_RESPONSE);

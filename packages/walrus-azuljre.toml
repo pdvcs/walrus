@@ -1,0 +1,69 @@
+name = "azuljre"
+display_name = "Azul Zulu JRE"
+vendor = "Azul Systems"
+website = "https://www.azul.com/downloads/"
+description = "Azul Zulu OpenJDK runtime (JRE) distribution; sibling of azuljdk for hosts that only need to run Java"
+
+# Same Azul metadata API and shape as walrus-azuljdk.toml; the only difference is
+# java_package_type=jre. Azul's API accepts only "jdk" and "jre" for that parameter.
+#
+# Azul metadata API capabilities:
+#   Release date: absent — the package listing endpoint exposes no date or timestamp fields
+#   Checksum:     the API can return "sha256_hash" via include_fields=sha256_hash, but the Azul
+#                 branch of the json-api strategy does not read it yet (type = "none", as azuljdk)
+
+[discovery]
+type = "json-api"
+explicit_versions = [8, 11, 17, 21, 25]
+release_url_template = "https://api.azul.com/metadata/v1/zulu/packages/?java_version={major_version}&os={os}&arch={arch}&java_package_type=jre&release_status=ga&javafx_bundled=false&crac_supported=false&page_size=50"
+release_download_url_field = "download_url"
+release_filename_field = "name"
+
+[versioning]
+type = "semver"
+version_group_extract = "^(\\d+)" # "21" from "21.0.12+1"
+lts_support = true
+lts_source = "explicit"
+lts_groups = ["8", "11", "17", "21", "25"]
+
+[retention]
+versions_per_group = 2
+cooling_off_days = 3
+
+[checksum]
+type = "none"
+
+# Platform scope matches azuljdk: macOS arm64 only. The other platforms are one uncommenting
+# away; name_must_contain keeps the archive and excludes the .deb/.rpm/.msi/.dmg and musl builds
+# the API lists alongside it.
+
+# [[platforms]]
+# os = "windows"
+# arch = "x86-64"
+# os_upstream = "windows"
+# arch_upstream = "x86_64"
+# extension = "zip"
+# name_must_contain = "win_x64.zip"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "macos"
+arch_upstream = "aarch64"
+extension = "tar.gz"
+name_must_contain = "macosx_aarch64.tar.gz"
+
+# [[platforms]]
+# os = "linux"
+# arch = "x86-64"
+# os_upstream = "linux"
+# arch_upstream = "x86_64"
+# extension = "tar.gz"
+# name_must_contain = "linux_x64.tar.gz" # excludes linux_musl_x64
+
+[vulnerabilities]
+# Same CPE pairs as azuljdk: azul:zulu for Azul-specific advisories, oracle:openjdk for upstream
+# OpenJDK CVEs that apply to Zulu builds. A JRE is a subset of the JDK, so JDK-tool-only CVEs
+# can over-match here; that is the safe direction.
+cpes = ["azul:zulu", "oracle:openjdk"]
+aliases = ["zulu jre", "azul jre", "azul zulu jre", "jre", "java runtime", "openjdk", "java"]

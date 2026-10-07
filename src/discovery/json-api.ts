@@ -293,11 +293,22 @@ export class JsonApiStrategy implements DiscoveryStrategy {
             ? applyTemplate(platform.filename_template, vars)
             : (fileUrl.split("/").at(-1) ?? "");
 
+          // A sidecar named by [checksum] (Terraform's per-release SHA256SUMS). The download
+          // service picks this artifact's own line out of a multi-file manifest.
+          const sidecar =
+            config.checksum?.type === "separate-file" && config.checksum.url_template
+              ? config.checksum
+              : undefined;
+
           artifacts.set(platformKey(platform), {
             url: fileUrl,
             filename,
             checksum: undefined,
-            checksumType: undefined,
+            checksumUrl: sidecar?.url_template
+              ? applyTemplate(sidecar.url_template, vars)
+              : undefined,
+            checksumType: sidecar?.algorithm,
+            checksumFormat: sidecar?.format,
           });
         }
       }

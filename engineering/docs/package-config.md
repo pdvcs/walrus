@@ -606,7 +606,7 @@ Declares how to obtain the checksum for each artifact. This section is optional 
 ```toml
 [checksum]
 type = "..."        # "github-asset" | "separate-file" | "inline-api" | "none"
-algorithm = "sha256"  # "sha256" | "sha1" | "sha512" — default: sha256
+algorithm = "sha256"  # "sha256" | "sha1" | "sha512" | "md5" — default: sha256
 ```
 
 ### `github-asset`
@@ -634,7 +634,19 @@ url_template = "https://repo.maven.apache.org/maven2/org/apache/maven/apache-mav
 # parse_pattern is optional — omit if the file contains only the raw hash
 ```
 
-The `{version}` and `{ext}` placeholders are substituted per artifact. If the sidecar file contains only the raw hash (no filename), omit `parse_pattern`. If it's a `SHA256SUMS`-style file with `hash  filename` lines, provide a regex:
+The `{version}`, `{os}`, `{arch}` and `{ext}` placeholders are substituted per artifact. Sidecars work with `directory-listing` and with `json-api` template mode (platforms that build their own `url_template`).
+
+**Multi-file manifests need no `parse_pattern`.** When the sidecar lists several digests (Terraform's `terraform_{version}_SHA256SUMS` has one line per build), the download service takes the line whose filename equals the tail of the artifact's upstream URL, and fails the artifact if there is none rather than guessing. A sidecar with a single digest is used as-is. (`parse_pattern` is still accepted by the schema but nothing applies it.)
+
+**`format`** names how to read the document at `url_template`: `"text"` (default; a bare digest or `sha256sum`-style lines) or `"gcs-object-metadata"`, the JSON object-metadata document of a Google Cloud Storage object. GCS publishes only MD5 and CRC32C, base64-encoded, so this pairs with `algorithm = "md5"`; the download service converts to hex. `walrus-gcloud.toml` is the worked example. MD5 detects corruption and truncation, not tampering. The format is declared, never sniffed from the response.
+
+```toml
+[checksum]
+type = "separate-file"
+algorithm = "md5"
+format = "gcs-object-metadata"
+url_template = "https://storage.googleapis.com/storage/v1/b/cloud-sdk-release/o/google-cloud-cli-{version}-{os}-{arch}.{ext}?fields=md5Hash"
+``` If the sidecar file contains only the raw hash (no filename), omit `parse_pattern`. If it's a `SHA256SUMS`-style file with `hash  filename` lines, provide a regex:
 
 ```toml
 parse_pattern = "([a-f0-9]{64})\\s+apache-maven-{version}-bin\\.{ext}"

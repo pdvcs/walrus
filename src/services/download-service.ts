@@ -12,7 +12,8 @@ import { Semaphore } from "../common/semaphore.js";
 import { log } from "../common/log.js";
 import { createEgressFetch } from "../common/http.js";
 
-export type ChecksumAlgorithm = "sha256" | "sha1" | "sha512";
+export type ChecksumAlgorithm = "sha256" | "sha1" | "sha512" | "md5";
+export type ChecksumFormat = "text" | "gcs-object-metadata";
 
 export interface DownloadRequest {
   artifactId: number;
@@ -21,6 +22,7 @@ export interface DownloadRequest {
   expectedChecksum?: string;
   checksumUrl?: string; // URL to fetch the expected checksum from (e.g. .sha256 sidecar)
   checksumType?: ChecksumAlgorithm;
+  checksumFormat?: ChecksumFormat; // how to read checksumUrl; absent = "text"
   /**
    * Byte count the upstream API advertises for this artifact, where it publishes one. Takes
    * precedence over the response's own `Content-Length`, being the independent number — but
@@ -270,7 +272,10 @@ export class DownloadService {
       const expectedChecksum =
         req.expectedChecksum ??
         (req.checksumUrl
-          ? await fetchChecksumFromUrl(req.checksumUrl, this.checksumFetchImpl, algorithm)
+          ? await fetchChecksumFromUrl(req.checksumUrl, this.checksumFetchImpl, algorithm, {
+              filename: req.upstreamUrl.split("?")[0].split("/").at(-1),
+              format: req.checksumFormat,
+            })
           : undefined);
 
       // The upstream digest is verified against the source bytes, always. What is recorded on
@@ -387,6 +392,7 @@ async function fetchChecksumFromUrl(
   url: string,
   fetchImpl: typeof fetch,
   algorithm: ChecksumAlgorithm,
+  opts: { filename?: string; format?: ChecksumFormat } = {},
 ): Promise<string> {
   const response = await fetchImpl(url);
   if (!response.ok) {
@@ -399,13 +405,69 @@ async function fetchChecksumFromUrl(
     throw new Error(`Empty checksum file at ${url}`);
   }
 
-  const digestLength = algorithm === "sha1" ? 40 : algorithm === "sha512" ? 128 : 64;
-  const digestRegex = new RegExp(`[a-fA-F0-9]{${digestLength}}`);
-  const match = text.match(digestRegex);
-
-  if (!match) {
-    throw new Error(`No ${algorithm} digest found in checksum file at ${url}`);
+  if (opts.format === "gcs-object-metadata") {
+    return md5FromGcsMetadata(text, url, algorithm);
   }
 
-  return match[0].toLowerCase();
+  const digestLength = DIGEST_HEX_LENGTH[algorithm];
+  const digestRegex = new RegExp(`[a-fA-F0-9]{${digestLength}}`);
+  const candidates = text
+    .split(/\r?\n/)
+    .map((line) => ({ line, match: line.match(digestRegex) }))
+    .filter((c): c is { line: string; match: RegExpMatchArray } => c.match !== null);
+
+  if (candidates.length === 0) {
+    throw new Error(`No ${algorithm} digest found in checksum file at ${url}`);
+  }
+  if (candidates.length === 1 || !opts.filename) {
+    return candidates[0].match[0].toLowerCase();
+  }
+
+  // A manifest covering many files (Terraform's SHA256SUMS, one line per build): the first
+  // digest is whichever artifact sorts first, not necessarily ours. Pick our own line, and fail
+  // rather than guess when it is absent — verifying against another file's digest would reject
+  // a good download or, worse, bless a bad one.
+  const own = candidates.find((c) => {
+    const name = c.line
+      .slice((c.match.index ?? 0) + digestLength)
+      .trim()
+      .replace(/^\*/, "")
+      .split("/")
+      .at(-1);
+    return name === opts.filename;
+  });
+  if (!own) {
+    throw new Error(
+      `Checksum file at ${url} lists ${candidates.length} digests, none for ${opts.filename}`,
+    );
+  }
+  return own.match[0].toLowerCase();
+}
+
+const DIGEST_HEX_LENGTH: Record<ChecksumAlgorithm, number> = {
+  md5: 32,
+  sha1: 40,
+  sha256: 64,
+  sha512: 128,
+};
+
+/** GCS object metadata carries MD5 as base64; the rest of the pipeline compares lowercase hex. */
+function md5FromGcsMetadata(text: string, url: string, algorithm: ChecksumAlgorithm): string {
+  if (algorithm !== "md5") {
+    throw new Error(`gcs-object-metadata checksums are MD5; configured algorithm is ${algorithm}`);
+  }
+  let md5Hash: unknown;
+  try {
+    md5Hash = (JSON.parse(text) as { md5Hash?: unknown }).md5Hash;
+  } catch {
+    throw new Error(`Checksum document at ${url} is not JSON`);
+  }
+  if (typeof md5Hash !== "string") {
+    throw new Error(`No md5Hash in object metadata at ${url}`);
+  }
+  const hex = Buffer.from(md5Hash, "base64").toString("hex");
+  if (hex.length !== DIGEST_HEX_LENGTH.md5) {
+    throw new Error(`Malformed md5Hash in object metadata at ${url}`);
+  }
+  return hex;
 }

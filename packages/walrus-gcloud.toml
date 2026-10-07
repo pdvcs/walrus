@@ -1,0 +1,75 @@
+name = "gcloud"
+display_name = "Google Cloud CLI"
+vendor = "Google"
+website = "https://cloud.google.com/sdk"
+description = "Google Cloud CLI (gcloud SDK) archives"
+
+# Discovery and download are separate sources, as with postgresql:
+#   Versions:  the public RELEASE_NOTES file, one "## 588.0.0 (2026-10-06)" heading per release
+#              back to 2013. Google publishes no JSON version index; components-2.json carries
+#              only the current version, and the GCS bucket listing is paginated per object.
+#   Downloads: dl.google.com/dl/cloudsdk/channels/rapid/downloads/, which serves every historical
+#              archive (probed 588.0.0, 570.0.0, 500.0.0 on all three platforms, 2026-10-07).
+#
+# Release date: absent from this strategy, so cooling-off anchors to first-seen.
+
+[discovery]
+type = "directory-listing"
+url = "https://dl.google.com/dl/cloudsdk/channels/rapid/RELEASE_NOTES"
+# Applied to the raw body; the capture group yields the version from each release heading.
+pattern = "## (\\d+\\.\\d+\\.\\d+) \\("
+
+[versioning]
+type = "semver"
+# gcloud bumps the major every week (588.0.0, 589.0.0, ...) and never ships minors or patches,
+# so each release is its own group and groups_to_keep is what bounds retention.
+version_group_extract = "^(\\d+)"
+# Archives were named google-cloud-sdk-* before google-cloud-cli-*; 500.0.0 is verified to use
+# the current name. Keeps discovery from building URLs for ~600 historical headings.
+min_version = "500.0.0"
+lts_support = false
+
+[retention]
+versions_per_group = 1
+groups_to_keep = 1 # latest release only; gcloud self-updates, so older archives have little use
+cooling_off_days = 3
+
+[checksum]
+# Google publishes SHA-256 only on the human-readable versioned-archives docs page. What the
+# bucket does expose, per object, is MD5 (and CRC32C) in its JSON metadata, base64-encoded;
+# `format` tells the download service to read that document and convert to hex. MD5 detects
+# corruption and truncation, not tampering: it is weak, and the metadata sits on Google's own
+# host beside the archive.
+type = "separate-file"
+algorithm = "md5"
+format = "gcs-object-metadata"
+url_template = "https://storage.googleapis.com/storage/v1/b/cloud-sdk-release/o/google-cloud-cli-{version}-{os}-{arch}.{ext}?fields=md5Hash"
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "windows"
+arch_upstream = "x86_64"
+extension = "zip"
+url_template = "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-{version}-{os}-{arch}.{ext}"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "darwin"
+arch_upstream = "arm"
+extension = "tar.gz"
+url_template = "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-{version}-{os}-{arch}.{ext}"
+
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "linux"
+arch_upstream = "x86_64"
+extension = "tar.gz"
+url_template = "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-{version}-{os}-{arch}.{ext}"
+
+# No [vulnerabilities] section, deliberately. NVD has no CPE for the Google Cloud CLI (probed
+# google:cloud_sdk, google_cloud_sdk, cloud_cli, gcloud, google-cloud-sdk and a keyword search
+# for "google cloud sdk": 0 results each, 2026-10-07), and it is not published to PyPI or Go, so
+# OSV has no package to map. Adding one would only create a tracked package that can never match.

@@ -1,0 +1,75 @@
+name = "terraform"
+display_name = "Terraform"
+vendor = "HashiCorp"
+website = "https://developer.hashicorp.com/terraform"
+description = "Infrastructure-as-code CLI"
+
+# releases.hashicorp.com index capabilities:
+#   Release date: absent — index.json carries no date, so cooling-off anchors to first-seen
+#   Checksum:     per-release terraform_{version}_SHA256SUMS, one line per build. The download
+#                 service picks the line whose filename matches the artifact being fetched.
+#                 (HashiCorp also GPG-signs the manifest; the signature is not verified.)
+#
+# Licence note: Terraform 1.6 and later is BUSL-1.1, not MPL. Serving it internally is permitted
+# by the licence; this is recorded so nobody is surprised later.
+
+[discovery]
+type = "json-api"
+url = "https://releases.hashicorp.com/terraform/index.json"
+# `versions` is an object keyed by version string, so `[*]` yields the release objects.
+releases_path = "$.versions[*]"
+release_version_field = "version"
+# Three plain numeric components: drops alpha/beta/rc releases (1.17.0-rc1, 1.9.0-alpha2024…).
+tag_pattern = "^(\\d+\\.\\d+\\.\\d+)$"
+# No files_field / release_download_url_field: this is template mode. The `builds[]` entries have
+# a usable `url`, but array-shape files mode builds URLs as file_url_base + filename and
+# Terraform's path includes the version directory, so each platform supplies url_template.
+
+[versioning]
+type = "semver"
+version_group_extract = "^(\\d+\\.\\d+)" # 1.12, 1.13, ...
+min_version = "1.10.0"
+lts_support = false
+
+[retention]
+versions_per_group = 2
+groups_to_keep = 4
+cooling_off_days = 3
+
+[checksum]
+# The manifest sits on the same host as the archives, so this catches corruption and truncation,
+# not a compromised mirror; that would need the GPG signature checked as well.
+type = "separate-file"
+algorithm = "sha256"
+url_template = "https://releases.hashicorp.com/terraform/{version}/terraform_{version}_SHA256SUMS"
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "windows"
+arch_upstream = "amd64"
+extension = "zip"
+url_template = "https://releases.hashicorp.com/terraform/{version}/terraform_{version}_{os}_{arch}.{ext}"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "darwin"
+arch_upstream = "arm64"
+extension = "zip"
+url_template = "https://releases.hashicorp.com/terraform/{version}/terraform_{version}_{os}_{arch}.{ext}"
+
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "linux"
+arch_upstream = "amd64"
+extension = "zip"
+url_template = "https://releases.hashicorp.com/terraform/{version}/terraform_{version}_{os}_{arch}.{ext}"
+
+[vulnerabilities]
+# hashicorp:terraform — 185 dictionary entries (verified live against the NVD CPE dictionary
+# 2026-10-07). OSV's Go ecosystem tracks the CLI module (GO-* and GHSA advisories).
+cpes = ["hashicorp:terraform"]
+osv = { ecosystem = "Go", name = "github.com/hashicorp/terraform" }
+aliases = ["terraform", "tf", "hashicorp terraform"]

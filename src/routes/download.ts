@@ -299,6 +299,9 @@ function setEntityHeaders(res: Response, artifact: ArtifactRow): void {
     if (checksumType === "sha512") {
       res.setHeader("X-Checksum-Sha512", artifact.checksum);
     }
+    if (checksumType === "md5") {
+      res.setHeader("X-Checksum-Md5", artifact.checksum);
+    }
   }
 }
 

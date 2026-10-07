@@ -552,6 +552,7 @@ export class SyncService {
           expectedChecksum: artifact.checksum,
           checksumUrl: artifact.checksumUrl,
           checksumType: normalizeChecksumType(artifact.checksumType),
+          checksumFormat: artifact.checksumFormat,
           expectedSize: artifact.size,
           transform: platformConfig?.transform,
         });
@@ -566,6 +567,6 @@ function hashConfig(config: PackageConfig): string {
 
 function normalizeChecksumType(type?: string): ChecksumAlgorithm | undefined {
   if (!type) return undefined;
-  if (type === "sha1" || type === "sha256" || type === "sha512") return type;
+  if (type === "sha1" || type === "sha256" || type === "sha512" || type === "md5") return type;
   return undefined;
 }

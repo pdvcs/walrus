@@ -867,3 +867,117 @@ describe("DownloadService", () => {
     });
   });
 });
+
+describe("DownloadService — checksum sidecar selection", () => {
+  function setup(sidecar: string, body: string) {
+    const storage: StorageBackend = {
+      upload: makeUploadMock(),
+      download: vi.fn(),
+      delete: vi.fn(),
+      exists: vi.fn(),
+    };
+    const statusRepo = { updateArtifactStatus: vi.fn().mockResolvedValue(null) };
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse(body)) // artifact
+      .mockResolvedValueOnce(makeResponse(sidecar)); // checksum sidecar
+    const service = new DownloadService({} as Pool, storage, {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      statusRepo,
+      maxRetries: 0,
+    });
+    return { service, statusRepo };
+  }
+
+  const sha = (s: string) => crypto.createHash("sha256").update(s).digest("hex");
+  const FILE = "terraform_1.16.5_linux_amd64.zip";
+  const URL = `https://releases.example.test/terraform/1.16.5/${FILE}`;
+
+  it("picks this artifact's line out of a multi-file manifest", async () => {
+    const body = "terraform-linux";
+    // The artifact's own line is deliberately not first: the first digest belongs to another build.
+    const manifest = [
+      `${sha("darwin")}  terraform_1.16.5_darwin_amd64.zip`,
+      `${sha(body)}  ${FILE}`,
+      `${sha("windows")}  terraform_1.16.5_windows_amd64.zip`,
+    ].join("\n");
+    const { service } = setup(manifest, body);
+
+    const result = await service.downloadArtifact({
+      artifactId: 70,
+      upstreamUrl: URL,
+      storagePath: `terraform/1.16.5/linux/x86-64/${FILE}`,
+      checksumUrl: "https://releases.example.test/terraform/1.16.5/SHA256SUMS",
+      checksumType: "sha256",
+    });
+
+    expect(result.status).toBe("available");
+  });
+
+  it("fails rather than guess when a multi-file manifest has no line for the artifact", async () => {
+    const manifest = [
+      `${sha("darwin")}  terraform_1.16.5_darwin_amd64.zip`,
+      `${sha("windows")}  terraform_1.16.5_windows_amd64.zip`,
+    ].join("\n");
+    const { service, statusRepo } = setup(manifest, "terraform-linux");
+
+    const result = await service.downloadArtifact({
+      artifactId: 71,
+      upstreamUrl: URL,
+      storagePath: `terraform/1.16.5/linux/x86-64/${FILE}`,
+      checksumUrl: "https://releases.example.test/terraform/1.16.5/SHA256SUMS",
+      checksumType: "sha256",
+    });
+
+    expect(result.status).toBe("failed");
+    expect(result).toMatchObject({ error: expect.stringContaining(`none for ${FILE}`) });
+    expect(statusRepo.updateArtifactStatus).toHaveBeenCalledWith(
+      expect.anything(),
+      71,
+      expect.objectContaining({ status: "failed" }),
+    );
+  });
+
+  it("verifies an MD5 read from GCS object metadata (base64 -> hex)", async () => {
+    const body = "gcloud-archive";
+    const md5Hash = crypto.createHash("md5").update(body).digest("base64");
+    const { service, statusRepo } = setup(JSON.stringify({ md5Hash }), body);
+
+    const result = await service.downloadArtifact({
+      artifactId: 72,
+      upstreamUrl: "https://dl.example.test/google-cloud-cli-588.0.0-linux-x86_64.tar.gz",
+      storagePath: "gcloud/588.0.0/linux/x86-64/google-cloud-cli-588.0.0-linux-x86_64.tar.gz",
+      checksumUrl: "https://storage.example.test/o/google-cloud-cli-588.0.0-linux-x86_64.tar.gz",
+      checksumType: "md5",
+      checksumFormat: "gcs-object-metadata",
+    });
+
+    expect(result.status).toBe("available");
+    expect(statusRepo.updateArtifactStatus).toHaveBeenCalledWith(
+      expect.anything(),
+      72,
+      expect.objectContaining({
+        status: "available",
+        checksum_type: "md5",
+        checksum: crypto.createHash("md5").update(body).digest("hex"),
+      }),
+    );
+  });
+
+  it("rejects an MD5 mismatch from GCS object metadata", async () => {
+    const md5Hash = crypto.createHash("md5").update("something else").digest("base64");
+    const { service } = setup(JSON.stringify({ md5Hash }), "gcloud-archive");
+
+    const result = await service.downloadArtifact({
+      artifactId: 73,
+      upstreamUrl: "https://dl.example.test/a.tar.gz",
+      storagePath: "gcloud/588.0.0/linux/x86-64/a.tar.gz",
+      checksumUrl: "https://storage.example.test/o/a.tar.gz",
+      checksumType: "md5",
+      checksumFormat: "gcs-object-metadata",
+    });
+
+    expect(result.status).toBe("failed");
+    expect(result).toMatchObject({ error: expect.stringContaining("Checksum mismatch") });
+  });
+});

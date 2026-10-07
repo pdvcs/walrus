@@ -90,9 +90,11 @@ export class DirectoryListingStrategy implements DiscoveryStrategy {
 
         let checksumUrl: string | undefined;
         let checksumType: string | undefined;
+        let checksumFormat: ArtifactInfo["checksumFormat"];
         if (config.checksum?.type === "separate-file" && config.checksum.url_template) {
           checksumUrl = applyTemplate(config.checksum.url_template, vars);
           checksumType = config.checksum.algorithm;
+          checksumFormat = config.checksum.format;
         }
 
         artifacts.set(platformKey(platform), {
@@ -100,6 +102,7 @@ export class DirectoryListingStrategy implements DiscoveryStrategy {
           filename,
           checksumUrl,
           checksumType,
+          checksumFormat,
         });
       }
 
