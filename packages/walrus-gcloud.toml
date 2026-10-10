@@ -31,7 +31,7 @@ lts_support = false
 
 [retention]
 versions_per_group = 1
-groups_to_keep = 1 # latest release only; gcloud self-updates, so older archives have little use
+groups_to_keep = 2 # latest two releases; each release is its own group, so this is the "last N" knob
 cooling_off_days = 3
 
 [checksum]

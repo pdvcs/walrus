@@ -1,0 +1,70 @@
+name = "gh"
+display_name = "GitHub CLI"
+vendor = "GitHub"
+website = "https://github.com/cli/cli"
+description = "GitHub's official command-line tool for pull requests, issues, releases and more"
+
+# GitHub Releases API capabilities:
+#   Release date: "published_at" field on each release (ISO 8601) — captured automatically
+#   Checksum:     per-asset "digest" field ("sha256:…") — configured below
+#                 (upstream also publishes a gh_<version>_checksums.txt manifest, but the digest
+#                 needs no extra fetch)
+
+[discovery]
+type = "github-releases"
+repo = "cli/cli"
+include_prereleases = false
+tag_pattern = "^v(\\d+\\.\\d+\\.\\d+)$"
+
+[versioning]
+type = "semver"
+# gh bumps the minor for ordinary releases (a minor is not a maintained series), so one group
+# per major makes versions_per_group the "last N releases" knob.
+version_group_extract = "^(\\d+)"
+# Floor at v2.100.0, matching the three releases retained. (v2.74.1 is the oldest release whose
+# assets carry a GitHub per-asset digest; anything older would be served unverified.)
+min_version = "2.100.0"
+lts_support = false
+
+[retention]
+versions_per_group = 3 # the last three releases
+groups_to_keep = 1
+cooling_off_days = 3
+
+[checksum]
+type = "github-asset-digest"
+algorithm = "sha256"
+
+# Filenames keep no "v" prefix: gh_2.102.0_linux_amd64.tar.gz. Upstream spells macOS as "macOS".
+# Archives only — the .deb/.rpm/.msi/.pkg installers are deliberately not served.
+
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "linux"
+arch_upstream = "amd64"
+extension = "tar.gz"
+filename_template = "gh_{version}_{os}_{arch}.{ext}"
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "windows"
+arch_upstream = "amd64"
+extension = "zip"
+filename_template = "gh_{version}_{os}_{arch}.{ext}"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "macOS"
+arch_upstream = "arm64"
+extension = "zip"
+filename_template = "gh_{version}_{os}_{arch}.{ext}"
+
+[vulnerabilities]
+# NVD has github:cli (CPE dictionary probed 2026-10-10: "Github CLI" entries); OSV tracks the
+# repository's go.mod module under the Go ecosystem.
+cpes = ["github:cli"]
+osv = { ecosystem = "Go", name = "github.com/cli/cli" }
+aliases = ["gh", "gh cli", "github cli", "github-cli"]
