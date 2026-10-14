@@ -1,0 +1,70 @@
+name = "shellcheck"
+display_name = "ShellCheck"
+vendor = "Vidar Holen"
+website = "https://github.com/koalaman/shellcheck"
+description = "Static analysis tool for shell scripts"
+
+# GitHub Releases API capabilities:
+#   Release date: "published_at" field on each release (ISO 8601) — captured automatically
+#   Checksum:     per-asset "digest" field ("sha256:…") — configured below
+#                 (upstream publishes no .sha256 sidecars)
+
+[discovery]
+type = "github-releases"
+repo = "koalaman/shellcheck"
+include_prereleases = false
+# Plain vX.Y.Z tags only: drops the moving "stable" and "latest" tags, which also have releases.
+tag_pattern = "^v(\\d+\\.\\d+\\.\\d+)$"
+
+[versioning]
+type = "semver"
+# ShellCheck is pre-1.0 and releases slowly, so a minor is the series: 0.10, 0.11, 0.12, ...
+version_group_extract = "^(\\d+\\.\\d+)"
+# Digest floor: v0.11.0 (2025-08-04) is the oldest release whose assets carry a GitHub per-asset
+# digest; v0.10.0 and older would be served unverified (verified 2026-10-14).
+min_version = "0.11.0"
+lts_support = false
+
+[retention]
+versions_per_group = 2 # two patch releases of the newest series
+groups_to_keep = 1
+cooling_off_days = 3
+
+[checksum]
+type = "github-asset-digest"
+algorithm = "sha256"
+
+# Filenames keep the tag's "v" prefix, which the tag_pattern capture strips — hence the literal
+# "v" in each template. Unix builds are tar.xz because that is the one format every release
+# ships (v0.10.0 has no tar.gz). The Windows build is a bare zip with no os/arch token:
+# shellcheck-v0.11.0.zip (contains shellcheck.exe), so its template uses neither.
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "windows"
+arch_upstream = "x86_64"
+extension = "zip"
+filename_template = "shellcheck-v{version}.{ext}"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "darwin"
+arch_upstream = "aarch64"
+extension = "tar.xz"
+filename_template = "shellcheck-v{version}.{os}.{arch}.{ext}"
+
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "linux"
+arch_upstream = "x86_64"
+extension = "tar.xz"
+filename_template = "shellcheck-v{version}.{os}.{arch}.{ext}"
+
+[vulnerabilities]
+# NVD lists the product under the vendor "vidarholen": cpe:2.3:a:vidarholen:shellcheck
+# (verified 2026-10-14). koalaman:shellcheck returns 0.
+cpes = ["vidarholen:shellcheck"]
+aliases = ["shellcheck", "shell check"]
