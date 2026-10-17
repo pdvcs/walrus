@@ -16,7 +16,7 @@ url = "https://nodejs.org/dist/index.json"
 
 # Inline submode: single API call returns all releases; no release_url_template.
 # Filter to only the major versions we care about: 20, 22, 24 (LTS) and 25 (current).
-releases_path = "$[?(/^v(20|22|24|25)\\./.test(@.version))]"
+releases_path = "$[?(/^v(22|24|26)\\./.test(@.version))]"
 release_version_field = "version"
 tag_pattern = "^v(\\d+.*)" # strip "v" prefix: "v25.8.1" -> "25.8.1"
 release_date_field = "date"

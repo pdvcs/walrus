@@ -19,7 +19,7 @@ repo = "astral-sh/python-build-standalone"
 include_prereleases = false
 # Extracts Python version from asset filenames; restricts to 3.11–3.14.
 # Add 3.15 to the alternation when it stabilises.
-asset_version_pattern = "^cpython-(3\\.(?:11|12|13|14)\\.\\d+)\\+"
+asset_version_pattern = "^cpython-(3\\.(?:11|12|13|14|15)\\.\\d+)\\+"
 max_releases = 10 # limits fetch to ~8500 assets vs ~85300; avoids GitHub 504 on this high-asset-count repo
 
 [versioning]
@@ -30,7 +30,7 @@ lts_support = false
 
 [retention]
 versions_per_group = 2
-groups_to_keep = 4
+groups_to_keep = 6
 cooling_off_days = 3
 
 [checksum]
