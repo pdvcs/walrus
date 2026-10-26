@@ -400,6 +400,7 @@ Endpoints under `/admin/v1/` provide:
 - Version group retention management
 - Sync job history
 - CVE suppression preview/create/revoke and its audit trail
+- Cooling-off waivers: release one embargoed version early
 - Gate-transition lookup across every package by time, for correlating an alert back to
   what it blocked without already knowing which package
 
@@ -421,6 +422,31 @@ and must be between 1 and 100; pass `next_before_id` back as `before_id` for the
 
 ```bash
 curl "$WALRUS_URL/admin/v1/vuln-suppressions/audit?cve_id=CVE-2099-0001&limit=20"
+```
+
+### Cooling-off waivers
+
+`retention.cooling_off_days` holds a new release back (`423`, `cooling_off`) until its period ends.
+For an urgent upstream fix, a waiver releases **one version** of one package early. It is the
+embargo's counterpart to a CVE suppression, and it does not override the CVE gate: a waived version
+that is also CVE-blocked stays blocked.
+
+`POST /admin/v1/cooling-off-waivers` takes `{"package", "version", "reason"}` (`created_by` is taken
+from the authenticated subject). In one transaction it records the waiver, releases the version's
+embargoed artifacts, and writes an `admin_actions` row; it then starts a sync so the bytes are
+fetched now rather than at the next scheduled run. The waiver is durable — every later sync keeps
+the version released. Answers `201` with `{waiver, artifacts_released, sync_job_id}`; `404` for an
+unknown package or version, `409` if the version is not in a cooling-off period or already has an
+active waiver. `sync_job_id` is `null` if the waiver was recorded but the sync could not start.
+
+`POST /admin/v1/cooling-off-waivers/:id/revoke` takes `{"reason"}`. Bytes already downloaded stay
+stored; the next sync recomputes the embargo, so the version returns to `423` only if its period
+has not yet elapsed. `GET /admin/v1/cooling-off-waivers[?package=]` lists active waivers.
+
+```bash
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"package":"rust","version":"1.95.1","reason":"fixes CVE-2026-1234 in our build"}' \
+  "$WALRUS_URL/admin/v1/cooling-off-waivers"
 ```
 
 ### GET /admin/v1/transitions

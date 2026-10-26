@@ -1,5 +1,6 @@
 import { Pool } from "pg";
 import { ArtifactRow, ArtifactStatus } from "../../types/db.js";
+import { Queryable } from "../queryable.js";
 
 export async function insertArtifact(
   pool: Pool,
@@ -184,4 +185,20 @@ export async function listArtifactsForVersion(
     [versionId],
   );
   return rows;
+}
+
+/**
+ * Release every embargoed artifact of a version at once. Returns how many rows were released.
+ * Pairs with a cooling_off_waivers row: clearing the column alone would be rewritten by the next
+ * sync, and the waiver alone would leave the artifacts embargoed until that sync runs.
+ */
+export async function clearCoolingOffForVersion(q: Queryable, versionId: number): Promise<number> {
+  const { rowCount } = await q.query(
+    `UPDATE artifacts
+        SET cooling_off_until = NULL
+      WHERE version_id = $1
+        AND cooling_off_until IS NOT NULL`,
+    [versionId],
+  );
+  return rowCount ?? 0;
 }

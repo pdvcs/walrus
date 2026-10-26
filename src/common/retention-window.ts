@@ -26,13 +26,19 @@ export interface RetainableVersion {
  * `insertVersion` is `ON CONFLICT DO NOTHING`, so it keeps the moment walrus first saw the version.
  * Callers that only ask *whether* a version is embargoed, before any row exists to read it from,
  * may omit it and get the conservative answer.
+ *
+ * `waived` is an operator override (cooling_off_waivers): the version is released at once. It is
+ * applied here, not at the download route, because this value is persisted on every sync — a
+ * waiver anywhere else would be rewritten away by the next run.
  */
 export function computeCoolingOffUntil(
   version: Pick<RetainableVersion, "version" | "releasedAt">,
   retention: PackageConfig["retention"],
   coolingOffThreshold: string | null,
   firstSeenAt?: Date,
+  waived = false,
 ): Date | null {
+  if (waived) return null;
   const coolingOffDays = retention.cooling_off_days;
   if (!coolingOffDays || coolingOffDays <= 0) return null;
 
@@ -71,6 +77,7 @@ export function selectRetentionWindow<T extends RetainableVersion>(
   versions: T[],
   retention: PackageConfig["retention"],
   coolingOffThreshold: string | null = null,
+  waivedVersions: ReadonlySet<string> = new Set(),
 ): T[] {
   const { versions_per_group: versionsPerGroup, groups_to_keep: groupsToKeep } = retention;
 
@@ -105,7 +112,8 @@ export function selectRetentionWindow<T extends RetainableVersion>(
     );
     let servable = 0;
     for (const v of sorted) {
-      if (computeCoolingOffUntil(v, retention, coolingOffThreshold) !== null) {
+      const waived = waivedVersions.has(v.version);
+      if (computeCoolingOffUntil(v, retention, coolingOffThreshold, undefined, waived) !== null) {
         result.push(v);
       } else if (servable < versionsPerGroup) {
         result.push(v);

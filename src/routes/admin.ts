@@ -17,6 +17,9 @@ import { defaultCpeProbe, CpeVerifyResult } from "../vuln/cpe-verify.js";
 import { BASE_PAGE_STYLES, renderAdminNav, type AdminNavItem } from "./page-shell.js";
 import { getEgressState, matchEgressRule } from "../common/egress-rules.js";
 import { withBase } from "../common/base-path.js";
+import { log } from "../common/log.js";
+import type { CoolingOffWaiverRow } from "../db/queries/cooling-off-waivers.js";
+import { CoolingOffWaiverRejectedError } from "../services/cooling-off-waiver-service.js";
 
 interface VersionDetail {
   version: string;
@@ -97,6 +100,24 @@ export interface AdminRouteDeps {
   listVersionsInGroup: (packageName: string, group: string) => Promise<VersionRow[]>;
   listArtifactsForVersionId: (versionId: number) => Promise<ArtifactRow[]>;
   getTomlSource: (name: string) => string | null;
+  /**
+   * Release-embargo waivers: an audited, per-version override of `retention.cooling_off_days`
+   * for an urgent upstream fix. Optional so a deployment without them answers 501, not a crash.
+   */
+  coolingOffWaivers?: {
+    list: (packageName?: string) => Promise<CoolingOffWaiverRow[]>;
+    create: (input: {
+      package_name: string;
+      version: string;
+      reason: string;
+      created_by: string;
+    }) => Promise<{ waiver: CoolingOffWaiverRow; artifacts_released: number }>;
+    revoke: (input: {
+      id: number;
+      reason: string;
+      revoked_by: string;
+    }) => Promise<CoolingOffWaiverRow | null>;
+  };
   /**
    * Per-version CVE summary for the package detail badges (plan §6). Backed by the
    * same cross-reference service as GET /api/v1/packages/:name/vulns — no duplicate SQL.
@@ -529,6 +550,97 @@ export function createAdminRouter(deps: AdminRouteDeps, basePath: string): Route
     }
   });
 
+  router.get("/cooling-off-waivers", async (req, res, next) => {
+    try {
+      if (!deps.coolingOffWaivers) return void res.status(501).json({ error: "Not supported" });
+      const packageName = typeof req.query.package === "string" ? req.query.package : undefined;
+      res.json({ waivers: await deps.coolingOffWaivers.list(packageName) });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.post("/cooling-off-waivers", async (req, res, next) => {
+    try {
+      if (!deps.coolingOffWaivers) return void res.status(501).json({ error: "Not supported" });
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const fields = {
+        package: nonEmptyString(body.package),
+        version: nonEmptyString(body.version),
+        reason: nonEmptyString(body.reason),
+        created_by: nonEmptyString(req.auth?.subject ?? body.created_by),
+      };
+      for (const [name, value] of Object.entries(fields)) {
+        if (value === null) {
+          return void res.status(400).json({ error: `${name} must be a non-empty string` });
+        }
+      }
+      const packageName = fields.package as string;
+      if (!deps.listConfiguredPackages().includes(packageName)) {
+        return void res.status(404).json({ error: `Unknown package: ${packageName}` });
+      }
+
+      let result;
+      try {
+        result = await deps.coolingOffWaivers.create({
+          package_name: packageName,
+          version: fields.version as string,
+          reason: fields.reason as string,
+          created_by: fields.created_by as string,
+        });
+      } catch (err) {
+        if (err instanceof CoolingOffWaiverRejectedError) {
+          return void res
+            .status(err.code === "version-not-found" ? 404 : 409)
+            .json({ error: err.message });
+        }
+        if ((err as { code?: unknown } | null)?.code === "23505") {
+          return void res
+            .status(409)
+            .json({ error: "An active waiver already exists for this version" });
+        }
+        throw err;
+      }
+
+      // The waiver already releases the artifacts; the sync fetches their bytes now rather than
+      // at the next scheduled run. A failure to start it must not undo the (committed) waiver.
+      let syncJobId: number | null = null;
+      try {
+        syncJobId = await deps.startSyncAsync(packageName, { triggerType: "admin" });
+      } catch (err) {
+        log.warn({ err, package: packageName }, "Waiver recorded but sync could not be started");
+      }
+      res.status(201).json({ ...result, sync_job_id: syncJobId });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.post("/cooling-off-waivers/:id/revoke", async (req, res, next) => {
+    try {
+      if (!deps.coolingOffWaivers) return void res.status(501).json({ error: "Not supported" });
+      if (!/^\d+$/.test(req.params.id)) {
+        return void res.status(400).json({ error: "Invalid waiver id" });
+      }
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const reason = nonEmptyString(body.reason);
+      const revokedBy = nonEmptyString(req.auth?.subject ?? body.revoked_by);
+      if (reason === null)
+        return void res.status(400).json({ error: "reason must be a non-empty string" });
+      if (revokedBy === null)
+        return void res.status(400).json({ error: "revoked_by must be a non-empty string" });
+      const waiver = await deps.coolingOffWaivers.revoke({
+        id: Number(req.params.id),
+        reason,
+        revoked_by: revokedBy,
+      });
+      if (!waiver) return void res.status(404).json({ error: "Waiver not found" });
+      res.json({ waiver });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   router.get("/", async (req, res, next) => {
     try {
       const configuredPackages = deps.listConfiguredPackages();
@@ -845,9 +957,14 @@ export function createAdminRouter(deps: AdminRouteDeps, basePath: string): Route
       }
 
       const vulnBadges = await deps.getPackageVulnBadges(packageName);
+      const waivers = deps.coolingOffWaivers
+        ? await deps.coolingOffWaivers.list(packageName)
+        : null;
 
       res.setHeader("Content-Type", "text/html; charset=utf-8");
-      res.send(renderPackageDetailPage(packageName, pkg, lastJob, groups, vulnBadges, basePath));
+      res.send(
+        renderPackageDetailPage(packageName, pkg, lastJob, groups, vulnBadges, waivers, basePath),
+      );
     } catch (err) {
       next(err);
     }
@@ -1522,6 +1639,7 @@ function renderPackageDetailPage(
   lastJob: SyncJobRow | null,
   groups: GroupDetail[],
   vulnBadges: { tracked: boolean; byVersion: Record<string, VersionVulnBadge> },
+  waivers: CoolingOffWaiverRow[] | null,
   basePath: string,
 ): string {
   const esc = escHtml;
@@ -1557,12 +1675,15 @@ function renderPackageDetailPage(
   const groupsHtml =
     groups.length === 0
       ? `<p class="empty">No versions synced yet. Run a sync to discover versions.</p>`
-      : groups.map((g) => renderGroupSection(packageName, g, vulnBadges, basePath)).join("");
+      : groups
+          .map((g) => renderGroupSection(packageName, g, vulnBadges, waivers !== null, basePath))
+          .join("");
 
   const body = `
     <div style="margin-bottom:16px"><a href="${withBase(basePath, "/admin/v1/")}">← Back to packages</a></div>
     ${headerHtml}
     <div id="msg"></div>
+    ${renderWaiversPanel(waivers ?? [])}
     ${groupsHtml}`;
 
   const scripts = `
@@ -1574,6 +1695,31 @@ function renderPackageDetailPage(
         if (r.ok) window.location = '${withBase(basePath, "/admin/v1/jobs/")}' + d.job_id;
         else document.getElementById('msg').textContent = 'Error: ' + (d.error || r.status);
       } catch(e) { document.getElementById('msg').textContent = 'Error: ' + e.message; }
+    }
+    // Waivers are audited, so a reason is required: an empty or cancelled prompt does nothing.
+    async function waiverRequest(url, body, pending) {
+      document.getElementById('msg').textContent = pending;
+      try {
+        const r = await fetch(url, {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(body)
+        });
+        const d = await r.json();
+        if (r.ok) location.reload();
+        else { document.getElementById('msg').textContent = ''; alert('Error: ' + (d.error || r.status)); }
+      } catch(e) { document.getElementById('msg').textContent = ''; alert('Error: ' + e.message); }
+    }
+    function releaseNow(pkg, version) {
+      const reason = prompt('Release ' + version + ' from its cooling-off period now.\\nReason (recorded in the audit trail):');
+      if (reason === null || reason.trim() === '') return;
+      waiverRequest('${withBase(basePath, "/admin/v1/cooling-off-waivers")}',
+        {package: pkg, version: version, reason: reason}, 'Releasing ' + version + '…');
+    }
+    function revokeWaiver(id, version) {
+      const reason = prompt('Revoke the waiver for ' + version + '.\\nReason (recorded in the audit trail):');
+      if (reason === null || reason.trim() === '') return;
+      waiverRequest('${withBase(basePath, "/admin/v1/cooling-off-waivers/")}' + id + '/revoke',
+        {reason: reason}, 'Revoking waiver…');
     }
     async function toggleEnabled(name, enabled) {
       if (!confirm((enabled ? 'Disable' : 'Enable') + ' ' + name + '?')) return;
@@ -1653,10 +1799,39 @@ function renderBlockedBadge(
   return ` <a href="${vulnsHref(packageName, version, basePath)}" title="Downloads return 403 — critical CVE affects this version" class="badge badge-blocked" style="text-decoration:none">blocked</a>`;
 }
 
+/**
+ * Active cooling-off waivers for a package. Shown only when there is one: a waiver stays
+ * recorded after the embargo it released has elapsed (it is inert, not deleted), and this is the
+ * only place an operator can see who released what, and why, without querying the audit trail.
+ */
+function renderWaiversPanel(waivers: CoolingOffWaiverRow[]): string {
+  if (waivers.length === 0) return "";
+  const esc = escHtml;
+  const rows = waivers
+    .map(
+      (w) => `<tr>
+        <td><strong>${esc(w.version)}</strong></td>
+        <td>${esc(w.reason)}</td>
+        <td>${esc(w.created_by)}</td>
+        <td style="color:#9ca3af;font-size:0.78rem;white-space:nowrap">${fmtAge(w.created_at)}</td>
+        <td><button class="btn btn-sm btn-danger" onclick="revokeWaiver(${w.id},'${esc(w.version)}')">Revoke</button></td>
+      </tr>`,
+    )
+    .join("");
+  return `<div class="group-section">
+    <div class="group-header"><h2>Cooling-off waivers</h2></div>
+    <table>
+      <thead><tr><th>Version</th><th>Reason</th><th>Released by</th><th>When</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
 function renderGroupSection(
   packageName: string,
   g: GroupDetail,
   vulnBadges: { tracked: boolean; byVersion: Record<string, VersionVulnBadge> },
+  canWaive: boolean,
   basePath: string,
 ): string {
   const esc = escHtml;
@@ -1729,7 +1904,12 @@ function renderGroupSection(
       const badges =
         renderBlockedBadge(packageName, v.version, vuln, basePath) +
         renderVulnBadge(packageName, v.version, vuln, basePath);
-      return `<tr><td><strong>${esc(v.version)}</strong>${badges}</td>${cells}</tr>`;
+      // The waiver is per version, not per platform, so one button covers every cooling-off cell.
+      const releaseBtn =
+        canWaive && v.artifacts.some((a) => coolingOffUntil(a) !== null)
+          ? ` <button class="btn btn-sm btn-secondary" title="Release from cooling-off now" onclick="releaseNow('${esc(packageName)}','${esc(v.version)}')">Release now</button>`
+          : "";
+      return `<tr><td><strong>${esc(v.version)}</strong>${badges}${releaseBtn}</td>${cells}</tr>`;
     })
     .join("");
 
@@ -1970,3 +2150,7 @@ function normalizeChecksumType(type: string | null): ChecksumAlgorithm | undefin
 
 // Re-export for use in main.ts
 export type { SyncRunOptions };
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}

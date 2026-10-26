@@ -104,6 +104,11 @@ import {
   getActiveCveSuppressionSummary,
   listActiveCveSuppressions,
 } from "./db/queries/cve-suppressions.js";
+import { listActiveCoolingOffWaivers } from "./db/queries/cooling-off-waivers.js";
+import {
+  createAuditedCoolingOffWaiver,
+  revokeAuditedCoolingOffWaiver,
+} from "./services/cooling-off-waiver-service.js";
 import {
   createAuditedCveSuppression,
   previewCveSuppression,
@@ -633,6 +638,11 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
             group,
           );
           return { versions: versionsDeleted, artifacts: artifactsDeleted };
+        },
+        coolingOffWaivers: {
+          list: (packageName) => listActiveCoolingOffWaivers(pool, packageName),
+          create: (input) => createAuditedCoolingOffWaiver(pool, input),
+          revoke: (input) => revokeAuditedCoolingOffWaiver(pool, input),
         },
         setPackageEnabled: async (packageName, enabled) => {
           const config = configs.find((c) => c.name === packageName);

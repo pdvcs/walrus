@@ -94,6 +94,28 @@ describe("computeCoolingOffUntil", () => {
     ).toBeNull();
   });
 
+  it("releases a waived version immediately, whatever its anchor says", () => {
+    const releasedAt = new Date(Date.now() - 1 * DAY);
+    expect(
+      computeCoolingOffUntil(
+        { version: "1.27.0", releasedAt },
+        retention,
+        threshold,
+        undefined,
+        true,
+      ),
+    ).toBeNull();
+    expect(
+      computeCoolingOffUntil(
+        { version: "1.27.0", releasedAt: undefined },
+        retention,
+        threshold,
+        new Date(),
+        true,
+      ),
+    ).toBeNull();
+  });
+
   it("returns null when cooling off is not configured", () => {
     const none = { versions_per_group: 2 } as PackageConfig["retention"];
     expect(
@@ -120,5 +142,23 @@ describe("selectRetentionWindow", () => {
     expect(kept).toContain("1.27.0");
     expect(kept).toContain("1.26.3");
     expect(kept).toContain("1.26.2");
+  });
+});
+
+describe("selectRetentionWindow with a waiver", () => {
+  it("counts a waived version against the servable quota instead of keeping it on top", () => {
+    const versions = [
+      { version: "1.27.0", versionGroup: "1.26" },
+      { version: "1.26.3", versionGroup: "1.26" },
+      { version: "1.26.2", versionGroup: "1.26" },
+    ];
+    const kept = (waived: string[]) =>
+      selectRetentionWindow(versions, retention, generateSortKey("1.26.3"), new Set(waived)).map(
+        (v) => v.version,
+      );
+    // Embargoed: retained on top of the quota, so all three survive.
+    expect(kept([])).toEqual(["1.27.0", "1.26.3", "1.26.2"]);
+    // Waived: it is servable now, so it takes a quota slot and the oldest is displaced.
+    expect(kept(["1.27.0"])).toEqual(["1.27.0", "1.26.3"]);
   });
 });

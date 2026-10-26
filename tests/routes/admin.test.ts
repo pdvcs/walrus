@@ -7,6 +7,7 @@ import {
   AdminRouteDeps,
 } from "../../src/routes/admin.js";
 import { PackageConfig } from "../../src/types/package-config.js";
+import { CoolingOffWaiverRejectedError } from "../../src/services/cooling-off-waiver-service.js";
 
 function createTestApp(deps: Parameters<typeof createAdminRouter>[0]): express.Express {
   const app = express();
@@ -898,5 +899,178 @@ describe("admin routes", () => {
         completed_at: new Date(),
       };
     }
+  });
+});
+
+describe("cooling-off waiver routes", () => {
+  const waiver = {
+    id: 5,
+    package_name: "python",
+    version: "3.13.15",
+    reason: "urgent fix",
+    created_by: "ops",
+    created_at: new Date(),
+    revoked_at: null,
+  };
+  const body = { package: "python", version: "3.13.15", reason: "urgent fix", created_by: "ops" };
+
+  function waiverDeps() {
+    const deps = baseDeps();
+    deps.listConfiguredPackages = vi.fn().mockReturnValue(["python"]);
+    deps.coolingOffWaivers = {
+      list: vi.fn().mockResolvedValue([waiver]),
+      create: vi.fn().mockResolvedValue({ waiver, artifacts_released: 2 }),
+      revoke: vi.fn().mockResolvedValue({ ...waiver, revoked_at: new Date() }),
+    };
+    return deps;
+  }
+
+  it("creates a waiver and starts a sync to fetch the released artifacts", async () => {
+    const deps = waiverDeps();
+    const res = await request(createTestApp(deps)).post("/admin/v1/cooling-off-waivers").send(body);
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ artifacts_released: 2, sync_job_id: 1 });
+    expect(deps.coolingOffWaivers!.create).toHaveBeenCalledWith({
+      package_name: "python",
+      version: "3.13.15",
+      reason: "urgent fix",
+      created_by: "ops",
+    });
+    expect(deps.startSyncAsync).toHaveBeenCalledWith("python", { triggerType: "admin" });
+  });
+
+  it("keeps the waiver when the follow-up sync cannot start", async () => {
+    const deps = waiverDeps();
+    deps.startSyncAsync = vi.fn().mockRejectedValue(new Error("busy"));
+    const res = await request(createTestApp(deps)).post("/admin/v1/cooling-off-waivers").send(body);
+
+    expect(res.status).toBe(201);
+    expect(res.body.sync_job_id).toBeNull();
+  });
+
+  it("requires a reason", async () => {
+    const deps = waiverDeps();
+    const res = await request(createTestApp(deps))
+      .post("/admin/v1/cooling-off-waivers")
+      .send({ ...body, reason: "  " });
+
+    expect(res.status).toBe(400);
+    expect(deps.coolingOffWaivers!.create).not.toHaveBeenCalled();
+  });
+
+  it("404s an unconfigured package", async () => {
+    const res = await request(createTestApp(waiverDeps()))
+      .post("/admin/v1/cooling-off-waivers")
+      .send({ ...body, package: "nope" });
+
+    expect(res.status).toBe(404);
+  });
+
+  it.each([
+    ["version-not-found", 404],
+    ["not-embargoed", 409],
+  ] as const)("maps %s to %i", async (code, status) => {
+    const deps = waiverDeps();
+    deps.coolingOffWaivers!.create = vi
+      .fn()
+      .mockRejectedValue(new CoolingOffWaiverRejectedError(code, "nope"));
+    const res = await request(createTestApp(deps)).post("/admin/v1/cooling-off-waivers").send(body);
+
+    expect(res.status).toBe(status);
+    expect(deps.startSyncAsync).not.toHaveBeenCalled();
+  });
+
+  it("409s a duplicate active waiver", async () => {
+    const deps = waiverDeps();
+    deps.coolingOffWaivers!.create = vi.fn().mockRejectedValue({ code: "23505" });
+    const res = await request(createTestApp(deps)).post("/admin/v1/cooling-off-waivers").send(body);
+
+    expect(res.status).toBe(409);
+  });
+
+  it("revokes a waiver, and 404s one that is gone", async () => {
+    const deps = waiverDeps();
+    const ok = await request(createTestApp(deps))
+      .post("/admin/v1/cooling-off-waivers/5/revoke")
+      .send({ reason: "mistake", revoked_by: "ops" });
+    expect(ok.status).toBe(200);
+
+    deps.coolingOffWaivers!.revoke = vi.fn().mockResolvedValue(null);
+    const gone = await request(createTestApp(deps))
+      .post("/admin/v1/cooling-off-waivers/5/revoke")
+      .send({ reason: "mistake", revoked_by: "ops" });
+    expect(gone.status).toBe(404);
+  });
+
+  describe("package page", () => {
+    const embargoed = artifact({ cooling_off_until: new Date(Date.now() + 2 * 86_400_000) });
+
+    function pageDeps(artifacts: ReturnType<typeof artifact>[], waivers = [waiver]) {
+      const deps = depsFor(artifacts);
+      deps.coolingOffWaivers = {
+        list: vi.fn().mockResolvedValue(waivers),
+        create: vi.fn(),
+        revoke: vi.fn(),
+      };
+      return deps;
+    }
+    const page = (deps: AdminRouteDeps) =>
+      request(createTestApp(deps)).get("/admin/v1/packages/python").set("Accept", "text/html");
+
+    it("offers Release now on a version that is cooling off", async () => {
+      const res = await page(pageDeps([embargoed], []));
+
+      expect(res.status).toBe(200);
+      expect(res.text).toContain("releaseNow('python','3.13.15')");
+    });
+
+    it("offers no Release now on a version that is not cooling off", async () => {
+      const res = await page(pageDeps([artifact()], []));
+
+      expect(res.text).not.toContain("releaseNow('python'");
+    });
+
+    it("offers no Release now when waivers are not wired", async () => {
+      const res = await page(depsFor([embargoed]));
+
+      expect(res.status).toBe(200);
+      expect(res.text).not.toContain("releaseNow('python'");
+      expect(res.text).not.toContain("Cooling-off waivers");
+    });
+
+    it("lists active waivers with a revoke button, scoped to the package", async () => {
+      const deps = pageDeps([artifact()]);
+      const res = await page(deps);
+
+      expect(deps.coolingOffWaivers!.list).toHaveBeenCalledWith("python");
+      expect(res.text).toContain("Cooling-off waivers");
+      expect(res.text).toContain("urgent fix");
+      expect(res.text).toContain("revokeWaiver(5,'3.13.15')");
+    });
+
+    it("omits the waivers panel when there are none", async () => {
+      const res = await page(pageDeps([artifact()], []));
+
+      expect(res.text).not.toContain("Cooling-off waivers");
+    });
+
+    it("escapes a reason that contains markup", async () => {
+      const res = await page(
+        pageDeps([artifact()], [{ ...waiver, reason: "<script>alert(1)</script>" }]),
+      );
+
+      expect(res.text).not.toContain("<script>alert(1)</script>");
+      expect(res.text).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    });
+  });
+
+  it("lists waivers, and answers 501 when the feature is not wired", async () => {
+    const listed = await request(createTestApp(waiverDeps())).get("/admin/v1/cooling-off-waivers");
+    expect(listed.status).toBe(200);
+    expect(listed.body.waivers).toHaveLength(1);
+
+    const off = await request(createTestApp(baseDeps())).get("/admin/v1/cooling-off-waivers");
+    expect(off.status).toBe(501);
   });
 });

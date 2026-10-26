@@ -17,6 +17,7 @@ import {
   updateSyncJob,
 } from "../db/queries/sync-jobs.js";
 import { getMaxAvailableVersionSort, insertVersion } from "../db/queries/versions.js";
+import { listWaivedVersions } from "../db/queries/cooling-off-waivers.js";
 import { buildArtifactPath } from "../storage/types.js";
 import { PackageConfig } from "../types/package-config.js";
 import { renderServedFilename } from "../transform/index.js";
@@ -73,6 +74,7 @@ interface SyncDeps {
     groupsToKeep?: number,
   ) => Promise<RetentionResult>;
   getMaxAvailableVersionSort: typeof getMaxAvailableVersionSort;
+  listWaivedVersions: typeof listWaivedVersions;
 }
 
 export interface SyncServiceOptions {
@@ -123,6 +125,7 @@ export class SyncService {
       enforceRetention: (packageName, keep, dryRun, groupsToKeep) =>
         this.retentionService.enforceRetention(packageName, keep, dryRun, groupsToKeep),
       getMaxAvailableVersionSort,
+      listWaivedVersions,
       ...opts.deps,
     };
   }
@@ -249,11 +252,15 @@ export class SyncService {
         this.packageConfig.name,
       );
 
+      // Operator waivers (cooling_off_waivers) release a specific version from its embargo. Loaded
+      // once per run: the embargo is persisted per artifact below, so it must be decided here.
+      const waivedVersions = await this.deps.listWaivedVersions(this.pool, this.packageConfig.name);
+
       const allDiscovered = await this.deps.discoverVersions(this.packageConfig, options.discovery);
       const aboveMin = this.applyMinVersion(allDiscovered);
       const discovered = options.discovery?.historical
         ? aboveMin
-        : this.applyRetentionWindow(aboveMin, coolingOffThreshold);
+        : this.applyRetentionWindow(aboveMin, coolingOffThreshold, waivedVersions);
       await this.deps.updateSyncJob(this.pool, job.id, {
         versions_found: discovered.length,
       });
@@ -272,7 +279,7 @@ export class SyncService {
       const queued: DownloadRequest[] = [];
 
       await mapWithConcurrency(discovered, this.syncConcurrency, async (version) => {
-        await this.processVersion(version, queued, job.id, coolingOffThreshold);
+        await this.processVersion(version, queued, job.id, coolingOffThreshold, waivedVersions);
       });
 
       await this.deps.updateSyncJob(this.pool, job.id, {
@@ -407,8 +414,14 @@ export class SyncService {
   private applyRetentionWindow(
     versions: DiscoveredVersion[],
     coolingOffThreshold: string | null = null,
+    waivedVersions: ReadonlySet<string> = new Set(),
   ): DiscoveredVersion[] {
-    return selectRetentionWindow(versions, this.packageConfig.retention, coolingOffThreshold);
+    return selectRetentionWindow(
+      versions,
+      this.packageConfig.retention,
+      coolingOffThreshold,
+      waivedVersions,
+    );
   }
 
   private async processVersion(
@@ -416,6 +429,7 @@ export class SyncService {
     queued: DownloadRequest[],
     jobId: number,
     coolingOffThreshold: string | null,
+    waivedVersions: ReadonlySet<string>,
   ): Promise<void> {
     const versionRow = await this.deps.insertVersion(this.pool, {
       package_name: this.packageConfig.name,
@@ -433,6 +447,7 @@ export class SyncService {
       this.packageConfig.retention,
       coolingOffThreshold,
       versionRow.discovered_at,
+      waivedVersions.has(version.version),
     );
 
     for (const [platform, artifact] of version.artifacts) {

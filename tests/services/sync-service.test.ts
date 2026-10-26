@@ -104,6 +104,7 @@ describe("SyncService", () => {
         .fn()
         .mockResolvedValue({ versionsPruned: 1, artifactsDeleted: 1, versionIdsPruned: [7] }),
       getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
     };
 
     const service = new SyncService(lockablePool(), pkg, downloadService, retentionService, {
@@ -167,6 +168,7 @@ describe("SyncService", () => {
         .fn()
         .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
       getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
     };
 
     const service = new SyncService(
@@ -221,6 +223,7 @@ describe("SyncService", () => {
         .fn()
         .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
       getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
     };
 
     const service = new SyncService(
@@ -282,6 +285,7 @@ describe("SyncService", () => {
         .fn()
         .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
       getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
     };
 
     const service = new SyncService(
@@ -334,6 +338,7 @@ describe("SyncService", () => {
         .fn()
         .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
       getMaxAvailableVersionSort: vi.fn().mockResolvedValue(thresholdSort),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
     };
 
     const service = new SyncService(
@@ -356,6 +361,53 @@ describe("SyncService", () => {
       expect.objectContaining({ artifactId: 21 }),
       false,
     );
+  });
+
+  it("persists no embargo for a version an operator has waived", async () => {
+    const pkgWithCoolingOff: PackageConfig = {
+      ...pkg,
+      retention: { versions_per_group: 2, cooling_off_days: 3 },
+    };
+
+    const run = async (waived: string[]) => {
+      const deps = {
+        discoverVersions: vi.fn().mockResolvedValue([discovered("0.10.10"), discovered("0.10.9")]),
+        upsertPackage: vi.fn().mockResolvedValue({}),
+        createSyncJob: vi.fn().mockResolvedValue({ id: 310 }),
+        updateSyncJob: vi.fn().mockResolvedValue({}),
+        insertVersion: vi.fn().mockResolvedValueOnce({ id: 1 }).mockResolvedValueOnce({ id: 2 }),
+        insertArtifact: vi
+          .fn()
+          .mockResolvedValue({ id: 20, status: "pending", cooling_off_until: null }),
+        updateArtifactStatus: vi.fn().mockResolvedValue({}),
+        incrementJobCounters: vi.fn().mockResolvedValue(undefined),
+        downloadArtifact: vi.fn().mockResolvedValue({ status: "available", attempts: 1 }),
+        enforceRetention: vi
+          .fn()
+          .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
+        getMaxAvailableVersionSort: vi.fn().mockResolvedValue("000000.000010.000009~"),
+        listWaivedVersions: vi.fn().mockResolvedValue(new Set(waived)),
+      };
+      const service = new SyncService(
+        lockablePool(),
+        pkgWithCoolingOff,
+        {} as DownloadService,
+        {} as RetentionService,
+        { deps },
+      );
+      await service.run({ triggerType: "scheduled" });
+      // The embargo that insertArtifact is asked to persist, per version: this is the value the
+      // next sync would otherwise rewrite, so it is what a waiver has to change.
+      return new Map(
+        deps.insertArtifact.mock.calls.map((call, i) => [
+          i === 0 ? "0.10.10" : "0.10.9",
+          (call[1] as { cooling_off_until: Date | null }).cooling_off_until,
+        ]),
+      );
+    };
+
+    expect((await run([])).get("0.10.10")).toBeInstanceOf(Date);
+    expect((await run(["0.10.10"])).get("0.10.10")).toBeNull();
   });
 
   it("does not apply cooling off when threshold is null (bootstrap: no available artifacts yet)", async () => {
@@ -382,6 +434,7 @@ describe("SyncService", () => {
         .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
       // null threshold = no available artifacts yet (bootstrap)
       getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
     };
 
     const service = new SyncService(
@@ -424,6 +477,7 @@ describe("SyncService", () => {
         .fn()
         .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
       getMaxAvailableVersionSort: vi.fn().mockResolvedValue(thresholdSort),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
     };
 
     const service = new SyncService(
@@ -474,6 +528,7 @@ describe("SyncService", () => {
         .fn()
         .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
       getMaxAvailableVersionSort: vi.fn().mockResolvedValue(thresholdSort),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
     };
 
     const service = new SyncService(
@@ -521,6 +576,7 @@ describe("SyncService", () => {
         .fn()
         .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
       getMaxAvailableVersionSort: vi.fn().mockResolvedValue("000000.000010.000009~"),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
     });
 
     const embargoEnds: Date[] = [];
@@ -577,6 +633,7 @@ describe("SyncService", () => {
         .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
       // null threshold = bootstrap
       getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
     };
 
     const service = new SyncService(
@@ -665,6 +722,7 @@ describe("SyncService", () => {
         .fn()
         .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
       getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
     };
 
     const service = new SyncService(
@@ -716,6 +774,7 @@ describe("SyncService", () => {
         .fn()
         .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
       getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
     };
 
     const service = new SyncService(
@@ -817,6 +876,7 @@ describe("SyncService job-row handoff", () => {
         .fn()
         .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
       getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
     };
 
     const service = new SyncService(
@@ -875,6 +935,7 @@ describe("SyncService job-row handoff", () => {
         .fn()
         .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
       getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
     };
 
     const service = new SyncService(
@@ -956,6 +1017,7 @@ describe("SyncService checksum handling", () => {
         .fn()
         .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
       getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
     };
   }
 
@@ -1054,6 +1116,7 @@ describe("SyncService transformed-artifact digest repair", () => {
         .fn()
         .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
       getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
     };
   }
 
