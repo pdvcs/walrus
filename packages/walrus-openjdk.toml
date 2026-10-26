@@ -23,7 +23,7 @@ lts_api_url = "https://api.adoptium.net/v3/info/available_releases"
 lts_api_path = "$.available_lts_releases"
 
 [retention]
-versions_per_group = 2
+versions_per_group = 3
 cooling_off_days = 3
 
 [checksum]
@@ -31,12 +31,12 @@ type = "inline-api"
 algorithm = "sha256"
 response_path = "$.checksum"
 
-# [[platforms]]
-# os = "windows"
-# arch = "x86-64"
-# os_upstream = "windows"
-# arch_upstream = "x64"
-# extension = "zip"
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "windows"
+arch_upstream = "x64"
+extension = "zip"
 
 # [[platforms]]
 # os = "macos"
@@ -52,12 +52,12 @@ os_upstream = "mac"
 arch_upstream = "aarch64"
 extension = "tar.gz"
 
-# [[platforms]]
-# os = "linux"
-# arch = "x86-64"
-# os_upstream = "linux"
-# arch_upstream = "x64"
-# extension = "tar.gz"
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "linux"
+arch_upstream = "x64"
+extension = "tar.gz"
 
 # [[platforms]]
 # os = "linux"

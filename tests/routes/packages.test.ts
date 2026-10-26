@@ -296,6 +296,93 @@ describe("packages routes", () => {
     expect(body.artifact.download_url).toBe("/download/uv/0.6.2/linux/x86-64");
   });
 
+  describe("platform lag", () => {
+    function lagDeps() {
+      const deps = baseDeps();
+      deps.getPackage = vi.fn().mockResolvedValue({
+        name: "openjdk",
+        display_name: "OpenJDK",
+        vendor: "Eclipse",
+        description: null,
+        website: null,
+        config_hash: "x",
+        enabled: true,
+        created_at: new Date(),
+        updated_at: new Date(),
+      });
+      const row = (id: number, version: string, sort: string) => ({
+        id,
+        package_name: "openjdk",
+        version,
+        version_group: "21",
+        is_lts: true,
+        discovered_at: new Date(),
+        version_sort: sort,
+      });
+      const art = (versionId: number, os: string, arch: string) => ({
+        id: versionId * 10,
+        version_id: versionId,
+        os,
+        arch,
+        filename: `jdk-${os}`,
+        gcs_path: `openjdk/${versionId}/${os}/${arch}/jdk`,
+        file_size: 1,
+        checksum: "abc",
+        checksum_type: "sha256",
+        upstream_url: "https://example.test/jdk",
+        status: "available",
+        error_message: null,
+        download_started_at: null,
+        download_completed_at: null,
+        removed_at: null,
+        created_at: new Date(),
+      });
+      const byVersion: Record<number, unknown[]> = {
+        2: [art(2, "linux", "x86-64")],
+        1: [art(1, "linux", "x86-64"), art(1, "windows", "x86-64")],
+      };
+      deps.listAvailableVersionsInGroup = vi
+        .fn()
+        .mockImplementation((_name: string, _group: string, opts: { os?: string; arch?: string }) =>
+          Promise.resolve(
+            [row(2, "21.0.13+9", "0021.0000.0013"), row(1, "21.0.12.1+1", "0021.0000.0012")].filter(
+              (v) =>
+                (byVersion[v.id] as Array<{ os: string; arch: string }>).some(
+                  (a) => (!opts.os || a.os === opts.os) && (!opts.arch || a.arch === opts.arch),
+                ),
+            ),
+          ),
+        );
+      deps.listAffectsForPackage = vi.fn().mockResolvedValue([]);
+      deps.listArtifactsForVersion = vi
+        .fn()
+        .mockImplementation((id: number) => Promise.resolve(byVersion[id]));
+      return deps;
+    }
+
+    it("falls back to the older version for a platform the newest lacks", async () => {
+      const response = await request(createTestApp(lagDeps())).get(
+        "/api/v1/packages/openjdk/versions/21/latest?os=windows&arch=x86-64",
+      );
+      const body = response.body as { version: string; artifact: { os: string } };
+
+      expect(response.status).toBe(200);
+      expect(body.version).toBe("21.0.12.1+1");
+      expect(body.artifact.os).toBe("windows");
+    });
+
+    it("honours os alone when no arch is given", async () => {
+      const response = await request(createTestApp(lagDeps())).get(
+        "/api/v1/packages/openjdk/versions/21/latest?os=windows",
+      );
+      const body = response.body as { version: string; artifact: { os: string } };
+
+      expect(response.status).toBe(200);
+      expect(body.version).toBe("21.0.12.1+1");
+      expect(body.artifact.os).toBe("windows");
+    });
+  });
+
   describe("artifact provenance (WAL-58)", () => {
     function provenanceDeps(artifact: Record<string, unknown>) {
       const deps = baseDeps();

@@ -376,6 +376,14 @@ export async function incrementalNvdSync(
   );
   const end = new Date(Math.min(now.getTime(), start.getTime() + MAX_NVD_DATE_WINDOW_MS));
 
+  const startedAt = Date.now();
+  const windowDays = ((end.getTime() - start.getTime()) / DAY_MS).toFixed(1);
+  log(
+    `incremental: walking lastMod window ${start.toISOString()} → ${end.toISOString()} (${windowDays} days, ${
+      cursor ? "from cursor" : "fresh-DB bootstrap"
+    }); a long gap since the last sync means many pages at the NVD rate limit`,
+  );
+
   try {
     // Streamed a page at a time, never accumulated (WAL-95). A lastMod window returns
     // EVERYTHING modified, and on a fresh database there is no cursor, so the very first
@@ -393,6 +401,7 @@ export async function incrementalNvdSync(
     // last copy; this keeps the first and skips the rest, which differs only for a CVE
     // modified again *during* the walk -- and the next run's overlapping window re-fetches it.
     const ingested = new Set<string>();
+    let pageNo = 0;
 
     for await (const page of nvd.cvePages(
       {
@@ -404,6 +413,11 @@ export async function incrementalNvdSync(
       cursor ? {} : { resultsPerPage: config.VULN_NVD_BOOTSTRAP_PAGE_SIZE },
     )) {
       modified += page.vulnerabilities.length;
+      pageNo++;
+      const elapsedS = Math.round((Date.now() - startedAt) / 1000);
+      log(
+        `incremental: page ${pageNo} — ${modified}/${page.totalResults} CVEs walked, ${relevantCount} relevant so far, ${elapsedS}s elapsed`,
+      );
       const fresh = page.vulnerabilities.filter((item) => !ingested.has(item.cve.id));
       // Per page, so the id list stays bounded: a single query carrying every id in a
       // 119-day window would be its own problem.
@@ -429,7 +443,7 @@ export async function incrementalNvdSync(
     }
 
     log(
-      `incremental: ${modified} modified CVEs in window, ${relevantCount} relevant, ${counts.affects} affects rows`,
+      `incremental: ${modified} modified CVEs in window, ${relevantCount} relevant, ${counts.affects} affects rows (${Math.round((Date.now() - startedAt) / 1000)}s)`,
     );
     await setSyncState(pool, "nvd-cve", end.toISOString(), true);
     return counts;

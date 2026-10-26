@@ -325,9 +325,7 @@ function selectArtifact(
 ): ArtifactRow | undefined {
   const available = artifacts.filter((artifact) => artifact.status === "available");
 
-  if (os && arch) {
-    return available.find((artifact) => artifact.os === os && artifact.arch === arch);
-  }
-
-  return available[0];
+  return available.find(
+    (artifact) => (!os || artifact.os === os) && (!arch || artifact.arch === arch),
+  );
 }

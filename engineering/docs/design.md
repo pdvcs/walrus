@@ -302,6 +302,8 @@ The `version_group_extract` regex in each package's TOML defines how versions ar
 
 `versions_per_group` then controls how many versions within each series to keep. When a new version is downloaded and the limit is exceeded, the oldest is removed from GCS and marked `removed` in the database (retained for audit).
 
+Retention is platform-aware: a version that is still among the `versions_per_group` newest _for some platform_ is kept even when newer versions exist. Upstreams publish platforms at different times (Temurin Windows trails Linux/macOS), and pruning by version count alone would delete the only servable build for the lagging platform. `/latest` resolves per platform, so it falls back to that older version until the newer build is published. The extra storage is bounded and disappears once the platform catches up.
+
 ---
 
 ## LTS Support

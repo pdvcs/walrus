@@ -11,6 +11,7 @@ import {
   listVersionGroups,
   listAvailableVersionsByGroup,
   listVersionsOlderThanInGroup,
+  listVersionIdsNewestPerPlatformInGroup,
   getMaxAvailableVersionSort,
   resyncVersionSortKeys,
 } from "../../src/db/queries/versions.js";
@@ -591,5 +592,40 @@ describe("versions queries", () => {
       // Every row now matches the algorithm, so a second pass has nothing to do.
       expect(await resyncVersionSortKeys(pool)).toBe(0);
     });
+  });
+
+  it("listVersionIdsNewestPerPlatformInGroup keeps the fallback for a lagging platform", async () => {
+    // 1.2.3 has linux+windows; 1.2.4 and 1.2.5 are linux-only (upstream hasn't built windows yet).
+    const ids: Record<string, number> = {};
+    for (const [version, sort, oses] of [
+      ["1.2.3", "0001.0002.0003", ["linux", "windows"]],
+      ["1.2.4", "0001.0002.0004", ["linux"]],
+      ["1.2.5", "0001.0002.0005", ["linux"]],
+    ] as const) {
+      const row = await insertVersion(pool, {
+        package_name: PKG,
+        version,
+        version_group: "1.2",
+        is_lts: false,
+        version_sort: sort,
+      });
+      ids[version] = row.id;
+      for (const os of oses) {
+        const artifact = await insertArtifact(pool, {
+          version_id: row.id,
+          os,
+          arch: "x86-64",
+          filename: `${version}-${os}.bin`,
+          upstream_url: `https://example.test/${version}-${os}.bin`,
+        });
+        await updateArtifactStatus(pool, artifact.id, { status: "available" });
+      }
+    }
+
+    const kept = await listVersionIdsNewestPerPlatformInGroup(pool, PKG, "1.2", 1);
+    expect(kept.sort()).toEqual([ids["1.2.3"], ids["1.2.5"]].sort());
+
+    const keptTwo = await listVersionIdsNewestPerPlatformInGroup(pool, PKG, "1.2", 2);
+    expect(keptTwo.sort()).toEqual([ids["1.2.3"], ids["1.2.4"], ids["1.2.5"]].sort());
   });
 });

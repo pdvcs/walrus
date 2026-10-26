@@ -1,5 +1,9 @@
 import { Pool } from "pg";
-import { listVersionGroups, listVersionsOlderThanInGroup } from "../db/queries/versions.js";
+import {
+  listVersionGroups,
+  listVersionIdsNewestPerPlatformInGroup,
+  listVersionsOlderThanInGroup,
+} from "../db/queries/versions.js";
 import { listArtifactsForVersion } from "../db/queries/artifacts.js";
 import { StorageBackend } from "../storage/types.js";
 import { VersionRow } from "../types/db.js";
@@ -8,6 +12,7 @@ export interface RetentionServiceOptions {
   versionsRepo?: {
     listVersionGroups: typeof listVersionGroups;
     listVersionsOlderThanInGroup: typeof listVersionsOlderThanInGroup;
+    listVersionIdsNewestPerPlatformInGroup?: typeof listVersionIdsNewestPerPlatformInGroup;
   };
   artifactsRepo?: {
     listArtifactsForVersion: typeof listArtifactsForVersion;
@@ -34,12 +39,43 @@ export class RetentionService {
       ({
         listVersionGroups,
         listVersionsOlderThanInGroup,
+        listVersionIdsNewestPerPlatformInGroup,
       } as const);
     this.artifactsRepo =
       opts.artifactsRepo ??
       ({
         listArtifactsForVersion,
       } as const);
+  }
+
+  /**
+   * Versions beyond the newest `keep` in a group, minus any that are still one of the newest
+   * `keep` for some platform: upstream platform lag (Temurin Windows) would otherwise get the
+   * only servable version for that platform pruned.
+   */
+  private async olderVersionsToPrune(
+    packageName: string,
+    group: string,
+    keep: number,
+  ): Promise<VersionRow[]> {
+    const older = await this.versionsRepo.listVersionsOlderThanInGroup(
+      this.pool,
+      packageName,
+      group,
+      keep,
+    );
+    if (older.length === 0 || !this.versionsRepo.listVersionIdsNewestPerPlatformInGroup) {
+      return older;
+    }
+    const protectedIds = new Set(
+      await this.versionsRepo.listVersionIdsNewestPerPlatformInGroup(
+        this.pool,
+        packageName,
+        group,
+        keep,
+      ),
+    );
+    return older.filter((v) => !protectedIds.has(v.id));
   }
 
   async enforceRetention(
@@ -68,23 +104,11 @@ export class RetentionService {
       }
 
       for (const group of keptGroups) {
-        const oldVersions = await this.versionsRepo.listVersionsOlderThanInGroup(
-          this.pool,
-          packageName,
-          group,
-          versionsPerGroup,
-        );
-        prunable.push(...oldVersions);
+        prunable.push(...(await this.olderVersionsToPrune(packageName, group, versionsPerGroup)));
       }
     } else {
       for (const group of groups) {
-        const oldVersions = await this.versionsRepo.listVersionsOlderThanInGroup(
-          this.pool,
-          packageName,
-          group,
-          versionsPerGroup,
-        );
-        prunable.push(...oldVersions);
+        prunable.push(...(await this.olderVersionsToPrune(packageName, group, versionsPerGroup)));
       }
     }
 

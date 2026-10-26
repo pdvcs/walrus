@@ -132,7 +132,13 @@ export class NvdClient {
   private async get(url: string): Promise<unknown> {
     let attempt = 0;
     for (;;) {
+      const waitStart = Date.now();
       await this.limiter.acquire();
+      const waitedMs = Date.now() - waitStart;
+      if (waitedMs > 5000) {
+        this.log.info(`NVD rate limiter held the request for ${Math.round(waitedMs / 1000)}s`);
+      }
+      const requestStart = Date.now();
       const headers: Record<string, string> = {};
       if (this.apiKey) headers["apiKey"] = this.apiKey;
 
@@ -159,7 +165,12 @@ export class NvdClient {
         // abort took every attempt, because each one re-fetched the same oversized body against
         // the same deadline. That is what VULN_NVD_PAGE_SIZE and VULN_NVD_HTTP_TIMEOUT_MS
         // address -- retries only help once a single attempt can plausibly succeed.
-        if (res.ok) return await res.json();
+        if (res.ok) {
+          const body = await res.json();
+          const tookMs = Date.now() - requestStart;
+          if (tookMs > 10_000) this.log.info(`NVD request slow: ${Math.round(tookMs / 1000)}s`);
+          return body;
+        }
       } catch (err) {
         transportErr = err;
       }

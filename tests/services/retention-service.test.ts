@@ -184,4 +184,66 @@ describe("RetentionService", () => {
     // eslint-disable-next-line @typescript-eslint/unbound-method
     expect(vi.mocked(pool.query)).not.toHaveBeenCalled();
   });
+
+  it("keeps an old version that is still the newest for a platform the newer ones lack", async () => {
+    const storage: StorageBackend = {
+      upload: vi.fn(),
+      download: vi.fn(),
+      delete: vi.fn().mockResolvedValue(undefined),
+      exists: vi.fn(),
+    };
+    const pool = { query: vi.fn().mockResolvedValue(undefined) } as unknown as Pool;
+    const listVersionIdsNewestPerPlatformInGroup = vi.fn().mockResolvedValue([11]);
+
+    const service = new RetentionService(pool, storage, {
+      versionsRepo: {
+        listVersionGroups: vi.fn().mockResolvedValue(["21"]),
+        listVersionsOlderThanInGroup: vi
+          .fn()
+          .mockResolvedValue([version(11, "21", "21.0.12.1+1"), version(10, "21", "21.0.11+10")]),
+        listVersionIdsNewestPerPlatformInGroup,
+      },
+      artifactsRepo: {
+        listArtifactsForVersion: vi
+          .fn()
+          .mockResolvedValue([artifact(1, 10, "uv/21.0.11+10/linux/x86-64/uv.tar.gz")]),
+      },
+    });
+
+    const result = await service.enforceRetention("uv", 2);
+
+    // 21.0.12.1+1 is the only Windows build, so only 21.0.11+10 goes.
+    expect(result.versionIdsPruned).toEqual([10]);
+    expect(listVersionIdsNewestPerPlatformInGroup).toHaveBeenCalledWith(pool, "uv", "21", 2);
+  });
+
+  it("does not exempt anything in a group dropped by groupsToKeep", async () => {
+    const storage: StorageBackend = {
+      upload: vi.fn(),
+      download: vi.fn(),
+      delete: vi.fn().mockResolvedValue(undefined),
+      exists: vi.fn(),
+    };
+    const pool = { query: vi.fn().mockResolvedValue(undefined) } as unknown as Pool;
+    const listVersionIdsNewestPerPlatformInGroup = vi.fn().mockResolvedValue([11]);
+
+    const service = new RetentionService(pool, storage, {
+      versionsRepo: {
+        listVersionGroups: vi.fn().mockResolvedValue(["22", "21"]),
+        listVersionsOlderThanInGroup: vi
+          .fn()
+          .mockImplementation((_pool, _name, group: string) =>
+            Promise.resolve(group === "21" ? [version(11, "21", "21.0.12.1+1")] : []),
+          ),
+        listVersionIdsNewestPerPlatformInGroup,
+      },
+      artifactsRepo: { listArtifactsForVersion: vi.fn().mockResolvedValue([]) },
+    });
+
+    const result = await service.enforceRetention("uv", 2, false, 1);
+
+    expect(result.versionIdsPruned).toEqual([11]);
+    // Group 21 is dropped wholesale; group 22 has nothing old, so no lookup is needed at all.
+    expect(listVersionIdsNewestPerPlatformInGroup).not.toHaveBeenCalled();
+  });
 });

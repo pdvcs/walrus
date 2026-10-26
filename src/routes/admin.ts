@@ -1678,14 +1678,26 @@ function renderGroupSection(
 
   const platHeaders = platforms.map((p) => `<th>${esc(p)}</th>`).join("");
   const rows = g.versions
-    .map((v) => {
+    .map((v, idx) => {
       const vuln = vulnBadges.tracked ? vulnBadges.byVersion[v.version] : undefined;
       const blocked = vuln?.blocked ?? false;
       const byPlatform = new Map(v.artifacts.map((a) => [`${a.os}/${a.arch}`, a]));
       const cells = platforms
         .map((p) => {
           const a = byPlatform.get(p);
-          if (!a) return `<td style="color:#d1d5db">—</td>`;
+          if (!a) {
+            // Upstream can publish platforms at different times; say which older version
+            // /latest serves for this platform so the gap doesn't read as a sync failure.
+            const fallback = g.versions
+              .slice(idx + 1)
+              .find((o) =>
+                o.artifacts.some((x) => `${x.os}/${x.arch}` === p && x.status === "available"),
+              );
+            const hint = fallback
+              ? ` title="${esc(`not published upstream — /latest serves ${fallback.version} for this platform`)}"`
+              : "";
+            return `<td style="color:#d1d5db"${hint}>—</td>`;
+          }
           const icon: Record<string, string> = {
             available: "✓",
             failed: "✗",

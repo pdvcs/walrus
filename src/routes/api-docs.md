@@ -152,6 +152,12 @@ next safe version; if every compatible cached version is blocked, it returns `40
 download URL. If nothing is servable only because the candidates are still inside their
 cooling-off period, it returns `423` with `Retry-After` and `available_at` instead — a dated,
 temporary withholding, distinct from the `202` that means "not synced yet, retry shortly".
+
+Selection is per platform. Upstreams sometimes publish platforms at different times (Temurin's
+Windows builds can trail Linux and macOS by days), so the newest version for `linux/x86-64` can
+be newer than the one returned for `windows/x86-64`. Always pass both `os` and `arch`; the
+platform's newest servable version is returned, and it moves forward on its own once the
+missing build is published and synced.
 Example: [openjdk group 21, linux/x86-64](/api/v1/packages/openjdk/versions/21/latest?os=linux&arch=x86-64)
 
 **Query parameters**

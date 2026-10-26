@@ -335,6 +335,34 @@ export async function deleteAllVersionsForPackage(
 }
 
 /**
+ * Ids of versions in a group that are among the `keepCount` newest *for some platform*.
+ *
+ * Upstreams publish platforms at different times (Temurin's Windows builds trail Linux/macOS), so
+ * the newest versions overall may have no artifact for a platform whose latest servable version is
+ * older. Pruning by version count alone would delete that fallback and leave the platform with
+ * nothing to serve. Retention exempts these ids so each platform keeps its own newest `keepCount`.
+ */
+export async function listVersionIdsNewestPerPlatformInGroup(
+  pool: Pool,
+  packageName: string,
+  group: string,
+  keepCount: number,
+): Promise<number[]> {
+  const { rows } = await pool.query<{ id: number }>(
+    `SELECT DISTINCT id FROM (
+       SELECT v.id,
+              ROW_NUMBER() OVER (PARTITION BY a.os, a.arch ORDER BY v.version_sort DESC) AS rn
+       FROM versions v
+       JOIN artifacts a ON a.version_id = v.id AND a.status = 'available'
+       WHERE v.package_name = $1 AND v.version_group = $2
+     ) ranked
+     WHERE rn <= $3`,
+    [packageName, group, keepCount],
+  );
+  return rows.map((r) => r.id);
+}
+
+/**
  * Versions in a group beyond the newest `keepCount`, i.e. the ones retention should prune.
  *
  * With `exemptEmbargoed` (the default), versions still inside their release embargo are neither
