@@ -37,8 +37,10 @@ describe("teardown deployment wiring", () => {
       "gcs_force_destroy=true",
     ]) {
       // Once in the targeted apply that lowers them, once in the destroy that relies on it.
+      // Count the -var flag form so prose naming the override doesn't count.
+      const flag = `-var="${override}"`;
       expect(
-        teardown.match(new RegExp(override.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")),
+        teardown.match(new RegExp(flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")),
       ).toHaveLength(2);
     }
     // The targeted apply must actually reach the Jobs, or the variable never lands on them.

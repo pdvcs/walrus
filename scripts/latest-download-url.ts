@@ -112,9 +112,7 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const packageName = args._[0];
   if (!packageName) {
-    console.error(
-      "Usage: latest-download-url.ts <package> [--os=..] [--arch=..] [--base=..]",
-    );
+    console.error("Usage: latest-download-url.ts <package> [--os=..] [--arch=..] [--base=..]");
     process.exit(1);
   }
 

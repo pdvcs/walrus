@@ -205,9 +205,7 @@ describe("version availability history", () => {
       trigger: "internal",
     });
 
-    expect(result.newlyBlocked).toEqual([
-      { package_name: PKG, version, cve_id: CVE },
-    ]);
+    expect(result.newlyBlocked).toEqual([{ package_name: PKG, version, cve_id: CVE }]);
   });
 
   it("finds a package's transition across every package, by time, without knowing its name", async () => {

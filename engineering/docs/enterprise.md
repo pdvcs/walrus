@@ -29,12 +29,12 @@ issuing the request:
 
 ```toml
 [[rule]]
-match   = "https://github.com/"
+match = "https://github.com/"
 rewrite = "https://artifactory.corp/artifactory/github-remote/"
 headers = { Authorization = "Bearer ${ARTIFACTORY_TOKEN}" }
 
 [[rule]]
-match   = "https://services.nvd.nist.gov/"
+match = "https://services.nvd.nist.gov/"
 purpose = "vuln-feed"
 rewrite = "https://egress.corp/nvd/"
 ```
@@ -45,7 +45,7 @@ mechanism as any other rule:
 
 ```toml
 [[rule]]
-match   = "https://"
+match = "https://"
 rewrite = "https://my-rewriting-proxy/url/https://"
 ```
 

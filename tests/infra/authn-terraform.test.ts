@@ -68,6 +68,8 @@ describe("authentication deployment wiring", () => {
     expect(deploy).not.toContain("TF_VAR_admin_password");
     expect(deploy).toContain("${#WALRUS_SESSION_SECRET} < 32");
     expect(deploy).toContain("${#WALRUS_ADMIN_PASSWORD} < 16");
-    expect(deploy).not.toMatch(/set -[^\n]*x/);
+    // xtrace would echo the secrets into the deploy log. Only real `set` commands count, not
+    // prose that mentions one.
+    expect(deploy).not.toMatch(/^\s*set\b[^#\n]*(\s-[a-z]*x|\bxtrace\b)/m);
   });
 });

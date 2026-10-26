@@ -483,7 +483,7 @@ New deps: `fuzzball`, `semver` (runtime); `fast-check` (dev). `pg_trgm` extensio
   successful run no longer implies an empty backlog, and gives the query to watch the trend.
 - **WAL-96 (Fixed):** `terraform plan` is no longer permanently dirty after a deploy. The Cloud
   Run service now ignores three fields it does not declare but the API and `gcloud run services
-update` return anyway — including a service-level `scaling` block the API reports as zeros,
+  update` return anyway — including a service-level `scaling` block the API reports as zeros,
   whose diff cannot be applied away because removing zeros is a server-side no-op. A plan that
   always shows a diff on the most important resource in the project is how the next real drift
   goes unnoticed. The instance ceiling and the Postgres pool size are now declared together, with

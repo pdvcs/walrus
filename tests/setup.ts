@@ -5,7 +5,7 @@
  * otherwise — the safety net that prevents a `npm test` from ever wiping the dev
  * or production `walrus` database again.
  *
- * The DB is chosen by vitest.config.ts (`TEST_DATABASE_URL` → `DATABASE_URL`);
+ * The DB is chosen by vitest.config.mts (`TEST_DATABASE_URL` → `DATABASE_URL`);
  * this only validates it.
  */
 const url = process.env.DATABASE_URL ?? "";

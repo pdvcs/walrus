@@ -233,12 +233,12 @@ Selected explicitly with `files_shape = "platform-map"`:
 [discovery]
 files_field = "downloads"
 files_shape = "platform-map"
-file_url_field = "link"              # required — the filename is this URL's tail
-file_checksum_url_field = "checksumLink"   # optional sidecar
-file_size_field = "size"                   # optional; checked against the transfer
+file_url_field = "link" # required — the filename is this URL's tail
+file_checksum_url_field = "checksumLink" # optional sidecar
+file_size_field = "size" # optional; checked against the transfer
 
 [[platforms]]
-os_upstream = "windowsZip"           # matches the key in `downloads`, not a field in it
+os_upstream = "windowsZip" # matches the key in `downloads`, not a field in it
 ```
 
 Each `[[platforms]]` entry selects its download by `os_upstream` matching a key. `arch_upstream` is not consulted — JetBrains' keys already encode the whole platform (`macM1`, `windowsZipARM64`).
@@ -345,9 +345,9 @@ version = "1.98.1 (48a229cea 2026-09-01)"
 
 [pkg.rust.target.x86_64-unknown-linux-gnu]
 available = true
-url     = "https://static.rust-lang.org/dist/2026-09-03/rust-1.98.1-x86_64-unknown-linux-gnu.tar.gz"
-hash    = "24ba1338a2d35c5a3247936546429e163fa674d726102af18bdf624582c57aea"
-xz_url  = "https://static.rust-lang.org/dist/2026-09-03/rust-1.98.1-x86_64-unknown-linux-gnu.tar.xz"
+url = "https://static.rust-lang.org/dist/2026-09-03/rust-1.98.1-x86_64-unknown-linux-gnu.tar.gz"
+hash = "24ba1338a2d35c5a3247936546429e163fa674d726102af18bdf624582c57aea"
+xz_url = "https://static.rust-lang.org/dist/2026-09-03/rust-1.98.1-x86_64-unknown-linux-gnu.tar.xz"
 xz_hash = "5326b36c53de11d148c8f8dab6553a3d1006c2cfd32123683073fad3c302605b"
 ```
 

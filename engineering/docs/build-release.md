@@ -87,7 +87,7 @@ npm run test:integration
 
 Integration tests under `tests/db/` (and the DB-backed route tests) perform destructive
 writes and **global** cleanups, so they run against a **separate throwaway database**, never
-the dev/prod `walrus` DB. `vitest.config.ts` forces `DATABASE_URL` to
+the dev/prod `walrus` DB. `vitest.config.mts` forces `DATABASE_URL` to
 `postgresql://walrus:walrus@localhost:5432/walrus_test` (override with `TEST_DATABASE_URL`),
 and `tests/setup.ts` **hard-fails the whole run** if the target database name does not end in
 `_test` — the safety net that prevents `npm test` from ever wiping real data. Migrations run
@@ -336,12 +336,12 @@ unset, `deploy.sh` reads the project's sole user owner and uses that — and **f
 the project has none or more than one, rather than guessing. A shared project must set the
 variable explicitly. The address is never committed: the repo holds the variable, not the value.
 
-| Policy                                   | Fires on                                          | Severity | What to do                                                                                                                                          |
-| ---------------------------------------- | ------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Walrus Cloud Run error                   | Any `ERROR` log from the service or either Job    | ERROR    | Read the log; the message names the failing package or sync                                                                                         |
-| Walrus scheduler job failed              | A Cloud Scheduler invocation fails                | ERROR    | The workload may be fine — check the target URL and the OIDC binding, since a revoked `run.invoker` looks like a failed attempt, not a deploy error |
-| Walrus vulnerability sync degraded       | One source fails **more than once** in four hours | WARNING  | Check `/app/status` for how far behind the source is; upstream rate limiting and an upstream outage want different responses                        |
-| Walrus automatic CVE backfill exhausted  | A package gives up on automatic backfill          | WARNING  | The package is outside self-healing until an operator intervenes                                                                                    |
+| Policy                                   | Fires on                                          | Severity | What to do                                                                                                                                                                                                                |
+| ---------------------------------------- | ------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Walrus Cloud Run error                   | Any `ERROR` log from the service or either Job    | ERROR    | Read the log; the message names the failing package or sync                                                                                                                                                               |
+| Walrus scheduler job failed              | A Cloud Scheduler invocation fails                | ERROR    | The workload may be fine — check the target URL and the OIDC binding, since a revoked `run.invoker` looks like a failed attempt, not a deploy error                                                                       |
+| Walrus vulnerability sync degraded       | One source fails **more than once** in four hours | WARNING  | Check `/app/status` for how far behind the source is; upstream rate limiting and an upstream outage want different responses                                                                                              |
+| Walrus automatic CVE backfill exhausted  | A package gives up on automatic backfill          | WARNING  | The package is outside self-healing until an operator intervenes                                                                                                                                                          |
 | Walrus blocked a version (informational) | A sync newly blocked one or more versions         | WARNING  | **No action needed** — this is the gate working. The notification names the package, version, and CVE directly; for a past fire, `GET /admin/v1/transitions?since=<timestamp>` finds it without knowing the package first |
 
 Two design points worth knowing before changing them:
