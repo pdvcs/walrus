@@ -496,7 +496,12 @@ export class JsonApiStrategy implements DiscoveryStrategy {
         const binary = (obj["binaries"] as Record<string, unknown>[])?.[0] ?? obj;
         const versionData = obj["version_data"] as Record<string, unknown> | undefined;
         if (versionData) {
-          semverStr = `${versionData["major"] as number}.${versionData["minor"] as number}.${versionData["security"] as number}+${versionData["build"] as number}`;
+          const patch = versionData["patch"];
+          const patchSuffix = typeof patch === "number" && patch > 0 ? `.${patch}` : "";
+          // Include the fourth Java component (11.0.32.1+1) so it doesn't collapse into
+          // 11.0.32+1. Not openjdk_version: it appends "-LTS" on 21+ only, which would
+          // rename every already-synced LTS version.
+          semverStr = `${versionData["major"] as number}.${versionData["minor"] as number}.${versionData["security"] as number}${patchSuffix}+${versionData["build"] as number}`;
         } else {
           const relName = obj["release_name"];
           semverStr = typeof relName === "string" ? relName : majorVersion;

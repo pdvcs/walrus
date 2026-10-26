@@ -274,6 +274,127 @@ describe("JsonApiStrategy — inline submode (Golang)", () => {
 });
 
 describe("JsonApiStrategy — two-step submode (Adoptium)", () => {
+  it.each([
+    {
+      name: "fourth component",
+      versionData: {
+        major: 11,
+        minor: 0,
+        security: 32,
+        patch: 1,
+        build: 1,
+        openjdk_version: "11.0.32.1+1",
+        semver: "11.0.32+1.1",
+      },
+      expected: "11.0.32.1+1",
+    },
+    {
+      name: "existing identity despite an -LTS openjdk_version",
+      versionData: {
+        major: 21,
+        minor: 0,
+        security: 13,
+        patch: 0,
+        build: 9,
+        openjdk_version: "21.0.13+9-LTS",
+        semver: "21.0.13+9.0.LTS",
+      },
+      expected: "21.0.13+9",
+    },
+    {
+      name: "fourth component alongside an -LTS openjdk_version",
+      versionData: {
+        major: 21,
+        minor: 0,
+        security: 12,
+        patch: 1,
+        build: 1,
+        openjdk_version: "21.0.12.1+1-LTS",
+      },
+      expected: "21.0.12.1+1",
+    },
+    {
+      name: "zero fourth component",
+      versionData: { major: 21, minor: 0, security: 3, patch: 0, build: 9 },
+      expected: "21.0.3+9",
+    },
+    {
+      name: "missing fourth component",
+      versionData: { major: 21, minor: 0, security: 3, build: 9 },
+      expected: "21.0.3+9",
+    },
+  ])("preserves $name", async ({ versionData, expected }) => {
+    const release = { ...MOCK_ADOPTIUM_RELEASE[0], version_data: versionData };
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            available_releases: [versionData.major],
+            available_lts_releases: [versionData.major],
+          }),
+        })
+        .mockResolvedValue({ ok: true, json: async () => [release] }),
+    );
+
+    const versions = await new JsonApiStrategy().discoverVersions(OPENJDK_CONFIG);
+    expect(versions).toHaveLength(1);
+    expect(versions[0].version).toBe(expected);
+    expect(versions[0].versionGroup).toBe(String(versionData.major));
+    expect(versions[0].isLts).toBe(true);
+    expect(versions[0].artifacts.get("linux/x86-64")?.checksum).toBe("sha256checksum");
+  });
+
+  it("keeps a fourth-component release distinct across platforms and retention", async () => {
+    const releases = [1, 0].map((patch) => ({
+      ...MOCK_ADOPTIUM_RELEASE[0],
+      version_data: { major: 11, minor: 0, security: 32, patch, build: 1 },
+      binaries: [
+        {
+          package: {
+            link: `https://example.test/jdk-11.0.32.${patch}+1.tar.gz`,
+            name: `jdk-11.0.32.${patch}+1.tar.gz`,
+            checksum: `checksum-${patch}`,
+          },
+        },
+      ],
+    }));
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ available_releases: [11], available_lts_releases: [11] }),
+        })
+        .mockResolvedValue({ ok: true, json: async () => releases }),
+    );
+    const config: PackageConfig = {
+      ...OPENJDK_CONFIG,
+      platforms: [
+        ...OPENJDK_CONFIG.platforms,
+        {
+          os: "macos",
+          arch: "arm64",
+          os_upstream: "mac",
+          arch_upstream: "aarch64",
+          extension: "tar.gz",
+        },
+      ],
+    };
+    const versions = await new JsonApiStrategy().discoverVersions(config);
+    expect(versions.map((v) => v.version)).toEqual(["11.0.32.1+1", "11.0.32+1"]);
+    for (const version of versions) {
+      expect([...version.artifacts.keys()]).toEqual(["linux/x86-64", "macos/arm64"]);
+    }
+    expect(versions[0].artifacts.get("linux/x86-64")?.checksum).toBe("checksum-1");
+    expect(versions[1].artifacts.get("linux/x86-64")?.checksum).toBe("checksum-0");
+    const retained = selectRetentionWindow(versions, { versions_per_group: 1, groups_to_keep: 1 });
+    expect(retained.map((v) => v.version)).toEqual(["11.0.32.1+1"]);
+  });
+
   it("discovers versions using two-step API", async () => {
     const fetchMock = vi
       .fn()
