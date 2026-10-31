@@ -13,9 +13,9 @@ See also: [OpenAPI spec](/openapi.json)
 
 Useful for package-manager servers (to read metadata) and package-manager clients (to download binaries).
 
-### GET /api/v1/packages/
+### GET /api/v1/packages/ | List all enabled packages
 
-List all enabled packages. [Try it](/api/v1/packages/)
+List all enabled packages.
 
 **Response** `200`
 
@@ -35,7 +35,7 @@ List all enabled packages. [Try it](/api/v1/packages/)
 
 ---
 
-### GET /api/v1/packages/:name/groups
+### GET /api/v1/packages/:name/groups | Version groups for a package
 
 Every version group for a package, newest first. A platform filter narrows which artifacts count
 as servable, not which groups are listed — a group with nothing servable still appears, carrying
@@ -78,7 +78,7 @@ an embargoed version reports `cooling_off` with the timestamp it is released. Pe
 
 ---
 
-### GET /api/v1/packages/:name/versions
+### GET /api/v1/packages/:name/versions | All versions for a package
 
 All versions for a package, with platform availability and a version-level security status.
 Examples: [openjdk](/api/v1/packages/openjdk/versions), [golang](/api/v1/packages/golang/versions), [uv](/api/v1/packages/uv/versions)
@@ -144,7 +144,7 @@ indistinguishable from ones the sync has simply not fetched yet.
 
 ---
 
-### GET /api/v1/packages/:name/versions/:group/latest
+### GET /api/v1/packages/:name/versions/:group/latest | Latest safe version in a group
 
 Latest available artifact for a version group and platform, excluding versions with a
 concrete known-critical CVE match. If the newest version is blocked, Walrus returns the
@@ -201,7 +201,7 @@ starting a download rather than discovering it from a `400`.
 
 ---
 
-### GET /download/:package/:version/:os/:arch
+### GET /download/:package/:version/:os/:arch | Download a binary
 
 Download a binary. Streams directly from storage.
 
@@ -404,7 +404,7 @@ Endpoints under `/admin/v1/` provide:
 - Gate-transition lookup across every package by time, for correlating an alert back to
   what it blocked without already knowing which package
 
-### GET /admin/v1/vuln-suppressions/active-count
+### GET /admin/v1/vuln-suppressions/active-count | Active suppression count
 
 Returns `{"active_count": N}` — suppressions that are neither revoked nor expired. The admin nav
 polls this to badge every page while any exception to the critical-CVE gate is in force.
@@ -413,7 +413,7 @@ polls this to badge every page while any exception to the critical-CVE gate is i
 curl "$WALRUS_URL/admin/v1/vuln-suppressions/active-count"
 ```
 
-### GET /admin/v1/vuln-suppressions/audit
+### GET /admin/v1/vuln-suppressions/audit | Suppression audit trail
 
 Returns suppression creation and revocation audit entries newest-first. This is the supported
 production inspection path: Cloud Run has no shell or manual-SQL workflow. `limit` defaults to 50
@@ -449,7 +449,7 @@ curl -X POST -H "Content-Type: application/json" \
   "$WALRUS_URL/admin/v1/cooling-off-waivers"
 ```
 
-### GET /admin/v1/transitions
+### GET /admin/v1/transitions | Gate-transition history
 
 Gate transitions across **every** package since a point in time. `/api/v1/packages/:name/availability`
 above needs the package name up front, which is exactly what a "Walrus blocked a version" alert
@@ -503,7 +503,7 @@ carries a standing `disclaimer` and a `data_freshness` object (`nvd_last_sync` /
 > **Disclaimer:** Absence of results does not imply a product/version is safe — the underlying
 > public sources may lag or be incomplete.
 
-### GET /api/v1/vulns?product=&version=&include_unmatched=
+### GET /api/v1/vulns?product=&version=&include_unmatched= | Look up CVEs for a product
 
 The flagship lookup. Resolves a product name/alias (fuzzy), then returns known CVEs, optionally
 range-checked against `version`.
@@ -568,7 +568,7 @@ An active operator suppression is returned as
 `{"reason":"…","expires_at":null}` instead of `null`.
 Suppression excludes the CVE from the download gate but never hides it from this response.
 
-### GET /api/v1/vulns/products/search?q=
+### GET /api/v1/vulns/products/search?q= | Search products
 
 Autocomplete over product names/aliases (trigram + prefix boost, top 10). Powers the admin explorer.
 
@@ -577,7 +577,7 @@ curl 'http://localhost:8080/api/v1/vulns/products/search?q=openj'
 # { "query": "openj", "results": [ { "slug": "openjdk", "display_name": "…", "score": 100 } ] }
 ```
 
-### GET /api/v1/vulns/products/:name
+### GET /api/v1/vulns/products/:name | Product details
 
 Returns vulnerability product metadata for one Walrus package: aliases (including provenance),
 CPE vendor/product pairs, OSV mapping, tracking state, and a distinct CVE count. Unknown package
@@ -591,7 +591,7 @@ curl 'http://localhost:8080/api/v1/vulns/products/openjdk'
 > application CPEs. It does not fully evaluate `AND`, `OR`, or `negate` environment predicates, so
 > environment-dependent CVEs can be conservatively over-reported.
 
-### GET /api/v1/cves/:cveId
+### GET /api/v1/cves/:cveId | Look up a CVE
 
 CVE detail: metadata, KEV status, affected products (described ranges + provenance), references.
 Malformed id → **400**; unknown id → **404**.
@@ -600,7 +600,7 @@ Malformed id → **400**; unknown id → **404**.
 curl 'http://localhost:8080/api/v1/cves/CVE-2023-40031'
 ```
 
-### GET /api/v1/packages/:name/vulns
+### GET /api/v1/packages/:name/vulns | CVEs affecting a package
 
 **Walrus-native.** Cross-references CVEs against the package's **cached versions**. Optional
 `?version=` restricts to one. Packages with no `[vulnerabilities]` config return `tracked: false`
@@ -639,7 +639,7 @@ curl 'http://localhost:8080/api/v1/packages/openjdk/vulns'
 Suppressed CVEs remain in each version's `vulns` array and carry the active assertion in
 `suppression`; they do not make that version's download status blocked.
 
-### GET /api/v1/packages/:name/availability
+### GET /api/v1/packages/:name/availability | Package availability history
 
 When a version became download-blocked, and which CVE caused it. Optional `?version=` limits
 it to one version's history; without it you get the package's recent changes, newest first.
@@ -757,12 +757,12 @@ Read-only HTML pages for people who want to see what walrus serves but are not o
 need no login. They render the same data as the admin pages, minus every action: no sync, enable
 or disable, delete, re-download, waiver, or CVE-suppression control, and no sync-job detail.
 
-### GET /packages
+### GET /packages | Packages page
 
 The enabled packages walrus serves, with vendor and when each last synced. Disabled packages are
 not listed, matching `GET /api/v1/packages`.
 
-### GET /packages/:name
+### GET /packages/:name | Package detail page
 
 The cached versions of one package, grouped as configured, with the state of each platform's
 artifact. An `available` artifact links to its `GET /download/...` URL. An artifact that download
@@ -770,7 +770,7 @@ would refuse -- held back by a critical CVE, or still inside its cooling-off per
 not linked, and its tooltip says why. Version badges link to the vulnerability page below.
 Returns 404 for an unknown or disabled package.
 
-### GET /vulns?product=&version=
+### GET /vulns?product=&version= | Vulnerabilities page
 
 The vulnerability lookup: CVEs affecting a product, optionally at a version, with a `blocks at N`
 badge on the ones that make `GET /download` return 403, and freshness chips for the NVD, KEV, OSV
@@ -779,7 +779,7 @@ expiry; who suppressed it is not shown. Backed by the same query as `GET /api/v1
 
 ## Utility
 
-### GET /health
+### GET /health | Health check
 
 ```json
 {
@@ -798,7 +798,7 @@ period, a database failure returns HTTP 503 with `isAvailable: false`. Successfu
 results are cached for 60 seconds, and concurrent requests share one probe. The same check is also
 available at `GET /app/health`.
 
-### GET /app/status
+### GET /app/status | Service status
 
 Returns the health fields above plus detailed operational status:
 
@@ -838,7 +838,7 @@ every active suppression stands until revoked). A suppression is a deliberate, a
 rather than a fault, so it is reported in its own right and is never a degradation. The admin nav
 badges every page while `active_count` is non-zero.
 
-### GET /metrics
+### GET /metrics | Prometheus metrics
 
 Prometheus text exposition for API traffic, downloads, the Node.js process, PostgreSQL pool,
 catalogue/artifact state, package syncs, vulnerability ingestion, backfills, blocked versions, and
@@ -861,17 +861,17 @@ scrape_configs:
       - targets: ["walrus.example.com"]
 ```
 
-### GET /
+### GET / | Landing page
 
 Public HTML landing page showing the running Walrus package version and links to operator login,
 API documentation, deployment health, detailed application status, Prometheus metrics, and the
 OpenAPI contract.
 
-### GET /api
+### GET /api | API docs
 
 This page. Returns raw Markdown by default; send `Accept: text/html` for rendered HTML.
 
-### GET /openapi.json
+### GET /openapi.json | OpenAPI spec
 
 OpenAPI 3.1.0 specification for this API. [View](/openapi.json)
 

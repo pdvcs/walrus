@@ -133,7 +133,7 @@ export function renderAdminNav(basePath: string, active?: AdminNavItem): string 
   </script>`;
 }
 
-export type PublicNavItem = "packages" | "vulns";
+export type PublicNavItem = "packages" | "vulns" | "api";
 
 export function renderPublicNav(basePath: string, active?: PublicNavItem): string {
   const returnTo = encodeURIComponent(withBase(basePath, "/admin/v1/"));
@@ -142,7 +142,7 @@ export function renderPublicNav(basePath: string, active?: PublicNavItem): strin
     <a href="${withBase(basePath, "/packages")}"${active === "packages" ? ' class="active"' : ""}>Packages</a>
     <a href="${withBase(basePath, "/vulns")}"${active === "vulns" ? ' class="active"' : ""}>Vulnerabilities</a>
     <span class="nav-spacer"></span>
-    <a href="${withBase(basePath, "/api")}">API Docs</a>
+    <a href="${withBase(basePath, "/api")}"${active === "api" ? ' class="active"' : ""}>API Docs</a>
     <a href="${withBase(basePath, "/app/status")}">Status</a>
     <a href="${withBase(basePath, "/admin/v1/login")}?return_to=${returnTo}">Admin login</a>
   </nav>`;
