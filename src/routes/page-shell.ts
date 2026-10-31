@@ -179,7 +179,7 @@ export function renderLandingPage(version: string, basePath: string, branding: s
     body: `<section class="hero">
       <span class="version">v${safeVersion}</span>
       <h1>${safeBranding}</h1>
-      <p class="hero-copy">A policy-aware package ingress service for discovering, verifying, retaining, and serving trusted software artifacts.</p>
+      <p class="hero-copy">A policy-aware package ingress service for discovering and serving software artifacts.</p>
       <div class="actions">
         <a class="btn btn-primary" href="${withBase(basePath, "/admin/v1/login")}?return_to=${returnTo}">Log in as admin</a>
         <a class="btn btn-secondary" href="${withBase(basePath, "/api")}">Browse API documentation</a>

@@ -211,7 +211,7 @@ const configSchema = z.object({
   // but a deployer presenting walrus under their own internal name overrides just this. Trimmed
   // and required non-empty, so `WALRUS_BRANDING=" "` is a startup failure rather than a blank
   // heading; everything else is free text and is HTML-escaped at render time.
-  WALRUS_BRANDING: z.string().trim().min(1).default("Walrus"),
+  WALRUS_BRANDING: z.string().trim().min(1).default("Walrus Ingress Server"),
   // Nav logos: the image at the top left of every page, as a path to a file inside the
   // repository / image, relative to the application root -- never a URL. WALRUS_LOGO is what
   // everyone sees; WALRUS_ADMIN_LOGO is what a logged-in operator sees, so the two UIs are

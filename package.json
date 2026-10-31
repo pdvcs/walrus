@@ -1,7 +1,7 @@
 {
   "name": "walrus",
   "version": "0.4.1",
-  "description": "Configuration-driven package ingress",
+  "description": "A policy-aware package ingress service for discovering and serving software artifacts",
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc && npm run build:static",
