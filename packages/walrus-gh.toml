@@ -64,7 +64,9 @@ filename_template = "gh_{version}_{os}_{arch}.{ext}"
 
 [vulnerabilities]
 # NVD has github:cli (CPE dictionary probed 2026-10-10: "Github CLI" entries); OSV tracks the
-# repository's go.mod module under the Go ecosystem.
+# repository's go.mod module under the Go ecosystem. The module path MUST be the /v2 one: the Go
+# vuln DB also lists every advisory under the retired v1 path "github.com/cli/cli" with
+# `introduced: 0` and no fix (nothing ships under it), which would mark every 2.x release vulnerable.
 cpes = ["github:cli"]
-osv = { ecosystem = "Go", name = "github.com/cli/cli" }
+osv = { ecosystem = "Go", name = "github.com/cli/cli/v2" }
 aliases = ["gh", "gh cli", "github cli", "github-cli"]
