@@ -199,6 +199,10 @@ export const VulnCountsSchema = z
     high: z.number().int(),
     medium: z.number().int(),
     low: z.number().int(),
+    unrated: z.number().int().openapi({
+      description:
+        "Advisories with no severity yet (e.g. awaiting NVD analysis). total = critical + high + medium + low + unrated.",
+    }),
     kev: z.number().int(),
   })
   .openapi("VulnCounts");
@@ -350,6 +354,70 @@ export const PackageVulnsResponseSchema = z
     disclaimer: z.string(),
   })
   .openapi("PackageVulnsResponse");
+
+// GET /api/v1/packages/:name/posture
+export const PostureStatusSchema = z.enum(["clean", "vulnerable", "unknown"]).openapi({
+  description:
+    "`clean` is only returned when every configured source has been read for this package " +
+    "and every advisory range was evaluated against the version. `vulnerable` needs at " +
+    "least one advisory whose range matched. Everything else is `unknown` — see " +
+    "`unknown_reasons`. Unknown is never a pass.",
+});
+
+export const PostureUnknownReasonSchema = z.enum([
+  "no-version",
+  "version-unparseable",
+  "not-tracked",
+  "coverage-incomplete",
+  "inconclusive-ranges",
+]);
+
+export const PostureCoverageSchema = z
+  .object({
+    nvd: z.enum(["complete", "pending", "not-configured"]),
+    osv: z.enum(["complete", "pending", "not-configured"]),
+  })
+  .openapi("PostureCoverage");
+
+export const PostureVulnSchema = VulnItemSchema.extend({
+  confirmed: z.boolean().openapi({
+    description:
+      "False when the advisory is listed but its affected range could not be evaluated against " +
+      "this version. Unconfirmed advisories are excluded from `counts` and never make a package " +
+      "`vulnerable` on their own.",
+  }),
+}).openapi("PostureVuln");
+
+export const PostureResponseSchema = z
+  .object({
+    package: z.string(),
+    display_name: z.string(),
+    version: z.string().nullable(),
+    version_source: z.enum(["requested", "latest"]).nullable(),
+    latest_version: z.string().nullable(),
+    latest_version_checked_at: z.string().nullable(),
+    latest_version_error: z.string().nullable(),
+    is_latest: z.boolean().nullable(),
+    status: PostureStatusSchema,
+    unknown_reasons: z.array(PostureUnknownReasonSchema),
+    coverage: PostureCoverageSchema,
+    counts: VulnCountsSchema,
+    unfixed: z.number().int().openapi({
+      description: "Confirmed advisories with no known fixed version.",
+    }),
+    upgrade_to: z
+      .string()
+      .nullable()
+      .openapi({
+        description:
+          "Lowest version expected to clear every confirmed advisory, from the advisories' own " +
+          "fixed_in. Null when there is nothing to fix or any confirmed advisory has no known fix.",
+      }),
+    vulns: z.array(PostureVulnSchema),
+    data_freshness: DataFreshnessSchema,
+    disclaimer: z.string(),
+  })
+  .openapi("PostureResponse");
 
 // ── GET /health, /app/health, /app/status ────────────────────────────────────
 

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CPE_QUALIFIER_FIELDS, type CpeQualifierField } from "../vuln/cpe.js";
 
 // Repackaging stage (WAL-56/57): declared per platform; `extension` / `filename_template` here
 // describe what walrus *serves*, while the platform's own `extension` / `filename_template` keep
@@ -249,6 +250,38 @@ const VulnerabilitiesSchema = z.object({
         .string()
         .refine((s) => s.split(":").length === 2 && s.split(":").every((p) => p.length > 0), {
           message: "cpe must be a single 'vendor:product' pair (exactly one colon, both non-empty)",
+        }),
+    )
+    .default([]),
+  // CPEs to ignore although their vendor:product matches a pair above. NVD sometimes files a
+  // DIFFERENT product under the same pair and tells it apart only by a qualifier component:
+  // Terraform Enterprise is hashicorp:terraform with target_sw "enterprise", the Ruby `git` gem
+  // is git:git with target_sw "ruby". Each rule lists components that must ALL equal the given
+  // value; rules are OR'd. Applied at NVD ingestion, and on boot to rows already stored.
+  //
+  // Deliberately explicit per package rather than "ignore any qualified CPE": many qualifiers
+  // name the same product (nodejs sw_edition "lts", bat target_sw "rust", python target_hw
+  // "x64"), and dropping those would silently under-report. Excluding removes advisories, so
+  // cite the CVEs that prove the qualifier names another product.
+  cpe_exclude: z
+    .array(
+      z
+        .strictObject(
+          Object.fromEntries(
+            CPE_QUALIFIER_FIELDS.map((f) => [
+              f,
+              z
+                .string()
+                .min(1)
+                .refine((v) => v !== "*" && v !== "-", {
+                  message: "cpe_exclude values must name a qualifier; '*' and '-' never match",
+                })
+                .optional(),
+            ]),
+          ) as Record<CpeQualifierField, z.ZodOptional<z.ZodString>>,
+        )
+        .refine((rule) => Object.keys(rule).length > 0, {
+          message: `a cpe_exclude rule must name at least one of: ${CPE_QUALIFIER_FIELDS.join(", ")}`,
         }),
     )
     .default([]),

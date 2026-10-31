@@ -27,9 +27,15 @@ import { createCatalogRouter } from "./routes/catalog.js";
 import { resolveLogoFile } from "./common/brand-assets.js";
 import { createCvesRouter } from "./routes/cves.js";
 import { createPackageVulnsRouter } from "./routes/package-vulns.js";
+import { getPosture, type PostureDeps } from "./services/posture.js";
+import { compareVersions } from "./common/version-utils.js";
 import { createAdminVulnsRouter } from "./routes/admin-vulns.js";
 import { createApiDocsRouter } from "./routes/api-docs.js";
-import { isPackageTracked, listDistinctCpePairs } from "./db/queries/package-aliases.js";
+import {
+  getPackageCpes,
+  isPackageTracked,
+  listDistinctCpePairs,
+} from "./db/queries/package-aliases.js";
 import { crossReferenceVersions, getVersionAvailabilityStatus } from "./services/vuln-service.js";
 import { queryVulns, VulnQueryDeps } from "./services/vuln-query.js";
 import { getVulnHints } from "./services/vuln-hints.js";
@@ -471,6 +477,16 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     },
   };
 
+  const postureDeps: PostureDeps = {
+    query: vulnQueryDeps,
+    getPackage: (name) => getPackage(pool, name),
+    countCpes: async (name) => (await getPackageCpes(pool, name)).length,
+    newestCachedVersion: async (name) => {
+      const rows = await listVersions(pool, name, {});
+      return rows.map((r) => r.version).sort((a, b) => compareVersions(b, a))[0] ?? null;
+    },
+  };
+
   publicRouter.use(
     "/api/v1/vulns",
     createVulnsRouter({
@@ -542,6 +558,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       getDataFreshness: () => getDataFreshness(pool),
       listAvailabilityHistory: (name, version) => listAvailabilityHistory(pool, name, version),
       listRecentTransitions: (name) => listRecentTransitions(pool, name),
+      getPosture: (name, version) => getPosture(postureDeps, name, version),
     }),
   );
 

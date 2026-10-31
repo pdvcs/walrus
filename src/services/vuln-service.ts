@@ -43,6 +43,8 @@ export interface VersionCounts {
   high: number;
   medium: number;
   low: number;
+  /** Advisories with no severity (or one outside the four bands); total = bands + unrated. */
+  unrated: number;
   kev: number;
 }
 
@@ -355,6 +357,13 @@ function hasConcreteCriticalMatch(
   return findBlockingCve(version, criticalRows, cveVersion) !== null;
 }
 
+/** The four severity bands the counts report; anything else is "unrated". */
+export function isRatedSeverity(severity: string | null): boolean {
+  return (
+    severity === "CRITICAL" || severity === "HIGH" || severity === "MEDIUM" || severity === "LOW"
+  );
+}
+
 function countBySeverity(vulns: VersionVuln[]): VersionCounts {
   return {
     total: vulns.length,
@@ -362,6 +371,7 @@ function countBySeverity(vulns: VersionVuln[]): VersionCounts {
     high: vulns.filter((v) => v.severity === "HIGH").length,
     medium: vulns.filter((v) => v.severity === "MEDIUM").length,
     low: vulns.filter((v) => v.severity === "LOW").length,
+    unrated: vulns.filter((v) => !isRatedSeverity(v.severity)).length,
     kev: vulns.filter((v) => v.is_kev).length,
   };
 }

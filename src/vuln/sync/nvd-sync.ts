@@ -6,7 +6,7 @@
  */
 import { Pool } from "pg";
 import { NvdClient, type NvdCveItem } from "./nvd-client.js";
-import { parseCpe, buildMatchString } from "../cpe.js";
+import { parseCpe, buildMatchString, isCpeExcluded, type CpeExclusion } from "../cpe.js";
 import {
   upsertCveFull,
   deleteAffectsForSource,
@@ -14,9 +14,15 @@ import {
   knownCveIds,
   AffectsInsert,
 } from "../../db/queries/cves.js";
-import { loadCpeLookup, listDistinctCpePairs } from "../../db/queries/package-aliases.js";
+import {
+  loadCpeExclusions,
+  loadCpeLookup,
+  listDistinctCpePairs,
+} from "../../db/queries/package-aliases.js";
 import { getSyncCursor, setSyncState } from "../../db/queries/vuln-sync-state.js";
 import { config } from "../../config/index.js";
+
+const NO_EXCLUSIONS: ReadonlyMap<string, readonly CpeExclusion[]> = new Map();
 
 export interface IngestCounts {
   cves: number;
@@ -96,10 +102,18 @@ export function extractCvss(item: NvdCveItem): ExtractedCvss {
   };
 }
 
-/** Build cve_affects rows (source 'nvd') for the packages we track. */
+/**
+ * Build cve_affects rows (source 'nvd') for the packages we track.
+ *
+ * `exclusions` (package name → `cpe_exclude` rules) withholds a CPE from a package even though
+ * its vendor:product matches: NVD files Terraform Enterprise as hashicorp:terraform with
+ * target_sw "enterprise", so the pair alone would attribute Enterprise CVEs to the CLI. The rule
+ * is per package — a pair shared by another package without that rule still attributes there.
+ */
 export function extractAffects(
   item: NvdCveItem,
   lookup: Map<string, string[]>,
+  exclusions: ReadonlyMap<string, readonly CpeExclusion[]> = NO_EXCLUSIONS,
 ): { rows: AffectsInsert[]; skippedCpes: number } {
   const rows: AffectsInsert[] = [];
   const seen = new Set<string>();
@@ -144,6 +158,8 @@ export function extractAffects(
         const rawCpe = rangeTag ? `${m.criteria}|${rangeTag}` : m.criteria;
 
         for (const packageName of packageNames) {
+          const excluded = exclusions.get(packageName);
+          if (excluded && isCpeExcluded(parsed, excluded)) continue;
           const key = `${packageName}|${rawCpe}`;
           if (seen.has(key)) continue;
           seen.add(key);
@@ -172,8 +188,10 @@ export async function ingestCveItems(
   pool: Pool,
   items: NvdCveItem[],
   lookup?: Map<string, string[]>,
+  exclusions?: ReadonlyMap<string, readonly CpeExclusion[]>,
 ): Promise<IngestCounts> {
   const cpeLookup = lookup ?? (await loadCpeLookup(pool));
+  const cpeExclusions = exclusions ?? (await loadCpeExclusions(pool));
   const counts: IngestCounts = { cves: 0, affects: 0, skippedCpes: 0 };
   const client = await pool.connect();
 
@@ -205,7 +223,7 @@ export async function ingestCveItems(
       // Rebuild NVD-sourced affects rows for this CVE (modified CVEs may have
       // changed configurations; OSV rows are left untouched).
       await deleteAffectsForSource(client, cve.id, "nvd");
-      const { rows, skippedCpes } = extractAffects(item, cpeLookup);
+      const { rows, skippedCpes } = extractAffects(item, cpeLookup, cpeExclusions);
       counts.skippedCpes += skippedCpes;
       for (const r of rows) {
         await insertAffects(client, r);
@@ -302,6 +320,7 @@ export async function backfillNvd(
   const log = opts.log ?? (() => {});
   const pairs = await listDistinctCpePairs(pool, opts.packageName);
   const lookup = await loadCpeLookup(pool);
+  const exclusions = await loadCpeExclusions(pool);
   const totals: IngestCounts = { cves: 0, affects: 0, skippedCpes: 0 };
   const now = opts.now ?? new Date();
   const windows: Array<Record<string, string>> = opts.since
@@ -324,7 +343,7 @@ export async function backfillNvd(
         for await (const page of nvd.cvePages({ virtualMatchString: matchString, ...window })) {
           fetched += page.vulnerabilities.length;
           if (page.vulnerabilities.length === 0) continue;
-          const pageCounts = await ingestCveItems(pool, page.vulnerabilities, lookup);
+          const pageCounts = await ingestCveItems(pool, page.vulnerabilities, lookup, exclusions);
           counts.cves += pageCounts.cves;
           counts.affects += pageCounts.affects;
           counts.skippedCpes += pageCounts.skippedCpes;
@@ -393,6 +412,7 @@ export async function incrementalNvdSync(
     // attempt deadline. Peak memory is now one page plus the ingested-id set, so it is flat
     // in the window's size rather than linear.
     const lookup = await loadCpeLookup(pool);
+    const exclusions = await loadCpeExclusions(pool);
     const counts: IngestCounts = { cves: 0, affects: 0, skippedCpes: 0 };
     let modified = 0;
     let relevantCount = 0;
@@ -426,7 +446,8 @@ export async function incrementalNvdSync(
         fresh.map((item) => item.cve.id),
       );
       const relevant = fresh.filter(
-        (item) => known.has(item.cve.id) || extractAffects(item, lookup).rows.length > 0,
+        (item) =>
+          known.has(item.cve.id) || extractAffects(item, lookup, exclusions).rows.length > 0,
       );
       if (relevant.length === 0) continue;
 
@@ -434,7 +455,7 @@ export async function incrementalNvdSync(
       // advances on full success, and every write here is an upsert keyed by CVE id with
       // its nvd-sourced affects rebuilt per CVE, so a failure part-way through leaves the
       // next run to redo the same work idempotently instead of discarding what landed.
-      const pageCounts = await ingestCveItems(pool, relevant, lookup);
+      const pageCounts = await ingestCveItems(pool, relevant, lookup, exclusions);
       counts.cves += pageCounts.cves;
       counts.affects += pageCounts.affects;
       counts.skippedCpes += pageCounts.skippedCpes;

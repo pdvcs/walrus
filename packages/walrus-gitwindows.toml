@@ -140,6 +140,10 @@ drop_symlinks = ["dev/fd", "dev/stdin", "dev/stdout", "dev/stderr", "etc/mtab"]
 # with Git for Windows CVEs being Git CVEs.
 #
 cpes = ["git-scm:git", "git:git"]
+# git:git with target_sw "ruby" is the Ruby `git` gem (ruby-git), not Git: CVE-2022-25648 (9.8,
+# "The package git before 1.11.0 ... via git argument injection") — verified against stored NVD
+# data 2026-10-31. Left in, a CRITICAL range for an unrelated library sat on Git for Windows.
+cpe_exclude = [{ target_sw = "ruby" }]
 # CVE range evaluation compares the Git version this build embeds, not the served string
 # (WAL-78, ADR-008). We serve 2.55.0.5 — Git 2.55.0, Windows rebuild 5 — while the ranges on the
 # pairs above name three-component upstream Git. Without this, "< 2.56.0" matched correctly but a

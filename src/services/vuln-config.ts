@@ -41,6 +41,7 @@ export function computeVulnInput(config: PackageConfig): VulnConfigInput | null 
     osvEcosystem: v.osv?.ecosystem ?? null,
     osvName: v.osv?.name ?? null,
     cveVersionExtract: v.cve_version_extract ?? null,
+    cpeExclude: v.cpe_exclude,
   };
 }
 

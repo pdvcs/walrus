@@ -12,6 +12,7 @@ import {
   insertAffects,
 } from "../../db/queries/cves.js";
 import { listPackagesWithOsv } from "../../db/queries/package-aliases.js";
+import { markOsvSynced } from "../../db/queries/packages.js";
 import { setSyncState } from "../../db/queries/vuln-sync-state.js";
 import { config } from "../../config/index.js";
 import { createEgressFetch } from "../../common/http.js";
@@ -175,6 +176,26 @@ export async function applyOsvVulns(
   return { affectsUpserted, stubCves, skippedNoCve };
 }
 
+/**
+ * OSV cross-check for ONE package (WAL-54). Run from the targeted backfill so a newly tracked
+ * package is complete from the moment its backfill finishes, instead of waiting up to a week
+ * for the next full cross-check. Deliberately leaves the global `osv` sync state alone — like a
+ * targeted NVD backfill leaving the cursor — because one package succeeding says nothing about
+ * whether the whole cross-check is fresh. Returns null when the package has no OSV mapping.
+ */
+export async function osvSyncPackage(
+  pool: Pool,
+  packageName: string,
+  fetchFn: typeof fetch = createEgressFetch({ purpose: "vuln-feed" }),
+): Promise<{ vulns: number; affectsUpserted: number } | null> {
+  const mapping = (await listPackagesWithOsv(pool)).find((p) => p.package_name === packageName);
+  if (!mapping) return null;
+  const vulns = await queryOsvPackage(mapping.osv_ecosystem, mapping.osv_name, fetchFn);
+  const r = await applyOsvVulns(pool, packageName, mapping.osv_ecosystem, mapping.osv_name, vulns);
+  await markOsvSynced(pool, packageName);
+  return { vulns: vulns.length, affectsUpserted: r.affectsUpserted };
+}
+
 /** OSV cross-check for all packages with an OSV mapping. */
 export async function osvSyncAll(
   pool: Pool,
@@ -193,6 +214,7 @@ export async function osvSyncAll(
     try {
       const vulns = await queryOsvPackage(p.osv_ecosystem, p.osv_name, fetchFn);
       const r = await applyOsvVulns(pool, p.package_name, p.osv_ecosystem, p.osv_name, vulns);
+      await markOsvSynced(pool, p.package_name);
       result.packages++;
       result.vulns += vulns.length;
       result.affectsUpserted += r.affectsUpserted;

@@ -101,4 +101,9 @@ filename_template = "VSCode-{version}-{os}.{ext}"
 [vulnerabilities]
 # microsoft:visual_studio_code 863 entries (verified 2026-08-27).
 cpes = ["microsoft:visual_studio_code"]
+# target_sw "remote-ssh" is the Remote Development extension, installed separately from the
+# Marketplace and not part of the VS Code build walrus serves: CVE-2020-17148 (7.8, "Visual Studio
+# Code Remote Development Extension Remote Code Execution") — verified against stored NVD data
+# 2026-10-31.
+cpe_exclude = [{ target_sw = "remote-ssh" }]
 aliases = ["vscode", "vs code", "visual studio code", "code"]

@@ -71,5 +71,13 @@ url_template = "https://releases.hashicorp.com/terraform/{version}/terraform_{ve
 # hashicorp:terraform — 185 dictionary entries (verified live against the NVD CPE dictionary
 # 2026-10-07). OSV's Go ecosystem tracks the CLI module (GO-* and GHSA advisories).
 cpes = ["hashicorp:terraform"]
+# NVD files two other HashiCorp products under hashicorp:terraform, told apart only by a CPE
+# qualifier (verified against stored NVD data 2026-10-31):
+#   target_sw "enterprise"  Terraform Enterprise — CVE-2021-36230 (8.8), range "< 202107-1"
+#   sw_edition "enterprise" Terraform Enterprise — CVE-2025-13432 (4.3)
+#   target_sw "aws"         the Terraform AWS provider — CVE-2018-9057 (9.8)
+# Without these the CLI was "vulnerable" to Enterprise CVEs, with upgrade_to "202107-1".
+# CVE-2023-4782 (target_sw "-") is the CLI itself and still matches.
+cpe_exclude = [{ target_sw = "enterprise" }, { sw_edition = "enterprise" }, { target_sw = "aws" }]
 osv = { ecosystem = "Go", name = "github.com/hashicorp/terraform" }
 aliases = ["terraform", "tf", "hashicorp terraform"]

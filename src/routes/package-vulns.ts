@@ -2,12 +2,14 @@ import { Router } from "express";
 import {
   AvailabilityHistoryResponseSchema,
   PackageVulnsResponseSchema,
+  PostureResponseSchema,
   VULN_DISCLAIMER,
 } from "./schemas.js";
 import type { AvailabilityTransition } from "../services/availability-history.js";
 import { AffectsWithCveRow } from "../db/queries/cves.js";
 import { crossReferenceVersions, CachedVersionInput } from "../services/vuln-service.js";
 import { DataFreshness } from "./vulns.js";
+import type { PostureResult } from "../services/posture.js";
 
 export interface PackageVulnsRouteDeps {
   packageExists: (name: string) => Promise<boolean>;
@@ -22,6 +24,8 @@ export interface PackageVulnsRouteDeps {
    */
   listAvailabilityHistory?: (name: string, version: string) => Promise<AvailabilityTransition[]>;
   listRecentTransitions?: (name: string) => Promise<AvailabilityTransition[]>;
+  /** Posture of one package at a version (default: its latest). Null = no such package. */
+  getPosture: (name: string, version?: string) => Promise<PostureResult | null>;
 }
 
 /**
@@ -69,6 +73,21 @@ export function createPackageVulnsRouter(deps: PackageVulnsRouteDeps): Router {
           })),
         }),
       );
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get("/:name/posture", async (req, res, next) => {
+    try {
+      const name = req.params.name;
+      const version = typeof req.query.version === "string" ? req.query.version : undefined;
+      const posture = await deps.getPosture(name, version);
+      if (!posture) {
+        res.status(404).json({ error: `Unknown package: ${name}` });
+        return;
+      }
+      res.json(PostureResponseSchema.parse(posture));
     } catch (err) {
       next(err);
     }

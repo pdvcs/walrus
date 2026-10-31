@@ -12,6 +12,48 @@ export interface ParsedCpe {
   product: string;
   version: string;
   update: string;
+  edition: string;
+  language: string;
+  sw_edition: string;
+  target_sw: string;
+  target_hw: string;
+  other: string;
+}
+
+/**
+ * The CPE 2.3 components a package's `cpe_exclude` may name. These are the ones NVD uses to file
+ * a *different product* under the same vendor:product pair — Terraform Enterprise is
+ * `hashicorp:terraform` with target_sw `enterprise`, the Ruby `git` gem is `git:git` with
+ * target_sw `ruby`. Version, update and language never distinguish products, so they are not
+ * excludable.
+ */
+export const CPE_QUALIFIER_FIELDS = [
+  "edition",
+  "sw_edition",
+  "target_sw",
+  "target_hw",
+  "other",
+] as const;
+
+export type CpeQualifierField = (typeof CPE_QUALIFIER_FIELDS)[number];
+
+/** One exclusion rule: a CPE is excluded when EVERY listed component equals the given value. */
+export type CpeExclusion = Partial<Record<CpeQualifierField, string>>;
+
+/**
+ * True when the CPE matches any of the package's exclusion rules (rules are OR'd, the
+ * components within one rule are AND'd). Comparison is case-insensitive on the unescaped
+ * component; `*` (ANY) and `-` (NA) in the CPE never equal a configured value, so a rule only
+ * ever removes CPEs that explicitly name the excluded qualifier.
+ */
+export function isCpeExcluded(cpe: ParsedCpe, exclusions: readonly CpeExclusion[]): boolean {
+  return exclusions.some((rule) => {
+    const entries = Object.entries(rule) as Array<[CpeQualifierField, string]>;
+    return (
+      entries.length > 0 &&
+      entries.every(([field, value]) => cpe[field].toLowerCase() === value.toLowerCase())
+    );
+  });
 }
 
 /** Split on unescaped colons, then unescape each component. */
@@ -32,7 +74,8 @@ export function parseCpe(criteria: string): ParsedCpe | null {
   }
   comps.push(cur);
 
-  // cpe : 2.3 : part : vendor : product : version : update : ...
+  // cpe : 2.3 : part : vendor : product : version : update : edition : language : sw_edition :
+  //   target_sw : target_hw : other
   if (comps.length < 6 || comps[0] !== "cpe" || comps[1] !== "2.3") return null;
   return {
     part: comps[2],
@@ -40,6 +83,12 @@ export function parseCpe(criteria: string): ParsedCpe | null {
     product: comps[4],
     version: comps[5] ?? "*",
     update: comps[6] ?? "*",
+    edition: comps[7] ?? "*",
+    language: comps[8] ?? "*",
+    sw_edition: comps[9] ?? "*",
+    target_sw: comps[10] ?? "*",
+    target_hw: comps[11] ?? "*",
+    other: comps[12] ?? "*",
   };
 }
 

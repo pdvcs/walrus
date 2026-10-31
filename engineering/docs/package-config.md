@@ -965,6 +965,8 @@ aliases = ["openjdk", "open jdk", "jdk", "java"]
 # Only where the served version EMBEDS an upstream version rather than being one.
 # The first capture group is what CVE ranges are evaluated against (ADR-008).
 # cve_version_extract = "^(\\d+\\.\\d+\\.\\d+)"
+# Only where NVD files a DIFFERENT product under one of the pairs above. See below.
+# cpe_exclude = [{ target_sw = "enterprise" }]
 ```
 
 | Field                 | Required? | Notes                                                                               |
@@ -973,6 +975,42 @@ aliases = ["openjdk", "open jdk", "jdk", "java"]
 | `osv`                 | No        | `{ ecosystem, name }`. Enables the weekly OSV cross-check for this package.         |
 | `aliases`             | No        | Extra human synonyms. Name + display_name are auto-included.                        |
 | `cve_version_extract` | No        | Regex whose first capture is the version CVE ranges compare against. See below.     |
+| `cpe_exclude`         | No        | CPE qualifier rules whose matches are not this package's CVEs. See below.           |
+
+**`cpe_exclude` — when NVD files another product under your pair.** NVD
+sometimes uses one `vendor:product` for several products and tells them apart
+only by a later CPE component. Terraform Enterprise is `hashicorp:terraform`
+with `target_sw` `enterprise`. The Terraform AWS provider is the same pair with
+`target_sw` `aws`. The Ruby `git` gem is `git:git` with `target_sw` `ruby`.
+Matching on the pair alone attributes those CVEs to the CLI and to Git for
+Windows, including CRITICAL ones the download gate acts on.
+
+Each rule names one or more of `edition`, `sw_edition`, `target_sw`,
+`target_hw`, `other`. A CPE is excluded for this package when every component in
+some rule equals its value (case-insensitive). Rules are OR'd:
+
+```toml
+cpe_exclude = [{ target_sw = "enterprise" }, { sw_edition = "enterprise" }, { target_sw = "aws" }]
+```
+
+- **Per package, not per pair.** If another package tracks the same pair
+  without the rule, the CVE is still attributed there.
+- **`*` and `-` never match a rule**, so an unqualified CPE, or one with NA in
+  that component, keeps matching. CVE-2023-4782 names the Terraform CLI with
+  `target_sw` `-` and is unaffected by the rules above.
+- **Applied twice:** at NVD ingestion, and on every boot to rows already
+  stored. A new rule therefore removes existing false positives immediately,
+  without waiting for NVD to modify the CVE.
+
+Set it only with evidence. Many qualifiers name the _same_ product: nodejs's
+`sw_edition` `lts` is the release line, bat and mise's `target_sw` `rust` is
+their implementation language, and python's `target_hw` `x64` is a platform.
+Excluding those would silently drop real advisories, which is why there is no
+blanket "ignore qualified CPEs" rule. Exclusion removes advisories, so cite the
+CVE that shows the qualifier names another product in a comment beside the
+rule, as `walrus-terraform.toml` does. To find candidates, look for non-`*`
+qualifiers on a package's stored NVD rows (`raw_cpe` in `cve_affects`), then
+read those CVEs' descriptions.
 
 **`cve_version_extract` — when the served version is not the version CVEs name
 (ADR-008).** Most packages serve the same version NVD names, and must not set

@@ -21,6 +21,8 @@ import { loadAllPackages } from "../src/services/package-registry.js";
 import { reconcileAllPackageVulns } from "../src/services/vuln-config.js";
 import { withVulnSyncLock } from "../src/vuln/sync/lock.js";
 import { runVulnBackfillJob } from "../src/services/vuln-backfill.js";
+import { hashCpePairs, markBackfillComplete } from "../src/services/vuln-backfill-autostart.js";
+import { osvSyncPackage } from "../src/vuln/sync/osv-sync.js";
 
 /**
  * `--package <name>`: restrict the walk to one package's CPE pairs. Note that a
@@ -115,6 +117,22 @@ async function main(): Promise<void> {
       console.log(
         "  Note: a targeted backfill does not advance the nvd-cve cursor — run a full " +
           "backfill for that.",
+      );
+      // Same follow-through as runVulnBackfillJob, so a manual run leaves the package in the
+      // state posture reads as covered: OSV read, and the CPE set recorded as backfilled.
+      try {
+        const osv = await osvSyncPackage(pool, packageName);
+        if (osv)
+          console.log(`  OSV: ${osv.vulns} advisories, ${osv.affectsUpserted} affects rows.`);
+      } catch (err) {
+        console.warn(
+          `  ⚠ OSV sync failed (${err instanceof Error ? err.message : String(err)}); the weekly sync will retry.`,
+        );
+      }
+      await markBackfillComplete(
+        pool,
+        packageName,
+        hashCpePairs(await listDistinctCpePairs(pool, packageName)),
       );
     }
   } catch (err) {

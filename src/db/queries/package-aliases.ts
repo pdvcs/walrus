@@ -1,6 +1,6 @@
 import { Pool } from "pg";
 import { Queryable } from "../queryable.js";
-import { parseCpe } from "../../vuln/cpe.js";
+import { isCpeExcluded, parseCpe, type CpeExclusion } from "../../vuln/cpe.js";
 
 // ── Shapes ──────────────────────────────────────────────────────────────────
 
@@ -24,6 +24,8 @@ export interface VulnConfigInput {
   osvName: string | null;
   /** ADR-008: regex whose first capture yields the version used for CVE ranges. */
   cveVersionExtract: string | null;
+  /** CPEs matching any rule are not attributed to this package (see `isCpeExcluded`). */
+  cpeExclude?: CpeExclusion[];
 }
 
 export interface OsvPackageRow {
@@ -98,11 +100,19 @@ export async function reconcilePackageVuln(pool: Pool, input: VulnConfigInput): 
       ],
     );
 
-    // OSV mapping and CVE version normalisation on the package row.
+    // OSV mapping, CVE version normalisation and CPE exclusions on the package row.
+    const cpeExclude = input.cpeExclude ?? [];
     await client.query(
-      `UPDATE packages SET osv_ecosystem = $2, osv_name = $3, cve_version_extract = $4
+      `UPDATE packages SET osv_ecosystem = $2, osv_name = $3, cve_version_extract = $4,
+              cpe_exclude = $5::jsonb
        WHERE name = $1`,
-      [input.packageName, input.osvEcosystem, input.osvName, input.cveVersionExtract],
+      [
+        input.packageName,
+        input.osvEcosystem,
+        input.osvName,
+        input.cveVersionExtract,
+        cpeExclude.length > 0 ? JSON.stringify(cpeExclude) : null,
+      ],
     );
 
     // Affects rows must derive from the current config: without an OSV mapping
@@ -114,7 +124,7 @@ export async function reconcilePackageVuln(pool: Pool, input: VulnConfigInput): 
         input.packageName,
       ]);
     }
-    await deleteNvdAffectsForRemovedCpes(client, input.packageName, input.cpes);
+    await deleteNvdAffectsForRemovedCpes(client, input.packageName, input.cpes, cpeExclude);
 
     await client.query("COMMIT");
   } catch (err) {
@@ -126,15 +136,18 @@ export async function reconcilePackageVuln(pool: Pool, input: VulnConfigInput): 
 }
 
 /**
- * Delete a package's 'nvd' affects rows whose CPE pair is no longer configured.
- * Rows are attributed to pairs by parsing raw_cpe (criteria plus optional
- * `|range` suffix, exactly as extractAffects builds it); a row we cannot
- * attribute to any current pair cannot be rebuilt by the NVD sync, so it goes.
+ * Delete a package's 'nvd' affects rows whose CPE pair is no longer configured, or which a
+ * `cpe_exclude` rule now excludes. Rows are attributed to pairs by parsing raw_cpe (criteria plus
+ * optional `|range` suffix, exactly as extractAffects builds it); a row we cannot attribute to
+ * any current pair cannot be rebuilt by the NVD sync, so it goes. Excluded rows go for the same
+ * reason in reverse: ingestion would never write them now, and incremental sync only rebuilds a
+ * CVE when NVD modifies it, so without this a new rule would leave old false positives in place.
  */
 async function deleteNvdAffectsForRemovedCpes(
   q: Queryable,
   packageName: string,
   cpes: CpePair[],
+  exclusions: readonly CpeExclusion[] = [],
 ): Promise<void> {
   const { rows } = await q.query<{ raw_cpe: string }>(
     `SELECT DISTINCT raw_cpe FROM cve_affects
@@ -147,7 +160,11 @@ async function deleteNvdAffectsForRemovedCpes(
     .filter((rawCpe) => {
       const sep = rawCpe.lastIndexOf("|");
       const parsed = parseCpe(sep >= 0 ? rawCpe.slice(0, sep) : rawCpe) ?? parseCpe(rawCpe);
-      return !parsed || !current.has(`${parsed.vendor}:${parsed.product}`);
+      return (
+        !parsed ||
+        !current.has(`${parsed.vendor}:${parsed.product}`) ||
+        isCpeExcluded(parsed, exclusions)
+      );
     });
   if (stale.length > 0) {
     await q.query(
@@ -169,7 +186,8 @@ export async function clearPackageVulnConfig(pool: Pool, packageName: string): P
     );
     await client.query(`DELETE FROM package_cpes WHERE package_name = $1`, [packageName]);
     await client.query(
-      `UPDATE packages SET osv_ecosystem = NULL, osv_name = NULL, cve_version_extract = NULL
+      `UPDATE packages SET osv_ecosystem = NULL, osv_name = NULL, cve_version_extract = NULL,
+              cpe_exclude = NULL
        WHERE name = $1`,
       [packageName],
     );
@@ -216,6 +234,19 @@ export async function loadCpeLookup(q: Queryable): Promise<Map<string, string[]>
     map.set(key, list);
   }
   return map;
+}
+
+/**
+ * Package name → its `cpe_exclude` rules, for packages that have any (NVD ingestion join).
+ * Companion to `loadCpeLookup`: the lookup says which packages a pair belongs to, this says
+ * which of that pair's CPEs a given package must not be attributed.
+ */
+export async function loadCpeExclusions(q: Queryable): Promise<Map<string, CpeExclusion[]>> {
+  const { rows } = await q.query<{ name: string; cpe_exclude: CpeExclusion[] }>(
+    `SELECT name, cpe_exclude FROM packages
+     WHERE cpe_exclude IS NOT NULL AND jsonb_array_length(cpe_exclude) > 0`,
+  );
+  return new Map(rows.map((r) => [r.name, r.cpe_exclude]));
 }
 
 /**

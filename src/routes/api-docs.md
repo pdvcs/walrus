@@ -618,7 +618,15 @@ curl 'http://localhost:8080/api/v1/packages/openjdk/vulns'
     {
       "version": "11.0.2",
       "version_group": "11",
-      "counts": { "total": 12, "critical": 1, "high": 6, "medium": 5, "low": 0, "kev": 0 },
+      "counts": {
+        "total": 12,
+        "critical": 1,
+        "high": 6,
+        "medium": 5,
+        "low": 0,
+        "unrated": 0,
+        "kev": 0
+      },
       "vulns": [
         {
           "cve_id": "…",
@@ -638,6 +646,79 @@ curl 'http://localhost:8080/api/v1/packages/openjdk/vulns'
 
 Suppressed CVEs remain in each version's `vulns` array and carry the active assertion in
 `suppression`; they do not make that version's download status blocked.
+
+### GET /api/v1/packages/:name/posture?version= | Vulnerability posture of a version
+
+The question "what is the vulnerability situation of **this version** of this package?", answered
+as a verdict plus the evidence. Works for any tracked package and any version; the version does
+not need to be cached. Omit `version` to assess the package's **latest** (its newest cached
+version). Unknown package → **404**.
+
+```bash
+curl 'http://localhost:8080/api/v1/packages/golang/posture?version=1.22.0'
+```
+
+```json
+{
+  "package": "golang",
+  "version": "1.22.0",
+  "version_source": "requested",
+  "latest_version": "1.27.0",
+  "is_latest": false,
+  "status": "vulnerable",
+  "unknown_reasons": [],
+  "coverage": { "nvd": "complete", "osv": "complete" },
+  "counts": {
+    "total": 92,
+    "critical": 7,
+    "high": 43,
+    "medium": 40,
+    "low": 2,
+    "unrated": 0,
+    "kev": 0
+  },
+  "unfixed": 0,
+  "upgrade_to": "1.26.10",
+  "vulns": [
+    {
+      "cve_id": "CVE-2024-24790",
+      "severity": "CRITICAL",
+      "fixed_in": "1.22.4",
+      "is_kev": false,
+      "confirmed": true,
+      "affected": {
+        "range": ">= 1.22.0-0, < 1.22.4",
+        "matched_because": "1.22.0 >= 1.22.0-0 and 1.22.0 < 1.22.4"
+      }
+    }
+  ]
+}
+```
+
+`status` is one of:
+
+- **`clean`** — no advisory affects this version, **and** that claim is defensible: the package is
+  tracked, every configured source has actually been read for it, the version parses, and every
+  advisory range could be evaluated.
+- **`vulnerable`** — at least one advisory's range matched. `counts` and `vulns` say how many and
+  which; `upgrade_to` is the lowest version expected to clear all of them (null if any matching
+  advisory has no known fix; `unfixed` counts those).
+- **`unknown`** — a verdict cannot be given. **Never treat this as a pass.** `unknown_reasons`
+  names why: `no-version` (none given and none cached), `version-unparseable`, `not-tracked` (no
+  CPE pairs and no OSV mapping), `coverage-incomplete` (a configured source has not been read for
+  this package yet — see `coverage`; a newly added package is `unknown` until its backfill
+  finishes, not `clean`), or `inconclusive-ranges` (an advisory was listed but could not be
+  compared to this version).
+
+`vulnerable` stands even when coverage is incomplete, because more data can only add to it.
+`counts` covers only evaluated (`confirmed`) advisories; an unconfirmed one is listed with
+`confirmed: false` and never changes the verdict by itself. `unrated` counts advisories that have
+no severity yet — common for OSV-only advisories NVD has not analysed — so
+`total = critical + high + medium + low + unrated`. Suppressed CVEs are still listed and counted
+(they carry their `suppression`); suppression only affects the download gate.
+
+The `latest_version_checked_at` and `latest_version_error` fields are always null for a served
+package.
 
 ### GET /api/v1/packages/:name/availability | Package availability history
 

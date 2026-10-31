@@ -4,10 +4,26 @@ import { PackageRow } from "../../types/db.js";
 export async function upsertPackage(
   pool: Pool,
   // removed_at is deliberately absent: new rows are never tombstones, and a conflict
-  // update must not clobber an existing row's removal marker.
+  // update must not clobber an existing row's removal marker. watch_only is likewise owned
+  // by reconcile (ensurePackage); a sync of a served package must not touch it.
   // cve_version_extract is excluded deliberately: it is owned by reconcilePackageVuln
   // (ADR-008), which runs alongside this upsert, so a sync must not reset it to undefined.
-  pkg: Omit<PackageRow, "created_at" | "updated_at" | "removed_at" | "cve_version_extract">,
+  pkg: Omit<
+    PackageRow,
+    | "created_at"
+    | "updated_at"
+    | "removed_at"
+    | "watch_only"
+    | "cve_version_extract"
+    | "cpe_exclude"
+    | "latest_version"
+    | "latest_version_checked_at"
+    | "latest_version_error"
+    | "osv_synced_at"
+    | "osv_ecosystem"
+    | "osv_name"
+    | "vuln_backfill_completed_at"
+  >,
 ): Promise<PackageRow> {
   const { rows } = await pool.query<PackageRow>(
     `INSERT INTO packages (name, display_name, vendor, description, website, config_hash, enabled)
@@ -67,6 +83,11 @@ export async function listPackages(pool: Pool, enabledOnly = false): Promise<Pac
       : "SELECT * FROM packages ORDER BY name",
   );
   return rows;
+}
+
+/** Mark that OSV has been consulted for this package (see migration 0020). */
+export async function markOsvSynced(pool: Pool, name: string): Promise<void> {
+  await pool.query("UPDATE packages SET osv_synced_at = now() WHERE name = $1", [name]);
 }
 
 export async function setPackageEnabled(pool: Pool, name: string, enabled: boolean): Promise<void> {

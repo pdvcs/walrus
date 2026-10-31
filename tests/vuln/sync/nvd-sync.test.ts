@@ -701,3 +701,52 @@ describe("CPE version NA vs ANY (WAL-69)", () => {
     });
   });
 });
+
+describe("cpe_exclude at ingestion", () => {
+  /** Shaped after CVE-2021-36230: Terraform Enterprise filed under hashicorp:terraform. */
+  const item = (criteria: string) =>
+    ({
+      cve: {
+        id: "CVE-2021-36230",
+        configurations: [
+          {
+            nodes: [
+              {
+                operator: "OR",
+                negate: false,
+                cpeMatch: [{ vulnerable: true, criteria, versionEndExcluding: "202107-1" }],
+              },
+            ],
+          },
+        ],
+      },
+    }) as unknown as Parameters<typeof extractAffects>[0];
+  const ENTERPRISE = "cpe:2.3:a:hashicorp:terraform:*:*:*:*:*:enterprise:*:*";
+  const CLI = "cpe:2.3:a:hashicorp:terraform:*:*:*:*:*:*:*:*";
+
+  it("withholds an excluded CPE from the package that excludes it", () => {
+    const lookup = new Map([["hashicorp:terraform", ["terraform"]]]);
+    const exclusions = new Map([["terraform", [{ target_sw: "enterprise" }]]]);
+    expect(extractAffects(item(ENTERPRISE), lookup, exclusions).rows).toEqual([]);
+    // Not an untracked CPE: the pair is tracked, this package just declines it.
+    expect(extractAffects(item(ENTERPRISE), lookup, exclusions).skippedCpes).toBe(0);
+  });
+
+  it("still attributes the unqualified CPE", () => {
+    const lookup = new Map([["hashicorp:terraform", ["terraform"]]]);
+    const exclusions = new Map([["terraform", [{ target_sw: "enterprise" }]]]);
+    expect(extractAffects(item(CLI), lookup, exclusions).rows).toHaveLength(1);
+  });
+
+  it("is per package: a sharer of the pair without the rule still gets the row", () => {
+    const lookup = new Map([["hashicorp:terraform", ["terraform", "tfe"]]]);
+    const exclusions = new Map([["terraform", [{ target_sw: "enterprise" }]]]);
+    const { rows } = extractAffects(item(ENTERPRISE), lookup, exclusions);
+    expect(rows.map((r) => r.package_name)).toEqual(["tfe"]);
+  });
+
+  it("matches as before when no exclusions are passed", () => {
+    const lookup = new Map([["hashicorp:terraform", ["terraform"]]]);
+    expect(extractAffects(item(ENTERPRISE), lookup).rows).toHaveLength(1);
+  });
+});

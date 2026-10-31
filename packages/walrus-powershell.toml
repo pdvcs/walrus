@@ -119,6 +119,10 @@ filename_template = "powershell-{version}-{os}-{arch}.{ext}"
 # product name NVD used through 7.1; kept as a secondary so older CVE configurations still
 # resolve. powershell_project:powershell has no entries.
 cpes = ["microsoft:powershell", "microsoft:powershell_core"]
+# target_sw "visual_studio_code" is the PowerShell extension for VS Code (PowerShell Editor
+# Services), not PowerShell itself: CVE-2018-8327 (9.8) — verified against stored NVD data
+# 2026-10-31.
+cpe_exclude = [{ target_sw = "visual_studio_code" }]
 # NuGet "PowerShell" is the official PowerShell global tool — authors Microsoft, projectUrl
 # this repo, versions tracking releases exactly (upper 7.6.6), verified 2026-09-12 so it is
 # not a namesake package. Only one advisory today (GHSA-jcmq-5rrv-j2g4 / CVE-2020-0605,

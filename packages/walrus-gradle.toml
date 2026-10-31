@@ -67,4 +67,8 @@ extension = "zip"
 # gradle:gradle — freshly added for walrus; awaiting NVD CPE dictionary verification
 # (WAL-3 MANUAL_TEST, PO sign-off).
 cpes = ["gradle:gradle"]
+# sw_edition "enterprise" is Gradle Enterprise (now Develocity), the build-scan server, not the
+# build tool walrus serves: CVE-2021-41584/41586/41587/41588 and CVE-2022-30586 (7.2-8.1) all name
+# "Gradle Enterprise" (verified against stored NVD data 2026-10-31).
+cpe_exclude = [{ sw_edition = "enterprise" }]
 aliases = ["gradle", "gradle build tool"]

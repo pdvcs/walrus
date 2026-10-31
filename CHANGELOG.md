@@ -44,6 +44,28 @@ with its own test suite.
   declares.
 - **`npm run vuln:ingest-all`** ingests CVEs for every tracked package over the API, and the admin
   package list can be filtered by first letter.
+- **WAL-54 (Added):** `GET /api/v1/packages/:name/posture?version=` answers "what is the vulnerability
+  posture of this version?" for any tracked package: `clean`, `vulnerable` or `unknown`, with
+  severity counts, each advisory and its fix, and `upgrade_to`. `clean` is only returned once every
+  configured source has been read for the package; otherwise the answer is `unknown`, with the
+  reasons. Omitting `version` assesses the newest cached version.
+- **WAL-54 (Added):** per-package OSV coverage marker `packages.osv_synced_at` (migration `0020`),
+  set whenever OSV is queried for a package. A targeted backfill now also reads OSV for that
+  package, so a newly tracked package is fully covered when its backfill finishes. Vuln counts gain
+  `unrated` (advisories with no severity yet). Migrations `0019` and `0020` are shared verbatim
+  with the watch-only packages work, so their watch columns (`watch_only`, `latest_version*`) are
+  present but unused until that lands.
+- **Fixed:** NVD advisories for a different product filed under a tracked CPE pair were attributed
+  to the package. NVD tells such products apart only by a CPE qualifier, which walrus ignored:
+  Terraform Enterprise and the Terraform AWS provider are `hashicorp:terraform` with `target_sw`
+  `enterprise` / `aws`, so the Terraform CLI showed their CVEs, with `upgrade_to: 202107-1`.
+  `[vulnerabilities].cpe_exclude` (migration `0021`) declares the qualifiers that name another
+  product. It applies at ingestion, and on boot it deletes rows already stored. Rules ship for:
+  - `terraform`: Enterprise and AWS provider, including CVE-2018-9057 (9.8).
+  - `gitwindows`: the Ruby `git` gem, CVE-2022-25648 (9.8).
+  - `powershell`: the VS Code extension, CVE-2018-8327 (9.8).
+  - `gradle`: Gradle Enterprise, five CVEs.
+  - `vscode`: the Remote Development extension.
 
 ## Version 0.2.0: Vulnerability intelligence
 
