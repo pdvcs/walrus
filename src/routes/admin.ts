@@ -14,23 +14,65 @@ import { getStrategy, DiscoveredVersion } from "../discovery/index.js";
 import { PackageConfigSchema, PackageConfig } from "../types/package-config.js";
 import { sortVersionsDesc } from "../common/version-utils.js";
 import { defaultCpeProbe, CpeVerifyResult } from "../vuln/cpe-verify.js";
-import { BASE_PAGE_STYLES, renderAdminNav, type AdminNavItem } from "./page-shell.js";
+import {
+  BASE_PAGE_STYLES,
+  renderAdminNav,
+  renderPublicNav,
+  type AdminNavItem,
+} from "./page-shell.js";
 import { getEgressState, matchEgressRule } from "../common/egress-rules.js";
 import { withBase } from "../common/base-path.js";
 import { log } from "../common/log.js";
 import type { CoolingOffWaiverRow } from "../db/queries/cooling-off-waivers.js";
 import { CoolingOffWaiverRejectedError } from "../services/cooling-off-waiver-service.js";
 
-interface VersionDetail {
+export interface VersionDetail {
   version: string;
   versionId: number;
   isLts: boolean;
   artifacts: ArtifactRow[];
 }
 
-interface GroupDetail {
+export interface GroupDetail {
   name: string;
   versions: VersionDetail[];
+}
+
+/** Which audience a shared renderer is producing HTML for. Viewer output carries no actions. */
+export type PageMode = "admin" | "viewer";
+
+/** The read-only slice of deps that loads everything a package detail page shows. */
+export interface PackageDetailLoaderDeps {
+  listVersionGroupNamesForPackage: (packageName: string) => Promise<string[]>;
+  listVersionsInGroup: (packageName: string, group: string) => Promise<VersionRow[]>;
+  listArtifactsForVersionId: (versionId: number) => Promise<ArtifactRow[]>;
+}
+
+/**
+ * Groups -> versions -> artifacts for one package. Shared by the admin and the public viewer
+ * route so both pages are built from the same rows.
+ */
+export async function loadPackageGroups(
+  deps: PackageDetailLoaderDeps,
+  packageName: string,
+): Promise<GroupDetail[]> {
+  const groupNames = await deps.listVersionGroupNamesForPackage(packageName);
+  const groups: GroupDetail[] = [];
+  for (const groupName of groupNames) {
+    const versions = await deps.listVersionsInGroup(packageName, groupName);
+    const versionDetails: VersionDetail[] = [];
+    for (const ver of versions) {
+      const artifacts = await deps.listArtifactsForVersionId(ver.id);
+      versionDetails.push({
+        version: ver.version,
+        versionId: ver.id,
+        isLts: ver.is_lts,
+        artifacts,
+      });
+    }
+    groups.push({ name: groupName, versions: versionDetails });
+  }
+  return groups;
 }
 
 export interface AdminRouteDeps {
@@ -931,30 +973,14 @@ export function createAdminRouter(deps: AdminRouteDeps, basePath: string): Route
         return;
       }
 
-      const [allDbPackages, recentJobs, groupNames] = await Promise.all([
+      const [allDbPackages, recentJobs, groups] = await Promise.all([
         deps.listAllPackages(),
         deps.listJobs({ packageName, limit: 1 }),
-        deps.listVersionGroupNamesForPackage(packageName),
+        loadPackageGroups(deps, packageName),
       ]);
 
       const pkg = allDbPackages.find((p) => p.name === packageName) ?? null;
       const lastJob = recentJobs[0] ?? null;
-
-      const groups: GroupDetail[] = [];
-      for (const groupName of groupNames) {
-        const versions = await deps.listVersionsInGroup(packageName, groupName);
-        const versionDetails: VersionDetail[] = [];
-        for (const ver of versions) {
-          const artifacts = await deps.listArtifactsForVersionId(ver.id);
-          versionDetails.push({
-            version: ver.version,
-            versionId: ver.id,
-            isLts: ver.is_lts,
-            artifacts,
-          });
-        }
-        groups.push({ name: groupName, versions: versionDetails });
-      }
 
       const vulnBadges = await deps.getPackageVulnBadges(packageName);
       const waivers = deps.coolingOffWaivers
@@ -1207,13 +1233,62 @@ export function renderSharedHtml(
   scripts = "",
   rawTail = "",
 ): string {
+  return renderShell({
+    title,
+    nav: renderAdminNav(basePath, activeNav),
+    body,
+    basePath,
+    scripts,
+    rawTail,
+    suffix: "Walrus Admin",
+    adminChrome: true,
+  });
+}
+
+/**
+ * Same page chrome and CSS as the admin pages, for the unauthenticated viewer routes. Differs
+ * only where the admin shell talks to operator-only endpoints: no degradation banner (it is
+ * driven by /app/status, which is public, but its wording addresses operators) and the public
+ * nav instead of the admin nav, whose suppression chip would fetch an endpoint that answers 401.
+ */
+export function renderViewerHtml(
+  title: string,
+  activeNav: "packages" | "vulns" | undefined,
+  body: string,
+  basePath: string,
+  scripts = "",
+  rawTail = "",
+): string {
+  return renderShell({
+    title,
+    nav: renderPublicNav(basePath, activeNav),
+    body,
+    basePath,
+    scripts,
+    rawTail,
+    suffix: "Walrus",
+    adminChrome: false,
+  });
+}
+
+function renderShell(opts: {
+  title: string;
+  nav: string;
+  body: string;
+  basePath: string;
+  scripts: string;
+  rawTail: string;
+  suffix: string;
+  adminChrome: boolean;
+}): string {
+  const { title, nav, body, basePath, scripts, rawTail, adminChrome } = opts;
   const e = escHtml;
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${e(title)} — Walrus Admin</title>
+  <title>${e(title)} — ${e(opts.suffix)}</title>
   <style>
     ${BASE_PAGE_STYLES}
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1273,18 +1348,36 @@ export function renderSharedHtml(
     .degraded-banner ul { margin: 6px 0 0 18px; }
     .degraded-banner li { margin-top: 2px; }
     .degraded-banner code { background: #fde68a; padding: 0 4px; border-radius: 4px; font-size: 0.8em; }
+  ${adminChrome ? "" : VIEWER_ACCENT_CSS}
   </style>
 </head>
 <body>
-  ${renderAdminNav(basePath, activeNav)}
-  <div id="degraded-banner"></div>
+  ${nav}
+  ${adminChrome ? `<div id="degraded-banner"></div>` : ""}
   <div class="wrap">
     ${body}
   </div>
 <script>
 ${scripts}
 </script>
-<script>
+${adminChrome ? DEGRADATION_BANNER_SCRIPT(basePath) : ""}${rawTail}
+</body>
+</html>`;
+}
+
+/**
+ * Viewer pages share the admin pages' CSS, so a teal bar and page tint back up the day-scene
+ * logo in telling an operator they have landed on the public view. Kept small on purpose -- it
+ * is a signpost, not a second design.
+ */
+const VIEWER_ACCENT_CSS = `
+    body { background: #f1f6f6; }
+    .nav { border-top: 4px solid #0d9488; }
+    .btn-primary { background: #0d9488; }
+    .btn-primary:hover { background: #0f766e; }
+    body .filter-btn.active, body .filter-chip.filter-on { background: #0d9488; border-color: #0d9488; }`;
+
+const DEGRADATION_BANNER_SCRIPT = (basePath: string): string => `<script>
 // health-degradation-ui:start
 // Degradation banner (PO decision 2026-08-26): walrus's vulnerability ingestion runs
 // unattended, so the admin homepage is where an operator learns it has stopped working.
@@ -1307,10 +1400,7 @@ ${scripts}
   } catch (e) { /* the banner must never break an admin page */ }
 })();
 // health-degradation-ui:end
-</script>${rawTail}
-</body>
-</html>`;
-}
+</script>`;
 
 function computeRetentionPlan(
   versions: DiscoveredVersion[],
@@ -1512,14 +1602,17 @@ function renderValidatePage(configuredPackages: string[], basePath: string): str
   );
 }
 
-function renderDashboardPage(
+export function renderDashboardPage(
   configuredPackages: string[],
   packageMap: Map<string, PackageRow>,
   lastJobByPackage: Map<string, SyncJobRow>,
   configMeta: Map<string, { display_name: string; vendor: string }>,
   basePath: string,
+  mode: PageMode = "admin",
 ): string {
   const esc = escHtml;
+  const viewer = mode === "viewer";
+  const detailBase = withBase(basePath, viewer ? "/packages/" : "/admin/v1/packages/");
 
   const initialOf = (name: string): string => {
     const c = name.charAt(0).toUpperCase();
@@ -1535,6 +1628,17 @@ function renderDashboardPage(
       const vendor = pkg ? esc(pkg.vendor) : esc(meta?.vendor ?? "—");
       const enabled = pkg?.enabled ?? true;
       const enabledBadge = `<span class="badge badge-${enabled ? "enabled" : "disabled"}">${enabled ? "enabled" : "disabled"}</span>`;
+      if (viewer) {
+        // A viewer sees freshness, not job internals: no status badge, no job link.
+        const synced = lastJob
+          ? `<span style="color:#9ca3af;font-size:0.78rem">${fmtAge(lastJob.started_at)}</span>`
+          : `<span style="color:#9ca3af;font-size:0.78rem">never</span>`;
+        return `<tr data-initial="${initialOf(name)}">
+        <td><a href="${detailBase}${esc(name)}">${displayName}</a></td>
+        <td>${vendor}</td>
+        <td>${synced}</td>
+      </tr>`;
+      }
       const jobHtml = lastJob
         ? `<a href="${withBase(basePath, "/admin/v1/jobs/")}${lastJob.id}" class="badge badge-${esc(lastJob.status)}">${esc(lastJob.status)}</a> <span style="color:#9ca3af;font-size:0.78rem">${fmtAge(lastJob.started_at)}</span>`
         : `<span style="color:#9ca3af;font-size:0.78rem">never</span>`;
@@ -1544,7 +1648,7 @@ function renderDashboardPage(
         : `<button class="btn btn-sm btn-primary" onclick="syncPkg('${esc(name)}')">Sync</button>`;
       const toggleBtn = `<button class="btn btn-sm btn-secondary" onclick="toggleEnabled('${esc(name)}',${enabled})">${enabled ? "Disable" : "Enable"}</button>`;
       return `<tr data-initial="${initialOf(name)}">
-        <td><a href="${withBase(basePath, "/admin/v1/packages/")}${esc(name)}">${displayName}</a></td>
+        <td><a href="${detailBase}${esc(name)}">${displayName}</a></td>
         <td>${vendor}</td>
         <td>${enabledBadge}</td>
         <td>${jobHtml}</td>
@@ -1568,7 +1672,11 @@ function renderDashboardPage(
     configuredPackages.length === 0
       ? `<p class="empty">No packages configured.</p>`
       : `<table>
-        <thead><tr><th>Package</th><th>Vendor</th><th>Status</th><th>Last Sync</th><th>Actions</th></tr></thead>
+        <thead><tr>${
+          viewer
+            ? "<th>Package</th><th>Vendor</th><th>Last synced</th>"
+            : "<th>Package</th><th>Vendor</th><th>Status</th><th>Last Sync</th><th>Actions</th>"
+        }</tr></thead>
         <tbody>${rows}</tbody>
       </table>`;
 
@@ -1577,11 +1685,32 @@ function renderDashboardPage(
   const body = `
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
       <h1 style="margin-bottom:0">Packages</h1>
-      <button class="btn btn-primary" onclick="syncAll()">Sync All</button>
+      ${viewer ? "" : `<button class="btn btn-primary" onclick="syncAll()">Sync All</button>`}
     </div>
     ${filterBar}
     ${tableHtml}
     <div id="msg"></div>`;
+
+  const filterScript = `
+    function filterRows(initial) {
+      document.querySelectorAll('.filter-btn').forEach((b) => {
+        b.classList.toggle('active', b.dataset.filter === initial);
+      });
+      document.querySelectorAll('tbody tr[data-initial]').forEach((tr) => {
+        tr.style.display = (initial === 'all' || tr.dataset.initial === initial) ? '' : 'none';
+      });
+    }`;
+
+  const styleTail = `<style>
+    .filter-bar { display:flex; flex-wrap:wrap; gap:4px; margin-top:12px; }
+    .filter-btn { padding:4px 9px; border-radius:6px; border:1px solid #e5e7eb; background:#fff; color:#374151; font-size:0.8rem; font-weight:600; cursor:pointer; font-family:inherit; }
+    .filter-btn:hover { background:#f3f4f6; }
+    .filter-btn.active { background:#1d4ed8; border-color:#1d4ed8; color:#fff; }
+  </style>`;
+
+  if (viewer) {
+    return renderViewerHtml("Packages", "packages", body, basePath, filterScript, styleTail);
+  }
 
   const scripts = `
     async function syncPkg(name) {
@@ -1614,26 +1743,12 @@ function renderDashboardPage(
       } catch(e) { alert('Error: ' + e.message); }
     }
     ${hasRunning ? "setInterval(() => location.reload(), 5000);" : ""}
-    function filterRows(initial) {
-      document.querySelectorAll('.filter-btn').forEach((b) => {
-        b.classList.toggle('active', b.dataset.filter === initial);
-      });
-      document.querySelectorAll('tbody tr[data-initial]').forEach((tr) => {
-        tr.style.display = (initial === 'all' || tr.dataset.initial === initial) ? '' : 'none';
-      });
-    }`;
-
-  const styleTail = `<style>
-    .filter-bar { display:flex; flex-wrap:wrap; gap:4px; margin-top:12px; }
-    .filter-btn { padding:4px 9px; border-radius:6px; border:1px solid #e5e7eb; background:#fff; color:#374151; font-size:0.8rem; font-weight:600; cursor:pointer; font-family:inherit; }
-    .filter-btn:hover { background:#f3f4f6; }
-    .filter-btn.active { background:#1d4ed8; border-color:#1d4ed8; color:#fff; }
-  </style>`;
+    ${filterScript}`;
 
   return renderSharedHtml("Packages", "packages", body, basePath, scripts, styleTail);
 }
 
-function renderPackageDetailPage(
+export function renderPackageDetailPage(
   packageName: string,
   pkg: PackageRow | null,
   lastJob: SyncJobRow | null,
@@ -1641,27 +1756,51 @@ function renderPackageDetailPage(
   vulnBadges: { tracked: boolean; byVersion: Record<string, VersionVulnBadge> },
   waivers: CoolingOffWaiverRow[] | null,
   basePath: string,
+  mode: PageMode = "admin",
 ): string {
   const esc = escHtml;
+  const viewer = mode === "viewer";
   const displayName = pkg ? esc(pkg.display_name) : esc(packageName);
   const vendor = pkg ? esc(pkg.vendor) : "—";
   const enabled = pkg?.enabled ?? true;
   const isRunning = lastJob?.status === "running";
 
-  const lastSyncHtml = lastJob
-    ? `Last sync: <a href="${withBase(basePath, "/admin/v1/jobs/")}${lastJob.id}"><span class="badge badge-${esc(lastJob.status)}">${esc(lastJob.status)}</span></a> ${fmtAge(lastJob.started_at)}`
-    : "Never synced";
+  const lastSyncHtml = viewer
+    ? lastJob
+      ? `Last synced ${fmtAge(lastJob.started_at)}`
+      : "Not synced yet"
+    : lastJob
+      ? `Last sync: <a href="${withBase(basePath, "/admin/v1/jobs/")}${lastJob.id}"><span class="badge badge-${esc(lastJob.status)}">${esc(lastJob.status)}</span></a> ${fmtAge(lastJob.started_at)}`
+      : "Never synced";
+
+  const websiteHtml = pkg?.website
+    ? ` · <a href="${esc(pkg.website)}" target="_blank" rel="noopener">${esc(pkg.website)}</a>`
+    : "";
+
+  if (viewer) {
+    const groupsHtml =
+      groups.length === 0
+        ? `<p class="empty">No versions are available yet.</p>`
+        : groups
+            .map((g) => renderGroupSection(packageName, g, vulnBadges, false, basePath, "viewer"))
+            .join("");
+    const viewerBody = `
+    <div style="margin-bottom:16px"><a href="${withBase(basePath, "/packages")}">← Back to packages</a></div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+      <h1 style="margin-bottom:0">${displayName}</h1>
+    </div>
+    <p class="meta">Vendor: <strong>${vendor}</strong>${websiteHtml} · ${lastSyncHtml}</p>
+    ${groupsHtml}`;
+    return renderViewerHtml(displayName, "packages", viewerBody, basePath);
+  }
 
   const headerHtml = `
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
       <h1 style="margin-bottom:0">${displayName}</h1>
       <span class="badge badge-${enabled ? "enabled" : "disabled"}">${enabled ? "enabled" : "disabled"}</span>
+      <a class="meta" style="margin-bottom:0" href="${withBase(basePath, "/packages/")}${esc(packageName)}">Public view</a>
     </div>
-    <p class="meta">Vendor: <strong>${vendor}</strong>${
-      pkg?.website
-        ? ` · <a href="${esc(pkg.website)}" target="_blank" rel="noopener">${esc(pkg.website)}</a>`
-        : ""
-    } · ${lastSyncHtml}</p>
+    <p class="meta">Vendor: <strong>${vendor}</strong>${websiteHtml} · ${lastSyncHtml}</p>
     <div class="actions">
       ${
         isRunning
@@ -1764,8 +1903,14 @@ function renderPackageDetailPage(
   return renderSharedHtml(displayName, "packages", body, basePath, scripts);
 }
 
-function vulnsHref(packageName: string, version: string, basePath: string): string {
-  return `${withBase(basePath, "/admin/v1/vulns")}?product=${encodeURIComponent(packageName)}&version=${encodeURIComponent(version)}`;
+function vulnsHref(
+  packageName: string,
+  version: string,
+  basePath: string,
+  mode: PageMode = "admin",
+): string {
+  const path = mode === "viewer" ? "/vulns" : "/admin/v1/vulns";
+  return `${withBase(basePath, path)}?product=${encodeURIComponent(packageName)}&version=${encodeURIComponent(version)}`;
 }
 
 function renderVulnBadge(
@@ -1773,6 +1918,7 @@ function renderVulnBadge(
   version: string,
   counts: VersionVulnBadge | undefined,
   basePath: string,
+  mode: PageMode = "admin",
 ): string {
   if (!counts || counts.total === 0) return "";
   const cls =
@@ -1782,7 +1928,7 @@ function renderVulnBadge(
         ? "badge-vuln-high"
         : "badge-vuln-none";
   const label = counts.kev > 0 ? `${counts.total} CVE · KEV` : `${counts.total} CVE`;
-  return ` <a href="${vulnsHref(packageName, version, basePath)}" title="${counts.critical} critical, ${counts.high} high${counts.kev > 0 ? `, ${counts.kev} KEV` : ""}" class="badge ${cls}" style="text-decoration:none">${label}</a>`;
+  return ` <a href="${vulnsHref(packageName, version, basePath, mode)}" title="${counts.critical} critical, ${counts.high} high${counts.kev > 0 ? `, ${counts.kev} KEV` : ""}" class="badge ${cls}" style="text-decoration:none">${label}</a>`;
 }
 
 /**
@@ -1794,9 +1940,10 @@ function renderBlockedBadge(
   version: string,
   badge: VersionVulnBadge | undefined,
   basePath: string,
+  mode: PageMode = "admin",
 ): string {
   if (!badge?.blocked) return "";
-  return ` <a href="${vulnsHref(packageName, version, basePath)}" title="Downloads return 403 — critical CVE affects this version" class="badge badge-blocked" style="text-decoration:none">blocked</a>`;
+  return ` <a href="${vulnsHref(packageName, version, basePath, mode)}" title="Downloads return 403 — critical CVE affects this version" class="badge badge-blocked" style="text-decoration:none">blocked</a>`;
 }
 
 /**
@@ -1833,8 +1980,10 @@ function renderGroupSection(
   vulnBadges: { tracked: boolean; byVersion: Record<string, VersionVulnBadge> },
   canWaive: boolean,
   basePath: string,
+  mode: PageMode = "admin",
 ): string {
   const esc = escHtml;
+  const viewer = mode === "viewer";
   const hasLts = g.versions.some((v) => v.isLts);
   const platforms = [
     ...new Set(g.versions.flatMap((v) => v.artifacts.map((a) => `${a.os}/${a.arch}`))),
@@ -1844,7 +1993,7 @@ function renderGroupSection(
     <div class="group-header">
       <h2>${esc(g.name)}</h2>
       ${hasLts ? `<span class="badge badge-lts">LTS</span>` : ""}
-      <button class="btn btn-sm btn-danger" style="margin-left:auto" onclick="deleteGroup('${esc(packageName)}','${esc(g.name)}')">Delete Group</button>
+      ${viewer ? "" : `<button class="btn btn-sm btn-danger" style="margin-left:auto" onclick="deleteGroup('${esc(packageName)}','${esc(g.name)}')">Delete Group</button>`}
     </div>`;
 
   if (g.versions.length === 0) {
@@ -1894,19 +2043,29 @@ function renderGroupSection(
           const title = notes.length > 0 ? ` title="${esc(notes.join(" · "))}"` : "";
           const cls = gated ? `status-${display} cell-gated` : `status-${display}`;
           const [os, arch] = p.split("/");
+          const label = `${icon[display] ?? "?"} ${esc(display)}`;
+          if (viewer) {
+            // Link only what GET /download would actually serve: a gated or cooling-off cell is
+            // visibly not a link, and its tooltip says why.
+            const servable = display === "available" && !gated;
+            const href = `${withBase(basePath, "/download/")}${encodeURIComponent(packageName)}/${encodeURIComponent(v.version)}/${encodeURIComponent(os)}/${encodeURIComponent(arch)}`;
+            return servable
+              ? `<td><a class="${cls}" href="${href}"${title}>${label}</a></td>`
+              : `<td><span class="${cls}"${title}>${label}</span></td>`;
+          }
           const redownloadBtn =
             a.status === "failed" || a.status === "available"
               ? ` <button class="btn btn-sm btn-secondary" title="Re-download" onclick="redownload('${esc(packageName)}','${esc(v.version)}','${esc(os)}','${esc(arch)}')">↺</button>`
               : "";
-          return `<td><span class="${cls}"${title}>${icon[display] ?? "?"} ${esc(display)}</span>${redownloadBtn}</td>`;
+          return `<td><span class="${cls}"${title}>${label}</span>${redownloadBtn}</td>`;
         })
         .join("");
       const badges =
-        renderBlockedBadge(packageName, v.version, vuln, basePath) +
-        renderVulnBadge(packageName, v.version, vuln, basePath);
+        renderBlockedBadge(packageName, v.version, vuln, basePath, mode) +
+        renderVulnBadge(packageName, v.version, vuln, basePath, mode);
       // The waiver is per version, not per platform, so one button covers every cooling-off cell.
       const releaseBtn =
-        canWaive && v.artifacts.some((a) => coolingOffUntil(a) !== null)
+        !viewer && canWaive && v.artifacts.some((a) => coolingOffUntil(a) !== null)
           ? ` <button class="btn btn-sm btn-secondary" title="Release from cooling-off now" onclick="releaseNow('${esc(packageName)}','${esc(v.version)}')">Release now</button>`
           : "";
       return `<tr><td><strong>${esc(v.version)}</strong>${badges}${releaseBtn}</td>${cells}</tr>`;

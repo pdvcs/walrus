@@ -34,6 +34,11 @@ with its own test suite.
   page lists vulnerability backfill runs; the package jobs page is retitled and the config page
   becomes **Validate Package Configuration**.
 - **WALRUS_BRANDING** overrides the public landing page's product name (default `Walrus`).
+- **Added:** view-only **Packages** (`/packages`, `/packages/:name`) and **Vulnerabilities**
+  (`/vulns`) pages that need no login and carry no admin actions.
+- **Added:** `WALRUS_LOGO` and `WALRUS_ADMIN_LOGO` set the nav logo for visitors and for
+  logged-in operators. They are paths to image files in the repository, not URLs; the defaults
+  are the bundled `src/static/applogo.jpg` and `applogo-admin.jpg`. A wrong path refuses to start.
 - **Fixed:** `POST /internal/vuln-sync/:source` no longer fails when its audit row cannot be
   written, and a backfill job's `since_date` is read back as the `YYYY-MM-DD` string its type
   declares.

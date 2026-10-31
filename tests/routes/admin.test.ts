@@ -104,7 +104,14 @@ describe("admin routes", () => {
     expect(response.text).toContain(
       '<form method="post" action="/admin/v1/logout"><button class="nav-link" type="submit">Log out</button></form>',
     );
-    expect(response.text).toContain('class="brand" href="/">Walrus</a>');
+    // Logged-in operators get the night-scene logo; the public pages get the day scene.
+    expect(response.text).toContain('src="/brand/admin-logo"');
+    expect(response.text).not.toContain('src="/brand/logo"');
+  });
+
+  it("does not carry the public-view styling, so the two UIs stay distinguishable", async () => {
+    const response = await request(createTestApp(baseDeps())).get("/admin/v1/").expect(200);
+    expect(response.text).not.toContain("border-top: 4px solid #0d9488");
   });
 
   it("offers a first-letter filter for only the initials present in the package list", async () => {

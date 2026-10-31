@@ -20,7 +20,7 @@ describe("public landing page", () => {
     expect(response.text).toContain(
       'href="/admin/v1/login?return_to=%2Fadmin%2Fv1%2F">Log in as admin</a>',
     );
-    for (const href of ["/api", "/health", "/app/status", "/openapi.json"]) {
+    for (const href of ["/packages", "/vulns", "/api", "/health", "/app/status", "/openapi.json"]) {
       expect(response.text).toContain(`href="${href}"`);
     }
   });
@@ -36,8 +36,8 @@ describe("public landing page", () => {
 
     expect(response.text).toContain("<h1>Acme Software Registry</h1>");
     expect(response.text).toContain("<title>Acme Software Registry</title>");
-    // The small top-left nav wordmark is deliberately untouched.
-    expect(response.text).toContain('class="brand" href="/">Walrus</a>');
+    // The nav logo is configured separately (WALRUS_LOGO); branding only renames the hero.
+    expect(response.text).toContain('class="brand" href="/" aria-label="Walrus"');
   });
 
   it("escapes an adopter-supplied branding string", async () => {

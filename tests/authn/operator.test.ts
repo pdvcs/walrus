@@ -50,7 +50,7 @@ describe("operator authentication", () => {
     const target = app(runtime());
     const login = await request(target).get("/admin/v1/login").expect(200);
     expect(login.text).toContain('name="viewport"');
-    expect(login.text).toContain('class="brand" href="/">Walrus</a>');
+    expect(login.text).toContain('class="brand" href="/" aria-label="Walrus"');
     expect(login.text).toContain('class="panel"');
     expect(login.text).toContain('class="btn btn-primary"');
 

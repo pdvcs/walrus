@@ -9,7 +9,8 @@ export const BASE_PAGE_STYLES = `
   a { color: #1d4ed8; text-decoration: none; }
   a:hover { text-decoration: underline; }
   .nav { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; background: #fff; border-bottom: 1px solid #e5e7eb; padding: 12px 24px; margin-bottom: 24px; }
-  .nav .brand { font-weight: 800; font-size: 1.05rem; color: #111; }
+  .nav .brand { display: flex; align-items: center; font-weight: 800; font-size: 1.05rem; color: #111; }
+  .nav .brand-logo { display: block; height: 36px; width: auto; max-width: 240px; object-fit: contain; border-radius: 6px; }
   .nav a { font-size: 0.9rem; color: #6b7280; text-decoration: none; }
   .nav a:hover { color: #111; }
   .nav a.active { color: #111; font-weight: 700; }
@@ -70,9 +71,23 @@ export const BASE_PAGE_STYLES = `
   }
 `;
 
+/**
+ * The nav wordmark. The night scene is the logged-in operator's; the day scene is everyone
+ * else's. The pair is what tells an admin at a glance that they are on the admin UI, so the
+ * variant is chosen by which nav renders it, never by a flag a caller could get wrong.
+ * The default art is 512x127, shown at 36px tall (about 4x), so it stays sharp on high-DPI
+ * screens; a custom logo of any aspect works, capped at 240px wide.
+ */
+export function renderBrand(basePath: string, variant: "public" | "admin"): string {
+  // Stable URLs: which file sits behind them is WALRUS_LOGO / WALRUS_ADMIN_LOGO (see main.ts),
+  // so no page template needs to know about config.
+  const src = withBase(basePath, variant === "admin" ? "/brand/admin-logo" : "/brand/logo");
+  return `<a class="brand" href="${withBase(basePath, "/")}" aria-label="Walrus"><img class="brand-logo" src="${src}" alt="Walrus" width="145" height="36"></a>`;
+}
+
 export function renderAdminNav(basePath: string, active?: AdminNavItem): string {
   return `<nav class="nav" aria-label="Admin navigation">
-    <a class="brand" href="${withBase(basePath, "/")}">Walrus</a>
+    ${renderBrand(basePath, "admin")}
     <a href="${withBase(basePath, "/admin/v1/")}"${active === "packages" ? ' class="active"' : ""}>Packages</a>
     <details class="nav-menu${active === "jobs" || active === "vuln-jobs" ? " nav-menu-active" : ""}">
       <summary class="nav-link nav-menu-trigger">Jobs</summary>
@@ -118,10 +133,14 @@ export function renderAdminNav(basePath: string, active?: AdminNavItem): string 
   </script>`;
 }
 
-export function renderPublicNav(basePath: string): string {
+export type PublicNavItem = "packages" | "vulns";
+
+export function renderPublicNav(basePath: string, active?: PublicNavItem): string {
   const returnTo = encodeURIComponent(withBase(basePath, "/admin/v1/"));
   return `<nav class="nav" aria-label="Site navigation">
-    <a class="brand" href="${withBase(basePath, "/")}">Walrus</a>
+    ${renderBrand(basePath, "public")}
+    <a href="${withBase(basePath, "/packages")}"${active === "packages" ? ' class="active"' : ""}>Packages</a>
+    <a href="${withBase(basePath, "/vulns")}"${active === "vulns" ? ' class="active"' : ""}>Vulnerabilities</a>
     <span class="nav-spacer"></span>
     <a href="${withBase(basePath, "/api")}">API Docs</a>
     <a href="${withBase(basePath, "/app/status")}">Status</a>
@@ -166,6 +185,8 @@ export function renderLandingPage(version: string, basePath: string, branding: s
         <a class="btn btn-secondary" href="${withBase(basePath, "/api")}">Browse API documentation</a>
       </div>
       <div class="link-grid">
+        <a class="link-card" href="${withBase(basePath, "/packages")}"><strong>Browse packages</strong><span>Which versions are cached for which platforms, and which are held back.</span></a>
+        <a class="link-card" href="${withBase(basePath, "/vulns")}"><strong>Vulnerability lookup</strong><span>Known CVEs for a product and version, and whether they block a download.</span></a>
         <a class="link-card" href="${withBase(basePath, "/health")}"><strong>Deployment health</strong><span>Minimal availability contract for the deployment platform.</span></a>
         <a class="link-card" href="${withBase(basePath, "/app/status")}"><strong>Application status</strong><span>Operational details, dependency state, and degradations.</span></a>
         <a class="link-card" href="${withBase(basePath, "/metrics")}"><strong>Prometheus metrics</strong><span>Request, runtime, catalogue, sync, and vulnerability time series.</span></a>

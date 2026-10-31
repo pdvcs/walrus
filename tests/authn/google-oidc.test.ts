@@ -94,11 +94,17 @@ describe("GoogleOidcVerifier", () => {
 
   it("rejects a tampered signature", async () => {
     const instance = verifier();
-    const signed = token();
-    await expect(instance.verifier.verify(`${signed.slice(0, -2)}aa`)).resolves.toMatchObject({
-      ok: false,
-      status: 401,
-    });
+    const [header, claims, signature] = token().split(".");
+    // Change the FIRST signature character, and to one that is guaranteed different. The key is
+    // random per run, so a fixed replacement ("aa" on the tail) equals the real signature
+    // sometimes, and the tail is no safer: a 256-byte signature ends in a base64url character
+    // that carries only 4 data bits, so editing it can decode to identical bytes. The first
+    // character carries a full 6 bits, so any different character is a different signature.
+    const flipped = `${signature[0] === "A" ? "B" : "A"}${signature.slice(1)}`;
+    expect(flipped).not.toBe(signature);
+    await expect(instance.verifier.verify(`${header}.${claims}.${flipped}`)).resolves.toMatchObject(
+      { ok: false, status: 401 },
+    );
   });
 
   it.each([

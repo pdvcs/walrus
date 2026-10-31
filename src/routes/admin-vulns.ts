@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { renderSharedHtml, escHtml } from "./admin.js";
+import { renderSharedHtml, escHtml, type PageMode } from "./admin.js";
 import { withBase } from "../common/base-path.js";
 import { VulnQueryResult, DataFreshness } from "../services/vuln-query.js";
 import {
@@ -515,190 +515,8 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps, basePath: stri
   return router;
 }
 
-function renderExplorer(
-  ctx: {
-    product?: string;
-    version?: string;
-    synced?: string;
-    syncError?: string;
-    backfillStarted?: string;
-    freshness: DataFreshness;
-    syncStatus: VulnSyncStatus;
-    hints: string[];
-    activeSuppressions: CveSuppressionRow[];
-    result: VulnQueryResult | null;
-  },
-  basePath: string,
-): string {
-  const esc = escHtml;
-  const product = ctx.product ?? "";
-  const version = ctx.version ?? "";
-
-  const hintsBanner = ctx.hints
-    .map((h) => `<div class="note note-warn">${renderHint(h)}</div>`)
-    .join("");
-
-  // ── Status strip: state chips left, actions right. Two fixed rows — the old single
-  // flex-wrap mixed readouts and buttons at one level and re-wrapped arbitrarily as
-  // timestamps changed length.
-  const sources: Array<{
-    key: string;
-    label: string;
-    ts: string | null;
-    status: VulnSourceStatus;
-  }> = [
-    { key: "nvd", label: "NVD", ts: ctx.freshness.nvd_last_sync, status: ctx.syncStatus.nvd },
-    { key: "kev", label: "KEV", ts: ctx.freshness.kev_last_sync, status: ctx.syncStatus.kev },
-    { key: "osv", label: "OSV", ts: ctx.freshness.osv_last_sync, status: ctx.syncStatus.osv },
-    { key: "cvss", label: "CVSS", ts: ctx.freshness.cvss_last_sync, status: ctx.syncStatus.cvss },
-  ];
-  const sourceChips = sources
-    .map((s) => {
-      const state = chipState(s.status);
-      const tooltip = chipTooltip(s);
-      return `<span class="src-chip src-${state}" title="${esc(tooltip)}">
-        <span class="dot"></span>${esc(s.label)}
-        <span class="src-ts" data-ts="${esc(s.ts ?? "")}">${esc(s.ts ? "…" : "never")}</span>
-      </span>`;
-    })
-    .join("");
-  const statusStrip = `
-    <div class="status-strip">
-      <div class="status-row">
-        <strong>Data sources</strong>
-        <span class="src-chips">${sourceChips}</span>
-        <span class="strip-actions">
-          <form method="post" action="${withBase(basePath, "/admin/v1/vuln-sync/nvd")}"><button class="btn btn-sm btn-secondary">Sync NVD</button></form>
-          <form method="post" action="${withBase(basePath, "/admin/v1/vuln-sync/kev")}"><button class="btn btn-sm btn-secondary">Sync KEV</button></form>
-          <form method="post" action="${withBase(basePath, "/admin/v1/vuln-sync/osv")}"><button class="btn btn-sm btn-secondary">Sync OSV</button></form>
-          <form method="post" action="${withBase(basePath, "/admin/v1/vuln-backfill")}"><button class="btn btn-sm btn-secondary">NVD backfill</button></form>
-        </span>
-      </div>
-    </div>`;
-
-  // CVSS enrichment is triggerable below rather than by a sync button, because it is the
-  // one write that can change what /download serves -- the preview is not a convenience
-  // here, it is the step that makes applying safe. Collapsed by default: rarely used,
-  // and its explanation is long.
-  const enrichPanel = `
-    <details class="enrich-wrap">
-      <summary>CVSS enrichment <span class="summary-hint">fills missing severities; can block versions — preview first</span></summary>
-      <div class="enrich">
-        <div class="enrich-head">
-          <span>Fills in severity for CVEs that have none (mostly OSV stubs). Applying can newly
-          satisfy the &ge; 9.0 gate, which makes versions that serve today return 403.
-          Preview first.</span>
-        </div>
-        <div class="enrich-actions">
-          <label for="cvss-limit">Limit</label>
-          <input id="cvss-limit" type="number" min="1" placeholder="all">
-          <button id="cvss-preview" class="btn btn-sm btn-secondary" type="button">Preview</button>
-          <button id="cvss-apply" class="btn btn-sm btn-danger" type="button" disabled
-            title="Run a preview first">Apply</button>
-        </div>
-        <div id="cvss-out"></div>
-      </div>
-    </details>`;
-
-  const syncedBanner = ctx.synced
-    ? `<div class="note note-ok">Triggered ${esc(ctx.synced)} sync. Freshness updates once ingestion completes.</div>`
-    : "";
-  const backfillBanner = ctx.backfillStarted
-    ? `<div class="note note-ok">NVD backfill job <a href="${withBase(basePath, "/admin/v1/vuln-backfill/")}${esc(ctx.backfillStarted)}">#${esc(ctx.backfillStarted)}</a> queued — it runs in the background; this page's NVD chip updates when it finishes.</div>`
-    : "";
-  const syncErrorBanner = ctx.syncError
-    ? `<div class="note note-warn">${esc(ctx.syncError)}</div>`
-    : "";
-
-  // ── Lookup first: it is the page's primary task; ops panels sit below the fold.
-  const form = `
-    <form method="get" action="${withBase(basePath, "/admin/v1/vulns")}" class="vform" autocomplete="off">
-      <div style="position:relative">
-        <input id="product" name="product" value="${esc(product)}" placeholder="Product or alias (e.g. openjdk, npp)" required autofocus>
-        <div id="ac" class="ac"></div>
-      </div>
-      <input name="version" value="${esc(version)}" placeholder="Version (optional)">
-      <button class="btn btn-primary" type="submit">Look up</button>
-    </form>`;
-
-  const results = ctx.result
-    ? renderResult(ctx.result, basePath)
-    : `<p class="empty">Enter a product to look up known CVEs.</p>`;
-
-  const suppressionPanel = `
-    <section id="suppression-panel" class="suppression-panel" hidden>
-      <h2 id="suppression-title">CVE suppression</h2>
-      <p id="suppression-scope" class="meta"></p>
-      <div class="note note-warn">This changes what <code>/download</code> serves. Apply only after
-        the team's six-eyes review and formal approval. Your authenticated identity and reason are written to the
-        database audit trail.</div>
-      <div class="suppression-fields">
-        <label>Reason <textarea id="suppression-reason" rows="3" required></textarea></label>
-        <label id="suppression-expiry-wrap">Expires at (optional)
-          <input id="suppression-expiry" type="datetime-local">
-        </label>
-      </div>
-      <div class="suppression-actions">
-        <button id="suppression-preview" class="btn btn-sm btn-secondary" type="button">Preview</button>
-        <button id="suppression-apply" class="btn btn-sm btn-danger" type="button" disabled>Apply</button>
-        <button id="suppression-cancel" class="btn btn-sm btn-secondary" type="button">Cancel</button>
-      </div>
-      <div id="suppression-out"></div>
-    </section>`;
-
-  const activeSuppressionList =
-    ctx.activeSuppressions.length === 0
-      ? ""
-      : `<details class="active-suppressions" id="active-suppressions">
-          <summary>Active CVE suppressions (${ctx.activeSuppressions.length})</summary>
-          <p class="meta">Operational exceptions remain visible here until revoked or expired.</p>
-          <table>
-            <thead><tr><th>CVE</th><th>Scope</th><th>Reason</th><th>Operator</th><th>Expires</th><th></th></tr></thead>
-            <tbody>${ctx.activeSuppressions
-              .map(
-                (s) => `<tr>
-                  <td>${esc(s.cve_id)}</td>
-                  <td>${esc(s.package_name ?? "all packages")}</td>
-                  <td>${esc(s.reason)}</td>
-                  <td>${esc(s.created_by)}</td>
-                  <td>${esc(s.expires_at ? fmtTs(s.expires_at.toISOString()) : "until revoked")}</td>
-                  <td><button class="btn btn-sm btn-danger suppression-open" type="button"
-                    data-mode="revoke" data-id="${s.id}" data-cve="${esc(s.cve_id)}"
-                    data-package="${esc(s.package_name ?? "")}"
-                    data-scope="${esc(s.package_name ?? "")}">Revoke</button></td>
-                </tr>`,
-              )
-              .join("")}</tbody>
-          </table>
-        </details>`;
-
-  const body = `
-    <h1>Vulnerability Explorer</h1>
-    ${syncErrorBanner}
-    ${syncedBanner}
-    ${backfillBanner}
-    ${form}
-    <div id="results-anchor">${results}</div>
-    ${suppressionPanel}
-    ${activeSuppressionList}
-    ${hintsBanner}
-    ${statusStrip}
-    ${enrichPanel}`;
-
-  const scripts = `
-    // ── Deep link from the nav suppression chip ──
-    // The list is a collapsed <details>; arriving at #active-suppressions should land on
-    // it open, whether that is a fresh page load or a hash change from this same page.
-    function openSuppressionList() {
-      if (location.hash !== '#active-suppressions') return;
-      const el = document.getElementById('active-suppressions');
-      if (!el) return;
-      el.open = true;
-      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-    openSuppressionList();
-    window.addEventListener('hashchange', openSuppressionList);
-
+/** Relative-time labels for the freshness chips. Shared by the admin explorer and the viewer page. */
+export const SOURCE_CHIPS_SCRIPT = `
     // ── Relative timestamps for the source chips ──
     function relTime(iso) {
       const then = new Date(iso).getTime();
@@ -716,8 +534,10 @@ function renderExplorer(
       const rel = relTime(iso);
       if (rel) el.textContent = rel;
       el.parentElement.title = el.parentElement.title + ' — last success ' + new Date(iso).toISOString();
-    });
+    });`;
 
+/** Product autocomplete against the public search endpoint; works unauthenticated. */
+export const autocompleteScript = (basePath: string): string => `
     // ── Autocomplete with keyboard navigation ──
     const input = document.getElementById('product');
     const ac = document.getElementById('ac');
@@ -758,8 +578,10 @@ function renderExplorer(
       else if (e.key === 'Escape') { clearAc(); }
     });
     input.addEventListener('blur', () => setTimeout(() => clearAc(), 150));
-    let timer;
+    let timer;`;
 
+/** Client-side severity/KEV filter chips over the result table. */
+export const RESULT_FILTER_SCRIPT = `
     // ── Results filter chips (client-side; no pagination machinery) ──
     const resultsEl = document.getElementById('results-anchor');
     const resultsTable = resultsEl ? resultsEl.querySelector('table') : null;
@@ -816,7 +638,254 @@ function renderExplorer(
             + (active !== 'all' ? ' — ' + active + ' only' : '') + '.';
         });
       }
+    }`;
+
+/** Per-source freshness chips. Read-only: the sync buttons live beside them in the admin strip. */
+export function renderSourceChips(freshness: DataFreshness, syncStatus: VulnSyncStatus): string {
+  const esc = escHtml;
+  const sources: Array<{
+    key: string;
+    label: string;
+    ts: string | null;
+    status: VulnSourceStatus;
+  }> = [
+    { key: "nvd", label: "NVD", ts: freshness.nvd_last_sync, status: syncStatus.nvd },
+    { key: "kev", label: "KEV", ts: freshness.kev_last_sync, status: syncStatus.kev },
+    { key: "osv", label: "OSV", ts: freshness.osv_last_sync, status: syncStatus.osv },
+    { key: "cvss", label: "CVSS", ts: freshness.cvss_last_sync, status: syncStatus.cvss },
+  ];
+  return sources
+    .map((s) => {
+      const state = chipState(s.status);
+      const tooltip = chipTooltip(s);
+      return `<span class="src-chip src-${state}" title="${esc(tooltip)}">
+        <span class="dot"></span>${esc(s.label)}
+        <span class="src-ts" data-ts="${esc(s.ts ?? "")}">${esc(s.ts ? "…" : "never")}</span>
+      </span>`;
+    })
+    .join("");
+}
+
+/** The product/version lookup. `action` is the already-prefixed URL of the page to submit to. */
+export function renderLookupForm(action: string, product: string, version: string): string {
+  const esc = escHtml;
+  return `
+    <form method="get" action="${action}" class="vform" autocomplete="off">
+      <div style="position:relative">
+        <input id="product" name="product" value="${esc(product)}" placeholder="Product or alias (e.g. openjdk, npp)" required autofocus>
+        <div id="ac" class="ac"></div>
+      </div>
+      <input name="version" value="${esc(version)}" placeholder="Version (optional)">
+      <button class="btn btn-primary" type="submit">Look up</button>
+    </form>`;
+}
+
+/** Rules shared by the admin explorer and the public /vulns viewer page. */
+export const VULN_VIEW_CSS = `
+    .vform { display:flex; gap:8px; margin:16px 0; flex-wrap:wrap; }
+    .vform input { padding:8px 10px; border:1px solid #d1d5db; border-radius:6px; font-size:0.9rem; min-width:280px; }
+    .ac { position:absolute; top:100%; left:0; right:0; background:#fff; border:1px solid #e5e7eb; border-radius:6px; z-index:10; box-shadow:0 4px 12px rgba(0,0,0,0.08); }
+    .ac-item { padding:6px 10px; cursor:pointer; font-size:0.85rem; }
+    .ac-item:hover, .ac-item.ac-active { background:#f3f4f6; }
+    .ac-slug { color:#9ca3af; font-size:0.75rem; }
+    .status-strip { background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:10px 14px; margin-top:16px; }
+    .status-row { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+    .status-row strong { font-size:0.82rem; color:#111; }
+    .src-chips { display:flex; gap:8px; flex-wrap:wrap; flex:1; }
+    .src-chip { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:12px; font-size:0.8rem; background:#f3f4f6; color:#374151; }
+    .src-chip .dot { width:8px; height:8px; border-radius:50%; background:#9ca3af; }
+    .src-ok { background:#f0fdf4; color:#166534; }
+    .src-ok .dot { background:#22c55e; }
+    .src-fail { background:#fef2f2; color:#b91c1c; }
+    .src-fail .dot { background:#ef4444; }
+    .src-never { background:#f3f4f6; color:#6b7280; }
+    .src-never .dot { background:#9ca3af; }
+    .src-ts { color:inherit; opacity:0.75; font-size:0.75rem; }
+    .note { padding:10px 14px; border-radius:8px; margin:12px 0; font-size:0.85rem; }
+    .note-ok { background:#dcfce7; color:#15803d; }
+    .note-warn { background:#fef3c7; color:#92400e; }
+    .note-info { background:#f3f4f6; color:#374151; }
+    .sev-CRITICAL { color:#b91c1c; font-weight:700; }
+    .sev-HIGH { color:#c2410c; font-weight:700; }
+    .sev-MEDIUM { color:#a16207; }
+    .sev-LOW { color:#6b7280; }
+    .filter-bar { display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-top:12px; }
+    .filter-label { font-size:0.8rem; color:#6b7280; }
+    .filter-chip { padding:3px 10px; border-radius:12px; border:1px solid #d1d5db; background:#fff; font-size:0.78rem; cursor:pointer; color:#374151; }
+    .filter-chip:hover { background:#f3f4f6; }
+    .filter-chip.filter-on { background:#1d4ed8; border-color:#1d4ed8; color:#fff; }
+    .filter-count { margin:6px 0 0; }
+    .hist-link { font-size:0.8rem; }
+    .badge-blocked-gate { background:#b91c1c; color:#fff; margin-left:6px; }
+    .badge-suppressed { background:#ffedd5; color:#9a3412; margin-right:6px; }
+`;
+
+function renderExplorer(
+  ctx: {
+    product?: string;
+    version?: string;
+    synced?: string;
+    syncError?: string;
+    backfillStarted?: string;
+    freshness: DataFreshness;
+    syncStatus: VulnSyncStatus;
+    hints: string[];
+    activeSuppressions: CveSuppressionRow[];
+    result: VulnQueryResult | null;
+  },
+  basePath: string,
+): string {
+  const esc = escHtml;
+  const product = ctx.product ?? "";
+  const version = ctx.version ?? "";
+
+  const hintsBanner = ctx.hints
+    .map((h) => `<div class="note note-warn">${renderHint(h)}</div>`)
+    .join("");
+
+  // ── Status strip: state chips left, actions right. Two fixed rows — the old single
+  // flex-wrap mixed readouts and buttons at one level and re-wrapped arbitrarily as
+  // timestamps changed length.
+  const sourceChips = renderSourceChips(ctx.freshness, ctx.syncStatus);
+  const statusStrip = `
+    <div class="status-strip">
+      <div class="status-row">
+        <strong>Data sources</strong>
+        <span class="src-chips">${sourceChips}</span>
+        <span class="strip-actions">
+          <form method="post" action="${withBase(basePath, "/admin/v1/vuln-sync/nvd")}"><button class="btn btn-sm btn-secondary">Sync NVD</button></form>
+          <form method="post" action="${withBase(basePath, "/admin/v1/vuln-sync/kev")}"><button class="btn btn-sm btn-secondary">Sync KEV</button></form>
+          <form method="post" action="${withBase(basePath, "/admin/v1/vuln-sync/osv")}"><button class="btn btn-sm btn-secondary">Sync OSV</button></form>
+          <form method="post" action="${withBase(basePath, "/admin/v1/vuln-backfill")}"><button class="btn btn-sm btn-secondary">NVD backfill</button></form>
+        </span>
+      </div>
+    </div>`;
+
+  // CVSS enrichment is triggerable below rather than by a sync button, because it is the
+  // one write that can change what /download serves -- the preview is not a convenience
+  // here, it is the step that makes applying safe. Collapsed by default: rarely used,
+  // and its explanation is long.
+  const enrichPanel = `
+    <details class="enrich-wrap">
+      <summary>CVSS enrichment <span class="summary-hint">fills missing severities; can block versions — preview first</span></summary>
+      <div class="enrich">
+        <div class="enrich-head">
+          <span>Fills in severity for CVEs that have none (mostly OSV stubs). Applying can newly
+          satisfy the &ge; 9.0 gate, which makes versions that serve today return 403.
+          Preview first.</span>
+        </div>
+        <div class="enrich-actions">
+          <label for="cvss-limit">Limit</label>
+          <input id="cvss-limit" type="number" min="1" placeholder="all">
+          <button id="cvss-preview" class="btn btn-sm btn-secondary" type="button">Preview</button>
+          <button id="cvss-apply" class="btn btn-sm btn-danger" type="button" disabled
+            title="Run a preview first">Apply</button>
+        </div>
+        <div id="cvss-out"></div>
+      </div>
+    </details>`;
+
+  const syncedBanner = ctx.synced
+    ? `<div class="note note-ok">Triggered ${esc(ctx.synced)} sync. Freshness updates once ingestion completes.</div>`
+    : "";
+  const backfillBanner = ctx.backfillStarted
+    ? `<div class="note note-ok">NVD backfill job <a href="${withBase(basePath, "/admin/v1/vuln-backfill/")}${esc(ctx.backfillStarted)}">#${esc(ctx.backfillStarted)}</a> queued — it runs in the background; this page's NVD chip updates when it finishes.</div>`
+    : "";
+  const syncErrorBanner = ctx.syncError
+    ? `<div class="note note-warn">${esc(ctx.syncError)}</div>`
+    : "";
+
+  // ── Lookup first: it is the page's primary task; ops panels sit below the fold.
+  const form = renderLookupForm(withBase(basePath, "/admin/v1/vulns"), product, version);
+
+  const results = ctx.result
+    ? renderResult(ctx.result, basePath)
+    : `<p class="empty">Enter a product to look up known CVEs.</p>`;
+
+  const suppressionPanel = `
+    <section id="suppression-panel" class="suppression-panel" hidden>
+      <h2 id="suppression-title">CVE suppression</h2>
+      <p id="suppression-scope" class="meta"></p>
+      <div class="note note-warn">This changes what <code>/download</code> serves. Apply only after
+        the team's six-eyes review and formal approval. Your authenticated identity and reason are written to the
+        database audit trail.</div>
+      <div class="suppression-fields">
+        <label>Reason <textarea id="suppression-reason" rows="3" required></textarea></label>
+        <label id="suppression-expiry-wrap">Expires at (optional)
+          <input id="suppression-expiry" type="datetime-local">
+        </label>
+      </div>
+      <div class="suppression-actions">
+        <button id="suppression-preview" class="btn btn-sm btn-secondary" type="button">Preview</button>
+        <button id="suppression-apply" class="btn btn-sm btn-danger" type="button" disabled>Apply</button>
+        <button id="suppression-cancel" class="btn btn-sm btn-secondary" type="button">Cancel</button>
+      </div>
+      <div id="suppression-out"></div>
+    </section>`;
+
+  const activeSuppressionList =
+    ctx.activeSuppressions.length === 0
+      ? ""
+      : `<details class="active-suppressions" id="active-suppressions">
+          <summary>Active CVE suppressions (${ctx.activeSuppressions.length})</summary>
+          <p class="meta">Operational exceptions remain visible here until revoked or expired.</p>
+          <table>
+            <thead><tr><th>CVE</th><th>Scope</th><th>Reason</th><th>Operator</th><th>Expires</th><th></th></tr></thead>
+            <tbody>${ctx.activeSuppressions
+              .map(
+                (s) => `<tr>
+                  <td>${esc(s.cve_id)}</td>
+                  <td>${esc(s.package_name ?? "all packages")}</td>
+                  <td>${esc(s.reason)}</td>
+                  <td>${esc(s.created_by)}</td>
+                  <td>${esc(s.expires_at ? fmtTs(s.expires_at.toISOString()) : "until revoked")}</td>
+                  <td><button class="btn btn-sm btn-danger suppression-open" type="button"
+                    data-mode="revoke" data-id="${s.id}" data-cve="${esc(s.cve_id)}"
+                    data-package="${esc(s.package_name ?? "")}"
+                    data-scope="${esc(s.package_name ?? "")}">Revoke</button></td>
+                </tr>`,
+              )
+              .join("")}</tbody>
+          </table>
+        </details>`;
+
+  const body = `
+    <h1>Vulnerability Explorer</h1>
+    ${
+      product
+        ? `<p class="meta"><a href="${withBase(basePath, "/vulns")}?product=${encodeURIComponent(product)}${version ? `&version=${encodeURIComponent(version)}` : ""}">Public view</a> of this lookup</p>`
+        : ""
     }
+    ${syncErrorBanner}
+    ${syncedBanner}
+    ${backfillBanner}
+    ${form}
+    <div id="results-anchor">${results}</div>
+    ${suppressionPanel}
+    ${activeSuppressionList}
+    ${hintsBanner}
+    ${statusStrip}
+    ${enrichPanel}`;
+
+  const scripts = `
+    // ── Deep link from the nav suppression chip ──
+    // The list is a collapsed <details>; arriving at #active-suppressions should land on
+    // it open, whether that is a fresh page load or a hash change from this same page.
+    function openSuppressionList() {
+      if (location.hash !== '#active-suppressions') return;
+      const el = document.getElementById('active-suppressions');
+      if (!el) return;
+      el.open = true;
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    openSuppressionList();
+    window.addEventListener('hashchange', openSuppressionList);
+
+    ${SOURCE_CHIPS_SCRIPT}
+
+    ${autocompleteScript(basePath)}
+
+    ${RESULT_FILTER_SCRIPT}
 
     // ── CVSS enrichment preview/apply ──
     const limitEl = document.getElementById('cvss-limit');
@@ -1097,26 +1166,7 @@ function renderExplorer(
     });
     // WAL-70 suppression-ui:end`;
 
-  const styleTail = `<style>
-    .vform { display:flex; gap:8px; margin:16px 0; flex-wrap:wrap; }
-    .vform input { padding:8px 10px; border:1px solid #d1d5db; border-radius:6px; font-size:0.9rem; min-width:280px; }
-    .ac { position:absolute; top:100%; left:0; right:0; background:#fff; border:1px solid #e5e7eb; border-radius:6px; z-index:10; box-shadow:0 4px 12px rgba(0,0,0,0.08); }
-    .ac-item { padding:6px 10px; cursor:pointer; font-size:0.85rem; }
-    .ac-item:hover, .ac-item.ac-active { background:#f3f4f6; }
-    .ac-slug { color:#9ca3af; font-size:0.75rem; }
-    .status-strip { background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:10px 14px; margin-top:16px; }
-    .status-row { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
-    .status-row strong { font-size:0.82rem; color:#111; }
-    .src-chips { display:flex; gap:8px; flex-wrap:wrap; flex:1; }
-    .src-chip { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:12px; font-size:0.8rem; background:#f3f4f6; color:#374151; }
-    .src-chip .dot { width:8px; height:8px; border-radius:50%; background:#9ca3af; }
-    .src-ok { background:#f0fdf4; color:#166534; }
-    .src-ok .dot { background:#22c55e; }
-    .src-fail { background:#fef2f2; color:#b91c1c; }
-    .src-fail .dot { background:#ef4444; }
-    .src-never { background:#f3f4f6; color:#6b7280; }
-    .src-never .dot { background:#9ca3af; }
-    .src-ts { color:inherit; opacity:0.75; font-size:0.75rem; }
+  const styleTail = `<style>${VULN_VIEW_CSS}
     .strip-actions { display:flex; gap:8px; flex-wrap:wrap; margin-left:auto; }
     .enrich-wrap { margin-top:12px; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:10px 14px; }
     .enrich-wrap summary { cursor:pointer; font-size:0.85rem; font-weight:700; color:#111; }
@@ -1127,25 +1177,8 @@ function renderExplorer(
     .enrich-actions label { font-size:0.8rem; color:#6b7280; }
     .enrich-actions input { padding:4px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:0.8rem; width:90px; }
     .enrich .btn:disabled { opacity:0.5; cursor:not-allowed; }
-    .note { padding:10px 14px; border-radius:8px; margin:12px 0; font-size:0.85rem; }
-    .note-ok { background:#dcfce7; color:#15803d; }
-    .note-warn { background:#fef3c7; color:#92400e; }
-    .note-info { background:#f3f4f6; color:#374151; }
     .blocked { margin:6px 0 0 18px; }
     .blocked li { font-size:0.82rem; }
-    .sev-CRITICAL { color:#b91c1c; font-weight:700; }
-    .sev-HIGH { color:#c2410c; font-weight:700; }
-    .sev-MEDIUM { color:#a16207; }
-    .sev-LOW { color:#6b7280; }
-    .filter-bar { display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-top:12px; }
-    .filter-label { font-size:0.8rem; color:#6b7280; }
-    .filter-chip { padding:3px 10px; border-radius:12px; border:1px solid #d1d5db; background:#fff; font-size:0.78rem; cursor:pointer; color:#374151; }
-    .filter-chip:hover { background:#f3f4f6; }
-    .filter-chip.filter-on { background:#1d4ed8; border-color:#1d4ed8; color:#fff; }
-    .filter-count { margin:6px 0 0; }
-    .hist-link { font-size:0.8rem; }
-    .badge-blocked-gate { background:#b91c1c; color:#fff; margin-left:6px; }
-    .badge-suppressed { background:#ffedd5; color:#9a3412; margin-right:6px; }
     .suppression-cell { white-space:nowrap; }
     .suppression-panel { margin:14px 0; padding:14px; border:1px solid #fdba74; border-radius:8px; background:#fff7ed; }
     .suppression-panel h2 { margin:0 0 4px; font-size:1rem; }
@@ -1346,29 +1379,41 @@ function renderPackageBackfill(
   </form>`;
 }
 
-function renderResult(r: VulnQueryResult, basePath: string): string {
+export function renderResult(
+  r: VulnQueryResult,
+  basePath: string,
+  mode: PageMode = "admin",
+  /** Viewer only: the product is a served, enabled package with a page to link to. */
+  hasPackagePage = false,
+): string {
   const esc = escHtml;
   const m = r.match;
+  const viewer = mode === "viewer";
 
   if (!m.resolved) {
+    const lookupPath = withBase(basePath, viewer ? "/vulns" : "/admin/v1/vulns");
     const cands = m.candidates.length
       ? `<p>Did you mean:</p><ul>${m.candidates
           .map(
             (c) =>
-              `<li><a href="${withBase(basePath, "/admin/v1/vulns")}?product=${encodeURIComponent(c.slug)}">${esc(c.display_name)}</a> <span class="ac-slug">${esc(c.slug)}</span></li>`,
+              `<li><a href="${lookupPath}?product=${encodeURIComponent(c.slug)}">${esc(c.display_name)}</a> <span class="ac-slug">${esc(c.slug)}</span></li>`,
           )
           .join("")}</ul>`
       : "<p>No similar products found.</p>";
     return `<div class="note note-warn"><strong>Not matched:</strong> “${esc(r.query.product)}” did not resolve to a tracked package.</div>${cands}`;
   }
 
+  const packageLink =
+    viewer && hasPackagePage
+      ? ` · <a href="${withBase(basePath, "/packages/")}${encodeURIComponent(m.product_slug ?? "")}">package page</a>`
+      : "";
   const header = `<p class="meta">Resolved to <strong>${esc(m.display_name ?? m.product_slug ?? "")}</strong>
     (<code>${esc(m.product_slug ?? "")}</code>, ${esc(m.method ?? "")}, confidence ${m.confidence ?? "—"})
     · ${r.counts.total} CVE(s)${r.counts.kev > 0 ? ` · <span class="badge badge-kev">${r.counts.kev} KEV</span>` : ""}
     · <a class="hist-link" href="${withBase(basePath, "/api/v1/packages/")}${esc(m.product_slug ?? "")}/availability${
       r.query.version ? `?version=${encodeURIComponent(r.query.version)}` : ""
-    }">availability history</a></p>
-    ${renderPackageBackfill(m.product_slug ?? "", m.display_name ?? m.product_slug ?? "", r.query.version, basePath)}`;
+    }">availability history</a>${packageLink}</p>
+    ${viewer ? "" : renderPackageBackfill(m.product_slug ?? "", m.display_name ?? m.product_slug ?? "", r.query.version, basePath)}`;
 
   const warn = r.version_parse_warning
     ? `<div class="note note-warn">${esc(r.version_parse_warning)}</div>`
@@ -1416,21 +1461,34 @@ function renderResult(r: VulnQueryResult, basePath: string): string {
                data-package="${esc(m.product_slug ?? "")}">Suppress</button>`
           : "—";
       const scoreLabel = maxScore !== null ? ` (${maxScore})` : "";
+      // A viewer has no Gate action column, so a suppression is stated inline on the severity
+      // cell instead. Only the reason and expiry are shown -- the same fields the public
+      // /api/v1/vulns response carries. Who suppressed it, and its id, stay operator-only.
+      const viewerSuppressed =
+        viewer && v.suppression
+          ? ` <span class="badge badge-suppressed" title="${esc(
+              `${v.suppression.reason} · ${
+                v.suppression.expires_at
+                  ? `expires ${fmtTs(v.suppression.expires_at)}`
+                  : "until revoked"
+              }`,
+            )}">suppressed</span>`
+          : "";
       return `<tr>
         <td><a href="https://nvd.nist.gov/vuln/detail/${esc(v.cve_id)}" target="_blank" rel="noopener">${esc(v.cve_id)}</a></td>
-        <td class="sev-${esc(v.severity ?? "")}">${esc(v.severity ?? "—")}${scoreLabel}${gates}</td>
+        <td class="sev-${esc(v.severity ?? "")}">${esc(v.severity ?? "—")}${scoreLabel}${gates}${viewerSuppressed}</td>
         <td>${esc(v.affected.range)}${unc}</td>
         <td>${v.fixed_in ? esc(v.fixed_in) : "—"}</td>
         <td>${kev || "—"}</td>
         <td>${v.sources.map((s) => esc(s)).join(", ")}</td>
-        <td class="suppression-cell">${suppression}</td>
+        ${viewer ? "" : `<td class="suppression-cell">${suppression}</td>`}
       </tr>`;
     })
     .join("");
 
   return `${header}${warn}
     <table>
-      <thead><tr><th>CVE</th><th>Severity</th><th>Affected range</th><th>Fixed in</th><th>KEV</th><th>Sources</th><th>Gate action</th></tr></thead>
+      <thead><tr><th>CVE</th><th>Severity</th><th>Affected range</th><th>Fixed in</th><th>KEV</th><th>Sources</th>${viewer ? "" : "<th>Gate action</th>"}</tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
 }

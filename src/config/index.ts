@@ -1,5 +1,18 @@
 import { z } from "zod";
 import { isValidBasePath } from "../common/base-path.js";
+import { logoRefProblem } from "../common/brand-assets.js";
+
+function logoRef(name: string, fallback: string) {
+  return z
+    .string()
+    .trim()
+    .min(1)
+    .default(fallback)
+    .superRefine((ref, ctx) => {
+      const problem = logoRefProblem(ref);
+      if (problem) ctx.addIssue({ code: "custom", message: `${name} ${problem}` });
+    });
+}
 
 const configSchema = z.object({
   PORT: z.coerce.number().default(8080),
@@ -199,6 +212,13 @@ const configSchema = z.object({
   // and required non-empty, so `WALRUS_BRANDING=" "` is a startup failure rather than a blank
   // heading; everything else is free text and is HTML-escaped at render time.
   WALRUS_BRANDING: z.string().trim().min(1).default("Walrus"),
+  // Nav logos: the image at the top left of every page, as a path to a file inside the
+  // repository / image, relative to the application root -- never a URL. WALRUS_LOGO is what
+  // everyone sees; WALRUS_ADMIN_LOGO is what a logged-in operator sees, so the two UIs are
+  // told apart at a glance. Only the shape of the string is checked here (so importing config
+  // never touches the filesystem); that the file exists is checked at boot by start().
+  WALRUS_LOGO: logoRef("WALRUS_LOGO", "src/static/applogo.jpg"),
+  WALRUS_ADMIN_LOGO: logoRef("WALRUS_ADMIN_LOGO", "src/static/applogo-admin.jpg"),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;

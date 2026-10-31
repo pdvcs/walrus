@@ -101,6 +101,30 @@ describe("WALRUS_BASE_PATH (createApp basePath override)", () => {
     }
   });
 
+  it("serves the view-only pages under the prefix, with every link prefixed, and not at root", async () => {
+    const { app } = buildApp();
+    await request(app).get("/packages").expect(404);
+    await request(app).get("/vulns").expect(404);
+    await request(app).get(`${BASE_PATH}/packages/not-a-package`).expect(404);
+
+    for (const page of [`${BASE_PATH}/packages`, `${BASE_PATH}/vulns`]) {
+      const response = await request(app).get(page).expect(200).expect("content-type", /html/);
+      const links = [...response.text.matchAll(/(?:href|action)="(\/[^"]*)"/g)].map((m) => m[1]);
+      expect(links.length).toBeGreaterThan(0);
+      for (const link of links) {
+        expect(link, `${page}: unprefixed link ${link}`).toMatch(
+          new RegExp(`^${BASE_PATH}(/|\\?|$)`),
+        );
+      }
+      expect(response.text).toContain(`src="${BASE_PATH}/brand/logo"`);
+      expect(response.text).toContain(`href="${BASE_PATH}/packages"`);
+      expect(response.text).toContain(`href="${BASE_PATH}/vulns"`);
+    }
+    // Autocomplete and its fetch target are prefixed too, not just anchors.
+    const vulns = await request(app).get(`${BASE_PATH}/vulns`).expect(200);
+    expect(vulns.text).toContain(`${BASE_PATH}/api/v1/vulns/products/search`);
+  });
+
   it("redirects the bare /admin shortcut to the prefixed admin root", async () => {
     const { app } = buildApp();
     const response = await request(app).get(`${BASE_PATH}/admin`).expect(302);

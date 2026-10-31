@@ -59,9 +59,17 @@ describe("stateless sessions", () => {
       ok: false,
       reason: "invalid_signature",
     });
-    expect(
-      verifySession(`${payload}.${signature.slice(0, -1)}x`, config(), { now: START }).ok,
-    ).toBe(false);
+    // Flip the FIRST signature character, to one guaranteed different. Editing the tail is not
+    // safe: a 32-byte signature ends in a base64url character with only 4 data bits, so a
+    // replacement can decode to identical bytes and the "tampered" token would verify.
+    const flipped = `${signature[0] === "A" ? "B" : "A"}${signature.slice(1)}`;
+    expect(Buffer.from(flipped, "base64url").equals(Buffer.from(signature, "base64url"))).toBe(
+      false,
+    );
+    expect(verifySession(`${payload}.${flipped}`, config(), { now: START })).toMatchObject({
+      ok: false,
+      reason: "invalid_signature",
+    });
     expect(
       verifySession(token, config({ currentKey: Buffer.alloc(32, "x") }), { now: START }).ok,
     ).toBe(false);

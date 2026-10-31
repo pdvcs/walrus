@@ -2,6 +2,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { Router, Request, Response } from "express";
 import { withBase } from "../common/base-path.js";
+import { renderBrand } from "./page-shell.js";
 
 const API_DOCS_MARKDOWN = readFileSync(join(__dirname, "api-docs.md"), "utf8");
 
@@ -170,7 +171,8 @@ function renderApiDocsHtml(markdown: string, basePath: string): string {
     .nav { background: #fff; border-bottom: 1px solid #e5e7eb; padding: 12px 24px; display: flex; gap: 24px; align-items: center; }
     .nav a { color: #6b7280; text-decoration: none; font-size: 0.9rem; }
     .nav a:hover { color: #111; }
-    .nav .brand { font-weight: 800; font-size: 1.05rem; color: #111; }
+    .nav .brand { display: flex; align-items: center; }
+    .nav .brand-logo { display: block; height: 36px; width: auto; max-width: 240px; object-fit: contain; border-radius: 6px; }
     .content { max-width: 860px; margin: 0 auto; padding: 32px 24px; }
     h1 { font-size: 22px; margin-bottom: 20px; }
     h2 { font-size: 16px; margin: 32px 0 12px; border-bottom: 1px solid #e5e7eb; padding-bottom: 6px; color: #111; }
@@ -193,7 +195,7 @@ function renderApiDocsHtml(markdown: string, basePath: string): string {
 </head>
 <body>
   <nav class="nav">
-    <span class="brand">Walrus</span>
+    ${renderBrand(basePath, "public")}
     <a href="${withBase(basePath, "/api")}" style="color:#111;font-weight:700">API Docs</a>
     <a href="${withBase(basePath, "/admin/v1/")}">Admin UI</a>
     <a href="${withBase(basePath, "/app/status")}">Status</a>

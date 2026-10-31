@@ -152,12 +152,37 @@ prefixed and the `/health` carve-out for Cloud Run's own probe.
 
 ## Adopter branding
 
-| Variable          | Zod | Default  | Description                                                                                                                                                                                            |
-| ----------------- | --- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `WALRUS_BRANDING` | ✓   | `Walrus` | Product name shown as the big heading and browser title of the public landing page. Free text, trimmed, and must be non-empty; escaped at render time. The small top-left nav wordmark stays `Walrus`. |
+| Variable            | Zod | Default                        | Description                                                                                                                                                                                              |
+| ------------------- | --- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WALRUS_BRANDING`   | ✓   | `Walrus`                       | Product name shown as the big heading and browser title of the public landing page. Free text, trimmed, and must be non-empty; escaped at render time.                                                   |
+| `WALRUS_LOGO`       | ✓   | `src/static/applogo.jpg`       | Image at the top left of every page a visitor sees: the landing page, `/packages`, `/vulns`, and the API docs.                                                                                           |
+| `WALRUS_ADMIN_LOGO` | ✓   | `src/static/applogo-admin.jpg` | Image at the top left of the admin pages, shown to a logged-in operator. Keeping it visibly different from `WALRUS_LOGO` is what tells an operator they are on the admin UI rather than the public view. |
 
-Only the landing page is branded: it is the page an adopter's own users see first, while the
-nav wordmark and `Walrus Admin` titles identify the software itself.
+The heading is branded by `WALRUS_BRANDING`; the `Walrus Admin` page titles still identify the
+software itself.
+
+**Logo values are paths, not URLs.** Each is a path to an image file inside the repository (or
+the deployed image), relative to the application root. `http://`, `https://`, `file:`, `data:`
+and `//host` references are refused, as are absolute paths, anything that escapes the root with
+`..` (or through a symlink), and any file that is not `.png`, `.jpg`, `.jpeg`, `.gif` or `.webp`.
+SVG is not accepted: the file is served from walrus's own origin, where an SVG opened directly
+would run its scripts. Files are limited to 1 MiB because they load on every page.
+
+The shape of the value is checked when configuration loads. That the file exists is checked at
+startup, so a wrong path refuses to start rather than putting a broken image on every page.
+
+To use your own logos, commit them somewhere the image already contains — `config/` is copied
+into it — and point the variables there:
+
+```
+WALRUS_LOGO=config/acme-logo.png
+WALRUS_ADMIN_LOGO=config/acme-logo-admin.png
+```
+
+The image is shown 36px tall and up to 240px wide, at its own aspect ratio. The default art is
+512×127; about 4× the displayed height keeps it sharp on high-DPI screens. The files are served
+at `/brand/logo` and `/brand/admin-logo` (under `WALRUS_BASE_PATH`, without a login, cached for
+an hour).
 
 ## Boot-time validation
 

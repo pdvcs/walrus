@@ -104,6 +104,13 @@ describe("application security tier mounts", () => {
     await request(app).get("/health").expect(200);
     await request(app).get("/api").expect(200);
     await request(app).get("/openapi.json").expect(200);
+    // View-only catalogue pages are public by design (a future package-viewers role would gate
+    // them); they must neither demand a session nor bounce to the login page.
+    for (const path of ["/packages", "/packages/not-a-package", "/vulns"]) {
+      const res = await request(app).get(path);
+      expect([200, 404], `${path} -> ${res.status}`).toContain(res.status);
+      expect(res.headers.location).toBeUndefined();
+    }
   });
 
   it("parses a form login through the full application middleware stack", async () => {

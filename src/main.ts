@@ -23,6 +23,8 @@ import { createDownloadRouter } from "./routes/download.js";
 import { buildRedownloadRequest, createAdminRouter } from "./routes/admin.js";
 import { createInternalRouter } from "./routes/internal.js";
 import { createVulnsRouter } from "./routes/vulns.js";
+import { createCatalogRouter } from "./routes/catalog.js";
+import { resolveLogoFile } from "./common/brand-assets.js";
 import { createCvesRouter } from "./routes/cves.js";
 import { createPackageVulnsRouter } from "./routes/package-vulns.js";
 import { createAdminVulnsRouter } from "./routes/admin-vulns.js";
@@ -318,6 +320,12 @@ export interface CreateAppOptions {
   basePath?: string;
   /** Landing-page product name. Defaults to config.WALRUS_BRANDING; same test override pattern. */
   branding?: string;
+  /**
+   * Absolute paths of the nav logos. start() passes the boot-validated WALRUS_LOGO /
+   * WALRUS_ADMIN_LOGO files; left unset, createApp resolves the configured paths itself without
+   * checking they exist (a missing file then just 404s), so tests need no files or env.
+   */
+  logoFiles?: { public: string; admin: string };
   metrics?: {
     loadSnapshot?: () => Promise<MetricsSnapshot>;
     now?: () => Date;
@@ -365,6 +373,28 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
   const publicRouter = express.Router();
   publicRouter.use("/metrics", metrics.router);
   publicRouter.use("/static", express.static(path.join(process.cwd(), "dist/public")));
+
+  // The nav logos. Stable URLs, so page templates never see config; the files behind them are
+  // WALRUS_LOGO / WALRUS_ADMIN_LOGO. Both are public: the admin logo is an <img> in an
+  // authenticated page, but an image request is just a GET and the art is not a secret.
+  const logoFiles = options.logoFiles ?? {
+    public: path.resolve(config.WALRUS_LOGO),
+    admin: path.resolve(config.WALRUS_ADMIN_LOGO),
+  };
+  for (const [route, file] of [
+    ["/brand/logo", logoFiles.public],
+    ["/brand/admin-logo", logoFiles.admin],
+  ] as const) {
+    publicRouter.get(route, (_req, res) => {
+      res.sendFile(
+        file,
+        { maxAge: "1h", headers: { "X-Content-Type-Options": "nosniff" } },
+        (err) => {
+          if (err && !res.headersSent) res.status(404).end();
+        },
+      );
+    });
+  }
 
   const operatorRouter = express.Router();
   if (options.operatorAuth) {
@@ -553,6 +583,39 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     }),
   );
 
+  // Shared by the admin package page and the public viewer page so both report the same gate.
+  const getPackageVulnBadges = async (name: string) => {
+    if (!(await isPackageTracked(pool, name))) return { tracked: false, byVersion: {} };
+    const versionRows = await listVersions(pool, name, {});
+    const affects = await listAffectsWithCveForPackage(pool, name);
+    const cveVersionByVersion = new Map(versionRows.map((r) => [r.version, r.cve_version]));
+    const perVersion = crossReferenceVersions(
+      versionRows.map((r) => ({
+        version: r.version,
+        version_group: r.version_group,
+        cve_version: r.cve_version,
+      })),
+      affects,
+    );
+    const byVersion: Record<
+      string,
+      { total: number; critical: number; high: number; kev: number; blocked: boolean }
+    > = {};
+    for (const v of perVersion) {
+      byVersion[v.version] = {
+        total: v.counts.total,
+        critical: v.counts.critical,
+        high: v.counts.high,
+        kev: v.counts.kev,
+        // Same predicate the download route enforces, over the affects rows already loaded.
+        blocked:
+          getVersionAvailabilityStatus(v.version, affects, cveVersionByVersion.get(v.version)) ===
+          "blocked",
+      };
+    }
+    return { tracked: true, byVersion };
+  };
+
   operatorRouter.use(
     createAdminRouter(
       {
@@ -678,40 +741,28 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
             return null;
           }
         },
-        getPackageVulnBadges: async (name: string) => {
-          if (!(await isPackageTracked(pool, name))) return { tracked: false, byVersion: {} };
-          const versionRows = await listVersions(pool, name, {});
-          const affects = await listAffectsWithCveForPackage(pool, name);
-          const cveVersionByVersion = new Map(versionRows.map((r) => [r.version, r.cve_version]));
-          const perVersion = crossReferenceVersions(
-            versionRows.map((r) => ({
-              version: r.version,
-              version_group: r.version_group,
-              cve_version: r.cve_version,
-            })),
-            affects,
-          );
-          const byVersion: Record<
-            string,
-            { total: number; critical: number; high: number; kev: number; blocked: boolean }
-          > = {};
-          for (const v of perVersion) {
-            byVersion[v.version] = {
-              total: v.counts.total,
-              critical: v.counts.critical,
-              high: v.counts.high,
-              kev: v.counts.kev,
-              // Same predicate the download route enforces, over the affects rows already loaded.
-              blocked:
-                getVersionAvailabilityStatus(
-                  v.version,
-                  affects,
-                  cveVersionByVersion.get(v.version),
-                ) === "blocked",
-            };
-          }
-          return { tracked: true, byVersion };
-        },
+        getPackageVulnBadges,
+      },
+      basePath,
+    ),
+  );
+
+  // View-only pages for non-operators (unauthenticated for now; a `package-viewers` role would
+  // wrap this one router). Read deps only -- no sync, delete, toggle, waiver or suppression.
+  publicRouter.use(
+    createCatalogRouter(
+      {
+        listConfiguredPackages: () => Array.from(syncServices.keys()),
+        listEnabledPackages: () => listPackages(pool, true),
+        getPackage: (name) => getPackage(pool, name),
+        listJobs: (opts) => listSyncJobs(pool, opts),
+        listVersionGroupNamesForPackage: (packageName) => listVersionGroups(pool, packageName),
+        listVersionsInGroup: (packageName, group) => listVersions(pool, packageName, { group }),
+        listArtifactsForVersionId: (versionId) => listArtifactsForVersion(pool, versionId),
+        getPackageVulnBadges,
+        queryVulns: (product, version) => queryVulns(vulnQueryDeps, { product, version }),
+        getDataFreshness: () => getDataFreshness(pool),
+        getSyncStatus: () => getVulnSyncStatus(pool),
       },
       basePath,
     ),
@@ -779,6 +830,12 @@ async function start(): Promise<void> {
     rulesFile: path.resolve(config.WALRUS_EGRESS_RULES),
     mode: config.WALRUS_EGRESS_MODE,
   });
+  // Same fail-fast contract: a WALRUS_LOGO / WALRUS_ADMIN_LOGO that points at nothing refuses to
+  // start, rather than serving every page with a broken image in the nav.
+  const logoFiles = {
+    public: resolveLogoFile("WALRUS_LOGO", config.WALRUS_LOGO),
+    admin: resolveLogoFile("WALRUS_ADMIN_LOGO", config.WALRUS_ADMIN_LOGO),
+  };
   const authAudit = createAuthAuditSinks(pool);
   const operatorAuth = await loadOperatorAuthRuntime(config, {
     auditLogin: authAudit.auditLogin,
@@ -789,7 +846,7 @@ async function start(): Promise<void> {
   await repairDerivedSortKeys();
   await recoverInterruptedState();
   await reconcileAllPackageVulns(pool, configs);
-  const app = createApp({ operatorAuth, internalAuth });
+  const app = createApp({ operatorAuth, internalAuth, logoFiles });
   log.info("Startup recovery complete");
   // This process runs the scheduled /internal/vuln-sync/* walks, so it is the one that pays
   // for a missing NVD key. Warned at boot rather than reported as a degradation -- see

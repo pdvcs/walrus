@@ -751,6 +751,32 @@ curl -XPOST .../internal/vuln-sync/cvss -H 'content-type: application/json' \
 
 ---
 
+## Web pages (view-only)
+
+Read-only HTML pages for people who want to see what walrus serves but are not operators. They
+need no login. They render the same data as the admin pages, minus every action: no sync, enable
+or disable, delete, re-download, waiver, or CVE-suppression control, and no sync-job detail.
+
+### GET /packages
+
+The enabled packages walrus serves, with vendor and when each last synced. Disabled packages are
+not listed, matching `GET /api/v1/packages`.
+
+### GET /packages/:name
+
+The cached versions of one package, grouped as configured, with the state of each platform's
+artifact. An `available` artifact links to its `GET /download/...` URL. An artifact that download
+would refuse -- held back by a critical CVE, or still inside its cooling-off period -- is shown but
+not linked, and its tooltip says why. Version badges link to the vulnerability page below.
+Returns 404 for an unknown or disabled package.
+
+### GET /vulns?product=&version=
+
+The vulnerability lookup: CVEs affecting a product, optionally at a version, with a `blocks at N`
+badge on the ones that make `GET /download` return 403, and freshness chips for the NVD, KEV, OSV
+and CVSS feeds. A CVE suppressed by an operator shows a `suppressed` badge with its reason and
+expiry; who suppressed it is not shown. Backed by the same query as `GET /api/v1/vulns`.
+
 ## Utility
 
 ### GET /health
