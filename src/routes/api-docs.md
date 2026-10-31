@@ -606,6 +606,10 @@ curl 'http://localhost:8080/api/v1/cves/CVE-2023-40031'
 `?version=` restricts to one. Packages with no `[vulnerabilities]` config return `tracked: false`
 (HTTP 200, not an error); unknown packages → **404**.
 
+Watch-only packages (`watchlist/*.toml`) are vulnerability-tracked but hold no binaries, so they
+answer `tracked: true` with an empty `versions` array; use `GET /api/v1/vulns?product=` to see
+their CVEs. They appear in no package listing and have no download routes.
+
 ```bash
 curl 'http://localhost:8080/api/v1/packages/openjdk/vulns'
 ```
@@ -618,7 +622,15 @@ curl 'http://localhost:8080/api/v1/packages/openjdk/vulns'
     {
       "version": "11.0.2",
       "version_group": "11",
-      "counts": { "total": 12, "critical": 1, "high": 6, "medium": 5, "low": 0, "kev": 0 },
+      "counts": {
+        "total": 12,
+        "critical": 1,
+        "high": 6,
+        "medium": 5,
+        "low": 0,
+        "unrated": 0,
+        "kev": 0
+      },
       "vulns": [
         {
           "cve_id": "…",
@@ -638,6 +650,73 @@ curl 'http://localhost:8080/api/v1/packages/openjdk/vulns'
 
 Suppressed CVEs remain in each version's `vulns` array and carry the active assertion in
 `suppression`; they do not make that version's download status blocked.
+
+### GET /api/v1/packages/:name/posture?version= | Vulnerability posture of a version
+
+The question "what is the vulnerability situation of **this version** of this package?", answered
+as a verdict plus the evidence. Works for any tracked package, served or
+[watch-only](../../engineering/docs/watchlist.md), and for any version — it need not be cached.
+Omit `version` to assess the package's **latest** (a watch-only package's `[latest]` lookup; a
+served package's newest cached version). Unknown package → **404**.
+
+```bash
+curl 'http://localhost:8080/api/v1/packages/requests/posture?version=2.30.0'
+```
+
+```json
+{
+  "package": "requests",
+  "version": "2.30.0",
+  "version_source": "requested",
+  "latest_version": "2.34.2",
+  "is_latest": false,
+  "status": "vulnerable",
+  "unknown_reasons": [],
+  "coverage": { "nvd": "complete", "osv": "complete" },
+  "counts": { "total": 4, "critical": 0, "high": 0, "medium": 2, "low": 0, "unrated": 2, "kev": 0 },
+  "unfixed": 0,
+  "upgrade_to": "2.33.0",
+  "vulns": [
+    {
+      "cve_id": "CVE-2023-32681",
+      "severity": "MEDIUM",
+      "fixed_in": "2.31.0",
+      "is_kev": false,
+      "confirmed": true,
+      "affected": { "range": ">= 2.3.0, < 2.31.0", "matched_because": "2.30.0 < 2.31.0" }
+    }
+  ]
+}
+```
+
+`status` is one of:
+
+- **`clean`** — no advisory affects this version, **and** that claim is defensible: the package is
+  tracked, every configured source has actually been read for it, the version parses, and every
+  advisory range could be evaluated.
+- **`vulnerable`** — at least one advisory's range matched. `counts` and `vulns` say how many and
+  which; `upgrade_to` is the lowest version expected to clear all of them (null if any matching
+  advisory has no known fix; `unfixed` counts those).
+- **`unknown`** — a verdict cannot be given. **Never treat this as a pass.** `unknown_reasons`
+  names why: `no-version` (nothing to assess — a watch-only package whose `[latest]` has not
+  resolved), `version-unparseable`, `not-tracked` (no CPE pairs and no OSV mapping),
+  `coverage-incomplete` (a configured source has not been read yet — see `coverage`; a newly
+  added package is `unknown` until its backfill finishes, not `clean`), or `inconclusive-ranges`
+  (an advisory was listed but could not be compared to this version).
+
+`vulnerable` stands even when coverage is incomplete, because more data can only add to it.
+`counts` covers only evaluated (`confirmed`) advisories; an unconfirmed one is listed with
+`confirmed: false` and never changes the verdict by itself. `unrated` counts advisories that have
+no severity yet — common for OSV-only advisories NVD has not analysed — so
+`total = critical + high + medium + low + unrated`. Suppressed CVEs are still listed and counted
+(they carry their `suppression`); suppression only affects the download gate.
+
+### GET /api/v1/watchlist | Watch-only packages and their posture
+
+Every [watch-only](../../engineering/docs/watchlist.md) package with its resolved latest version
+and the posture of that version (status, counts, `upgrade_to`, `coverage`). It is the fleet view
+of "what we monitor but do not fetch"; per-advisory detail is
+`GET /api/v1/packages/:name/posture`.
 
 ### GET /api/v1/packages/:name/availability | Package availability history
 
@@ -705,6 +784,12 @@ Vuln data is refreshed by external cron hitting `POST /internal/vuln-sync/:sourc
 (`POST /admin/v1/vuln-sync/:source`, audited in `admin_actions`). See the
 [ops runbook](../../engineering/docs/build-release.md) for cadence and the one-time backfill.
 
+`POST /internal/watch-versions/refresh` re-resolves the latest version of every watch-only
+package that declares `[latest]` (daily, `walrus-watch-versions`). It answers `200` when every
+lookup succeeded, `207` when some failed and `502` when all did — so the scheduler retries and
+alerts on a dead upstream. A failed lookup keeps the previous good version and records the error
+on the package (`latest_version_error`).
+
 **`cvss` — preview before applying.** The `cvss` source is a repair pass that fills in
 severity for CVEs that have none (mostly OSV stubs NVD files as "Deferred"). Enrichment
 can newly satisfy the >= 9.0 download gate, so a version that serves today can start
@@ -769,6 +854,15 @@ artifact. An `available` artifact links to its `GET /download/...` URL. An artif
 would refuse -- held back by a critical CVE, or still inside its cooling-off period -- is shown but
 not linked, and its tooltip says why. Version badges link to the vulnerability page below.
 Returns 404 for an unknown or disabled package.
+
+### GET /watched | Watched packages page
+
+The [watch-only](../../engineering/docs/watchlist.md) packages -- software walrus monitors for
+vulnerabilities but does not serve -- with the latest release, the posture of that release
+(`clean`, `vulnerable` or `unknown`, with severity counts and the fixed-in version), and which
+sources have been read. A package links to the vulnerability page above; a posture links to
+`GET /api/v1/packages/:name/posture`. Operational detail (retry counts, upstream error text) is
+shown only on the admin equivalent, `/admin/v1/watched`.
 
 ### GET /vulns?product=&version= | Vulnerabilities page
 

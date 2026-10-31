@@ -1,6 +1,6 @@
 import { withBase } from "../common/base-path.js";
 
-export type AdminNavItem = "packages" | "jobs" | "vuln-jobs" | "validate" | "vulns";
+export type AdminNavItem = "packages" | "watched" | "jobs" | "vuln-jobs" | "validate" | "vulns";
 
 export const BASE_PAGE_STYLES = `
   *, *::before, *::after { box-sizing: border-box; }
@@ -89,6 +89,7 @@ export function renderAdminNav(basePath: string, active?: AdminNavItem): string 
   return `<nav class="nav" aria-label="Admin navigation">
     ${renderBrand(basePath, "admin")}
     <a href="${withBase(basePath, "/admin/v1/")}"${active === "packages" ? ' class="active"' : ""}>Packages</a>
+    <a href="${withBase(basePath, "/admin/v1/watched")}"${active === "watched" ? ' class="active"' : ""}>Watched</a>
     <details class="nav-menu${active === "jobs" || active === "vuln-jobs" ? " nav-menu-active" : ""}">
       <summary class="nav-link nav-menu-trigger">Jobs</summary>
       <div class="nav-menu-list">
@@ -133,13 +134,14 @@ export function renderAdminNav(basePath: string, active?: AdminNavItem): string 
   </script>`;
 }
 
-export type PublicNavItem = "packages" | "vulns" | "api";
+export type PublicNavItem = "packages" | "watched" | "vulns" | "api";
 
 export function renderPublicNav(basePath: string, active?: PublicNavItem): string {
   const returnTo = encodeURIComponent(withBase(basePath, "/admin/v1/"));
   return `<nav class="nav" aria-label="Site navigation">
     ${renderBrand(basePath, "public")}
     <a href="${withBase(basePath, "/packages")}"${active === "packages" ? ' class="active"' : ""}>Packages</a>
+    <a href="${withBase(basePath, "/watched")}"${active === "watched" ? ' class="active"' : ""}>Watched</a>
     <a href="${withBase(basePath, "/vulns")}"${active === "vulns" ? ' class="active"' : ""}>Vulnerabilities</a>
     <span class="nav-spacer"></span>
     <a href="${withBase(basePath, "/api")}"${active === "api" ? ' class="active"' : ""}>API Docs</a>
@@ -186,6 +188,7 @@ export function renderLandingPage(version: string, basePath: string, branding: s
       </div>
       <div class="link-grid">
         <a class="link-card" href="${withBase(basePath, "/packages")}"><strong>Browse packages</strong><span>Which versions are cached for which platforms, and which are held back.</span></a>
+        <a class="link-card" href="${withBase(basePath, "/watched")}"><strong>Watched packages</strong><span>Software we monitor for vulnerabilities but do not serve, and the posture of its latest release.</span></a>
         <a class="link-card" href="${withBase(basePath, "/vulns")}"><strong>Vulnerability lookup</strong><span>Known CVEs for a product and version, and whether they block a download.</span></a>
         <a class="link-card" href="${withBase(basePath, "/health")}"><strong>Deployment health</strong><span>Minimal availability contract for the deployment platform.</span></a>
         <a class="link-card" href="${withBase(basePath, "/app/status")}"><strong>Application status</strong><span>Operational details, dependency state, and degradations.</span></a>

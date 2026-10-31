@@ -12,7 +12,7 @@
 
 import path from "path";
 import { loadAllPackages } from "../src/services/package-registry.js";
-import { loadAllWatchConfigs } from "../src/services/watch-registry.js";
+import { loadAllWatchConfigs, findWatchNameCollisions } from "../src/services/watch-registry.js";
 
 const PACKAGES_DIR = path.join(process.cwd(), "packages");
 const WATCHLIST_DIR = path.join(process.cwd(), "watchlist");
@@ -24,7 +24,11 @@ const bold = (s: string) => `\x1b[1m${s}\x1b[0m`;
 const { configs, errors } = loadAllPackages(PACKAGES_DIR);
 const watch = loadAllWatchConfigs(WATCHLIST_DIR);
 const total = configs.length + errors.length + watch.configs.length + watch.errors.length;
-const errorCount = errors.length + watch.errors.length;
+const collisions = findWatchNameCollisions(
+  configs.map((e) => e.config.name),
+  watch.configs.map((e) => e.config),
+);
+const errorCount = errors.length + watch.errors.length + collisions.length;
 
 const ok = [
   ...configs.map((e) => ({ name: e.config.name, filePath: e.filePath, suffix: "" })),
@@ -47,6 +51,10 @@ for (const { filePath, error } of [...errors, ...watch.errors]) {
   for (const line of error.split("\n")) {
     console.log(`  ${line}`);
   }
+}
+
+for (const name of collisions) {
+  console.log(`${red("✗")} ${name}: defined in both packages/ and watchlist/`);
 }
 
 console.log("");

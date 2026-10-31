@@ -8,6 +8,7 @@ import { log } from "./common/log.js";
 import { pool, runMigrations } from "./db/client.js";
 import { createStorageBackend } from "./storage/index.js";
 import { loadAllPackages } from "./services/package-registry.js";
+import { loadAllWatchConfigs } from "./services/watch-registry.js";
 import { reconcileAllPackageVulns } from "./services/vuln-config.js";
 import { createVulnSyncImpls } from "./vuln/sync/impls.js";
 import { DownloadService } from "./services/download-service.js";
@@ -27,9 +28,17 @@ import { createCatalogRouter } from "./routes/catalog.js";
 import { resolveLogoFile } from "./common/brand-assets.js";
 import { createCvesRouter } from "./routes/cves.js";
 import { createPackageVulnsRouter } from "./routes/package-vulns.js";
+import { createWatchlistRouter } from "./routes/watchlist.js";
+import { getPosture, type PostureDeps } from "./services/posture.js";
+import { refreshWatchLatestVersions } from "./services/latest-version.js";
+import { compareVersions } from "./common/version-utils.js";
 import { createAdminVulnsRouter } from "./routes/admin-vulns.js";
 import { createApiDocsRouter } from "./routes/api-docs.js";
-import { isPackageTracked, listDistinctCpePairs } from "./db/queries/package-aliases.js";
+import {
+  getPackageCpes,
+  isPackageTracked,
+  listDistinctCpePairs,
+} from "./db/queries/package-aliases.js";
 import { crossReferenceVersions, getVersionAvailabilityStatus } from "./services/vuln-service.js";
 import { queryVulns, VulnQueryDeps } from "./services/vuln-query.js";
 import { getVulnHints } from "./services/vuln-hints.js";
@@ -61,6 +70,7 @@ import { LandingPageResponseSchema } from "./routes/schemas.js";
 import {
   getPackage,
   listPackages,
+  listWatchedPackages,
   setPackageEnabled,
   upsertPackage,
 } from "./db/queries/packages.js";
@@ -140,7 +150,16 @@ if (packageRegistry.errors.length > 0) {
   }
 }
 
+// Watch-only packages (WAL-54): vuln-tracked, never discovered/downloaded/served. They get no
+// SyncService; they are reconciled alongside the served configs at boot.
+const watchRegistry = loadAllWatchConfigs();
+for (const error of watchRegistry.errors) {
+  log.warn({ file: error.filePath, error: error.error }, "Watch config failed to load");
+}
+log.info({ count: watchRegistry.configs.length }, "Watch-only packages loaded");
+
 const configs = packageRegistry.configs.map((entry) => entry.config);
+const watchConfigs = watchRegistry.configs.map((entry) => entry.config);
 const syncServices = new Map<string, SyncService>();
 const sharedDownloadService = new DownloadService(pool, storage, { maxRetries: 2 });
 const applicationStartedAt = new Date();
@@ -471,6 +490,25 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     },
   };
 
+  const postureDeps: PostureDeps = {
+    query: vulnQueryDeps,
+    getPackage: (name) => getPackage(pool, name),
+    countCpes: async (name) => (await getPackageCpes(pool, name)).length,
+    newestCachedVersion: async (name) => {
+      const rows = await listVersions(pool, name, {});
+      return rows.map((r) => r.version).sort((a, b) => compareVersions(b, a))[0] ?? null;
+    },
+  };
+
+  publicRouter.use(
+    "/api/v1/watchlist",
+    createWatchlistRouter({
+      listWatched: () => listWatchedPackages(pool),
+      getPosture: (name) => getPosture(postureDeps, name),
+      getDataFreshness: () => getDataFreshness(pool),
+    }),
+  );
+
   publicRouter.use(
     "/api/v1/vulns",
     createVulnsRouter({
@@ -487,6 +525,8 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         getDataFreshness: () => getDataFreshness(pool),
         getSyncStatus: () => getVulnSyncStatus(pool),
         getHints: () => getVulnHints(pool, { autoBackfillEnabled: config.VULN_AUTO_BACKFILL }),
+        listWatchedPackages: () => listWatchedPackages(pool),
+        getWatchedPosture: (name) => getPosture(postureDeps, name),
         vulnSyncImpls,
         logAdminAction: (details, subject) =>
           insertAdminAction(pool, {
@@ -542,6 +582,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       getDataFreshness: () => getDataFreshness(pool),
       listAvailabilityHistory: (name, version) => listAvailabilityHistory(pool, name, version),
       listRecentTransitions: (name) => listRecentTransitions(pool, name),
+      getPosture: (name, version) => getPosture(postureDeps, name, version),
     }),
   );
 
@@ -763,6 +804,8 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         queryVulns: (product, version) => queryVulns(vulnQueryDeps, { product, version }),
         getDataFreshness: () => getDataFreshness(pool),
         getSyncStatus: () => getVulnSyncStatus(pool),
+        listWatchedPackages: () => listWatchedPackages(pool),
+        getWatchedPosture: (name) => getPosture(postureDeps, name),
       },
       basePath,
     ),
@@ -790,6 +833,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
         }),
       recordAvailability: (source) =>
         recordAvailabilityTransitions(pool, { source, trigger: "internal" }),
+      refreshWatchVersions: () => refreshWatchLatestVersions(pool, watchConfigs),
       autoBackfill: async () => {
         if (!config.VULN_AUTO_BACKFILL) {
           return { enabled: false, pending: 0, started: [], deferred: [], failed: [] };
@@ -845,7 +889,13 @@ async function start(): Promise<void> {
   await runMigrations();
   await repairDerivedSortKeys();
   await recoverInterruptedState();
-  await reconcileAllPackageVulns(pool, configs);
+  await reconcileAllPackageVulns(pool, configs, watchConfigs);
+  // Fire-and-forget: a slow or dead upstream (pypi.org, api.github.com) must never delay boot or
+  // fail the readiness probe. The scheduled refresh is the reliable path; this only means a fresh
+  // deploy has a latest version without waiting for the first tick.
+  void refreshWatchLatestVersions(pool, watchConfigs).catch((err: unknown) =>
+    log.warn({ err }, "Boot-time latest-version refresh failed"),
+  );
   const app = createApp({ operatorAuth, internalAuth, logoFiles });
   log.info("Startup recovery complete");
   // This process runs the scheduled /internal/vuln-sync/* walks, so it is the one that pays

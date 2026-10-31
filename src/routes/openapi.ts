@@ -18,6 +18,8 @@ import {
   VulnProductResponseSchema,
   CveDetailResponseSchema,
   PackageVulnsResponseSchema,
+  PostureResponseSchema,
+  WatchlistResponseSchema,
   LandingPageResponseSchema,
   MetricsResponseSchema,
 } from "./schemas.js";
@@ -368,6 +370,48 @@ registry.registerPath({
     404: {
       description: "Unknown package",
       content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/v1/packages/{name}/posture",
+  summary: "Vulnerability posture of one package at one version",
+  operationId: "getPackagePosture",
+  tags: ["Vulnerabilities"],
+  request: {
+    params: packageNameParam,
+    query: z.object({
+      version: z.string().optional().openapi({
+        description:
+          "Version to assess; need not be cached. Defaults to the package's latest version.",
+      }),
+    }),
+  },
+  responses: {
+    200: {
+      description:
+        "`clean`, `vulnerable` or `unknown`, with severity counts, each advisory and its fix.",
+      content: { "application/json": { schema: PostureResponseSchema } },
+    },
+    404: {
+      description: "Unknown package",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/v1/watchlist",
+  summary: "Watch-only packages and the posture of each one's latest version",
+  operationId: "getWatchlist",
+  tags: ["Vulnerabilities"],
+  responses: {
+    200: {
+      description: "Every configured watch-only package.",
+      content: { "application/json": { schema: WatchlistResponseSchema } },
     },
   },
 });

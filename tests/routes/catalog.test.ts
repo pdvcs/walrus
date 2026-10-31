@@ -80,6 +80,22 @@ function artifact(overrides: Partial<Record<string, unknown>> = {}) {
   };
 }
 
+const WATCHED_ROW = {
+  name: "requests",
+  display_name: "Requests",
+  vendor: "PSF",
+  osv_ecosystem: "PyPI",
+  osv_name: "requests",
+  cpes: ["python:requests"],
+  vuln_backfill_completed_at: new Date("2026-10-30T00:00:00Z"),
+  vuln_backfill_attempts: 3,
+  vuln_backfill_last_error: "NVD 503 from internal-host.example",
+  osv_synced_at: new Date("2026-10-30T00:00:00Z"),
+  latest_version: "2.34.2",
+  latest_version_checked_at: new Date("2026-10-31T06:30:00Z"),
+  latest_version_error: "pypi.internal.example refused the connection",
+};
+
 function depsFor(
   artifacts: ReturnType<typeof artifact>[],
   badges: Record<string, unknown> = {},
@@ -104,6 +120,14 @@ function depsFor(
       kev_last_sync: null,
       osv_last_sync: null,
       cvss_last_sync: null,
+    }),
+    listWatchedPackages: vi.fn().mockResolvedValue([WATCHED_ROW]),
+    getWatchedPosture: vi.fn().mockResolvedValue({
+      status: "vulnerable",
+      unknown_reasons: [],
+      version: "2.34.2",
+      upgrade_to: "2.40.0",
+      counts: { total: 2, critical: 0, high: 1, medium: 1, low: 0, unrated: 0, kev: 0 },
     }),
     getSyncStatus: vi.fn().mockResolvedValue({
       nvd: { last_attempt: null, last_success: null, last_failure: null, last_ok: true },
@@ -152,7 +176,7 @@ describe("GET /packages", () => {
 
   it("is visibly the public view: day-scene logo and teal accent, never the admin logo", async () => {
     const app = appFor(depsFor([artifact()]));
-    for (const page of ["/packages", "/packages/python", "/vulns"]) {
+    for (const page of ["/packages", "/packages/python", "/vulns", "/watched"]) {
       const res = await request(app).get(page).expect(200);
       expect(res.text, page).toContain('src="/brand/logo"');
       expect(res.text, page).not.toContain("/brand/admin-logo");
@@ -342,13 +366,68 @@ describe("GET /vulns", () => {
   });
 });
 
+describe("GET /watched (WAL-54)", () => {
+  it("lists watched packages with their latest version and posture, view-only", async () => {
+    const res = await request(appFor(depsFor([])))
+      .get("/watched")
+      .expect(200);
+    expect(res.headers["content-type"]).toMatch(/html/);
+    expect(res.text).toContain("Watched Packages");
+    expect(res.text).toContain("Requests");
+    expect(res.text).toContain("<code>2.34.2</code>");
+    expect(res.text).toContain("posture-vulnerable");
+    expect(res.text).toContain("fix in 2.40.0");
+    // Links into the public lookup, not the admin explorer.
+    expect(res.text).toContain('href="/vulns?product=requests"');
+    expectNoAdminSurface(res.text);
+  });
+
+  it("is in the public nav, marked active, and the admin nav is absent", async () => {
+    const res = await request(appFor(depsFor([])))
+      .get("/watched")
+      .expect(200);
+    expect(res.text).toContain("Site navigation");
+    expect(res.text).not.toContain("Admin navigation");
+    expect(res.text).toMatch(/<a href="\/watched" class="active">Watched<\/a>/);
+  });
+
+  it("keeps operational detail (errors, retry counts) for operators", async () => {
+    const res = await request(appFor(depsFor([])))
+      .get("/watched")
+      .expect(200);
+    expect(res.text).not.toContain("internal-host.example");
+    expect(res.text).not.toContain("pypi.internal.example");
+    expect(res.text).not.toContain("Attempts");
+  });
+
+  it("says so when nothing is watched", async () => {
+    const deps = depsFor([]);
+    (deps.listWatchedPackages as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    const res = await request(appFor(deps)).get("/watched").expect(200);
+    expect(res.text).toContain("No watch-only packages");
+  });
+
+  it("is linked from every public page's nav", async () => {
+    const app = appFor(depsFor([artifact()]));
+    for (const page of ["/packages", "/vulns"]) {
+      const res = await request(app).get(page).expect(200);
+      expect(res.text, page).toContain('href="/watched"');
+    }
+  });
+});
+
 describe("base path", () => {
   it("prefixes every internal link on every page", async () => {
     const deps = depsFor([artifact()], { "3.13.15": NOISY });
     (deps.queryVulns as ReturnType<typeof vi.fn>).mockResolvedValue(vulnResult());
     const app = appFor(deps, "/walrus");
 
-    const pages = ["/walrus/packages", "/walrus/packages/python", "/walrus/vulns?product=python"];
+    const pages = [
+      "/walrus/packages",
+      "/walrus/packages/python",
+      "/walrus/vulns?product=python",
+      "/walrus/watched",
+    ];
     for (const page of pages) {
       const res = await request(app).get(page).expect(200);
       const hrefs = [...res.text.matchAll(/(?:href|action)="(\/[^"]*)"/g)].map((m) => m[1]);

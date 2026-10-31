@@ -44,6 +44,33 @@ with its own test suite.
   declares.
 - **`npm run vuln:ingest-all`** ingests CVEs for every tracked package over the API, and the admin
   package list can be filtered by first letter.
+- **WAL-54 (Added):** watch-only packages. A `watchlist/*.toml` file tracks a package's
+  vulnerabilities (NVD CPE pairs, OSV mapping) without discovering, downloading or serving
+  anything. Rows are marked `packages.watch_only` (migration `0019`), reported as
+  `walrus_packages{state="watch"}`, and listed read-only at `/admin/v1/watched`. `watchlist/` is
+  now part of the container image. The watchlist is scoped to applications (`notepad-plus-plus`,
+  `sublime-text`); ecosystem libraries are left to the Snyk and Sonatype tooling users already run.
+- **WAL-54 (Added):** `GET /api/v1/packages/:name/posture?version=` answers "what is the vulnerability
+  posture of this version?" for any tracked package: `clean`, `vulnerable` or `unknown`, with
+  severity counts, each advisory and its fix, and `upgrade_to`. `clean` is only returned once every
+  configured source has been read; otherwise the answer is `unknown`, with the reasons.
+  `GET /api/v1/watchlist` gives the same for each watch-only package's latest version.
+- **WAL-54 (Added):** a watch entry can declare `[latest]` (a JSON path or a GitHub release) so
+  walrus knows the current release without discovering versions. Refreshed daily by the new
+  `walrus-watch-versions` scheduler job and at boot; `/admin/v1/watched` now shows it, source
+  coverage and the posture counts.
+- **WAL-54 (Changed):** a targeted backfill (`vuln:backfill --package`, the auto sweep) also reads
+  OSV for that package, instead of leaving an OSV-primary package at its NVD advisories until the
+  weekly run. Migration `0020` adds `osv_synced_at` and the latest-version columns.
+- **WAL-54 (Added):** a view-only **Watched** page at `/watched`, and "Watched" is now a top-level
+  nav item on both the public and admin sites (next to Packages) instead of a link in the
+  vulnerability explorer's data-sources strip. The public page omits retry counts and upstream
+  error text.
+- **WAL-54 (Added):** vulnerability `counts` gain `unrated` (advisories with no severity yet), so
+  the bands add up to `total`.
+- **WAL-35 (Fixed):** `watchlist/*.toml` and `packages/*.toml` reject unknown keys, naming them,
+  instead of silently dropping them. A name present in both directories is an error
+  (`npm run check-schemas` fails); the served package wins.
 
 ## Version 0.2.0: Vulnerability intelligence
 

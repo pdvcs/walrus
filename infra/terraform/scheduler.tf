@@ -157,3 +157,31 @@ resource "google_cloud_scheduler_job" "vuln_backfill_auto" {
     }
   }
 }
+
+# Latest-version refresh for watch-only packages (WAL-54). Walrus discovers no versions for a
+# `watchlist/` entry, so "is the current release affected?" depends on this lookup (a PyPI or
+# GitHub call per package) staying current. Failures return non-2xx on purpose: the route answers
+# 502 when every lookup failed and 207 when some did, so the scheduler retries and the generic
+# scheduler_job_failure policy alerts, instead of a dead upstream reading as a quiet success.
+resource "google_cloud_scheduler_job" "watch_versions" {
+  name             = "walrus-watch-versions"
+  region           = var.region
+  schedule         = var.watch_versions_schedule
+  time_zone        = "UTC"
+  attempt_deadline = "320s"
+
+  retry_config {
+    retry_count          = 1
+    min_backoff_duration = "300s"
+  }
+
+  http_target {
+    http_method = "POST"
+    uri         = "${google_cloud_run_v2_service.walrus.uri}/internal/watch-versions/refresh"
+
+    oidc_token {
+      service_account_email = google_service_account.walrus_scheduler.email
+      audience              = var.internal_oidc_audience
+    }
+  }
+}

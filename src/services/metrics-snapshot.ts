@@ -4,7 +4,7 @@ import { getVulnSyncStatus, type VulnSyncStatus } from "../db/queries/vuln-sync-
 import { getDegradations, type Degradation } from "./degradations.js";
 
 export interface PackageMetricRow {
-  state: "enabled" | "disabled" | "removed";
+  state: "enabled" | "disabled" | "removed" | "watch";
   count: number;
 }
 
@@ -74,6 +74,7 @@ export async function getMetricsSnapshot(
     query<PackageMetricRow>(
       `SELECT CASE
                 WHEN removed_at IS NOT NULL THEN 'removed'
+                WHEN watch_only THEN 'watch'
                 WHEN enabled THEN 'enabled'
                 ELSE 'disabled'
               END AS state,

@@ -1,0 +1,26 @@
+# Notepad++ — watch-only: walrus tracks its vulnerabilities but does not
+# discover, cache, or serve the editor.
+# See ./engineering/docs/watchlist.md
+
+name = "notepad-plus-plus"
+display_name = "Notepad++"
+vendor = "Don Ho"
+website = "https://notepad-plus-plus.org/"
+description = "Windows source code editor (vulnerability tracking only)"
+
+[latest]
+type = "github-release"
+repo = "notepad-plus-plus/notepad-plus-plus"
+# Tags look like v8.9.8.1; the default strips the leading "v".
+
+[vulnerabilities]
+# Verified against the live NVD API 2.0 on 2026-10-31:
+#   notepad-plus-plus:notepad++ — 293 CPE dictionary entries, 21 CVEs (primary).
+#   don_ho:notepad++            — 73 entries, 1 CVE (older vendor name NVD still files under).
+#   notepad_plus_plus:notepad++ — 15 entries, listed in the dictionary but not queried for CVEs.
+# NVD escapes the "++" in the CPE string; walrus escapes components itself, so write it plain.
+cpes = ["notepad-plus-plus:notepad++", "don_ho:notepad++"]
+
+# No OSV mapping: Notepad++ is not a package in any OSV ecosystem.
+
+aliases = ["notepad++", "notepad plus plus", "notepad-plus-plus", "npp"]

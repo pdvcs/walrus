@@ -1107,7 +1107,7 @@
         <section class="span">
           <h2>Scheduled jobs</h2>
           <p>
-            Cloud Scheduler holds six jobs, all in UTC. Five call back into the API over OIDC using
+            Cloud Scheduler holds seven jobs, all in UTC. Six call back into the API over OIDC using
             the <code>walrus-scheduler</code> service account; the package sync instead asks the Cloud
             Run Jobs API to start <code>walrus-sync</code>, authenticated with an OAuth token because
             the target is a Google API. That is one of two ways <code>walrus-sync</code> gets started
@@ -1168,6 +1168,16 @@
                     Sweeps for newly tracked packages whose CVE history was never fetched, and launches
                     <code>walrus-vuln-backfill</code> for each (ADR-003). Incremental sync is
                     cursor-based and structurally blind to a package's past.
+                  </td>
+                </tr>
+                <tr>
+                  <td class="mono">walrus-watch-versions</td>
+                  <td class="mono">30 6 * * *</td>
+                  <td><code>POST /internal/watch-versions/refresh</code></td>
+                  <td>
+                    Resolves the current release of each watch-only package (PyPI or GitHub) so
+                    posture can answer for "the latest version" of something walrus does not fetch.
+                    A total failure returns 502 so the scheduler retries and alerts.
                   </td>
                 </tr>
               </tbody>
@@ -1320,7 +1330,7 @@
           </p>
           <p>
             <code>verify-deployment.sh</code> asserts the invariants the tickets claim: healthy
-            service, all six scheduler jobs enabled and firing, matching image tags across the three
+            service, all seven scheduler jobs enabled and firing, matching image tags across the three
             workloads, correct memory/heap/pool sizing, mounted secrets, alert policies with
             severities, the dashboard and log metrics, auth rejection on <code>/internal</code>, and —
             with <code>--full</code> — that served bytes hash to their published digests.

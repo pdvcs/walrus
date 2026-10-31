@@ -1,0 +1,21 @@
+# Sublime Text — watch-only: walrus tracks its vulnerabilities but does not
+# discover, cache, or serve the editor.
+# See ./engineering/docs/watchlist.md
+
+name = "sublime-text"
+display_name = "Sublime Text"
+vendor = "Sublime HQ"
+website = "https://www.sublimetext.com/"
+description = "Cross-platform text editor (vulnerability tracking only)"
+
+# Sublime Text is closed source with no public release API, so there is no [latest]:
+# posture needs an explicit ?version= for this entry.
+
+[vulnerabilities]
+# Verified against the live NVD API 2.0 on 2026-10-31. The only non-deprecated pair in the
+# dictionary is sublimetext:sublime_text_3 (7 entries, 3 CVEs). NVD has no `sublime_text`
+# product (sublimetext:sublime_text and sublimehq:sublime_text both return 0 CVEs), so
+# Sublime Text 4 advisories are not attributable via CPE.
+cpes = ["sublimetext:sublime_text_3"]
+
+aliases = ["sublime text", "sublime", "sublime text 3", "sublimetext"]

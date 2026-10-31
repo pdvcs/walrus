@@ -2,8 +2,13 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import fs from "fs";
 import path from "path";
 import os from "os";
-import { loadWatchConfig, loadAllWatchConfigs } from "../../src/services/watch-registry.js";
+import {
+  loadWatchConfig,
+  loadAllWatchConfigs,
+  findWatchNameCollisions,
+} from "../../src/services/watch-registry.js";
 import { computeVulnInput } from "../../src/services/vuln-config.js";
+import type { WatchConfig } from "../../src/types/watch-config.js";
 
 const FIXTURES_DIR = path.join(os.tmpdir(), "walrus-test-watchlist");
 
@@ -37,12 +42,30 @@ vendor = "HashiCorp (IBM)"
 cpes = ["cpe:2.3:a:hashicorp:vault"]
 `;
 
+// A served package TOML copied into watchlist/ must not quietly become watch-only (WAL-35).
+const SERVED_TOML_IN_WATCHLIST = `
+name = "jq"
+display_name = "jq"
+vendor = "jqlang"
+
+[vulnerabilities]
+cpes = ["jqlang:jq"]
+
+[discovery]
+type = "github-releases"
+repo = "jqlang/jq"
+
+[versioning]
+type = "semver"
+`;
+
 describe("loadWatchConfig", () => {
   beforeAll(() => {
     fs.mkdirSync(FIXTURES_DIR, { recursive: true });
     fs.writeFileSync(path.join(FIXTURES_DIR, "terraform.toml"), VALID_TERRAFORM_TOML);
     fs.writeFileSync(path.join(FIXTURES_DIR, "consul.toml"), NO_VULN_SECTION_TOML);
     fs.writeFileSync(path.join(FIXTURES_DIR, "vault.toml"), BAD_CPE_TOML);
+    fs.writeFileSync(path.join(FIXTURES_DIR, "jq.toml"), SERVED_TOML_IN_WATCHLIST);
   });
 
   afterAll(() => {
@@ -71,11 +94,17 @@ describe("loadWatchConfig", () => {
     );
   });
 
+  it("rejects a served package config, naming the keys it would have discarded", () => {
+    expect(() => loadWatchConfig(path.join(FIXTURES_DIR, "jq.toml"))).toThrow(/discovery/);
+    expect(() => loadWatchConfig(path.join(FIXTURES_DIR, "jq.toml"))).toThrow(/versioning/);
+  });
+
   it("collects successes and errors separately", () => {
     const { configs, errors } = loadAllWatchConfigs(FIXTURES_DIR);
     expect(configs.map((c) => c.config.name)).toEqual(["terraform"]);
     expect(errors.map((e) => path.basename(e.filePath)).sort()).toEqual([
       "consul.toml",
+      "jq.toml",
       "vault.toml",
     ]);
   });
@@ -109,5 +138,19 @@ describe("computeVulnInput on a watch config", () => {
     ]);
     expect(input!.osvEcosystem).toBe("Go");
     expect(input!.osvName).toBe("github.com/hashicorp/terraform");
+  });
+});
+
+describe("findWatchNameCollisions", () => {
+  const watch = (name: string) => ({ name }) as WatchConfig;
+
+  it("returns watch names that are also served, in watchlist order", () => {
+    expect(
+      findWatchNameCollisions(["terraform", "go"], [watch("requests"), watch("terraform")]),
+    ).toEqual(["terraform"]);
+  });
+
+  it("returns nothing when the directories are disjoint", () => {
+    expect(findWatchNameCollisions(["go"], [watch("requests")])).toEqual([]);
   });
 });

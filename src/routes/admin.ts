@@ -18,6 +18,7 @@ import {
   BASE_PAGE_STYLES,
   renderAdminNav,
   renderPublicNav,
+  type PublicNavItem,
   type AdminNavItem,
 } from "./page-shell.js";
 import { getEgressState, matchEgressRule } from "../common/egress-rules.js";
@@ -1253,7 +1254,7 @@ export function renderSharedHtml(
  */
 export function renderViewerHtml(
   title: string,
-  activeNav: "packages" | "vulns" | undefined,
+  activeNav: PublicNavItem | undefined,
   body: string,
   basePath: string,
   scripts = "",

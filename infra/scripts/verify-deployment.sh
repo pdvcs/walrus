@@ -215,7 +215,7 @@ import json, sys
 jobs = json.load(sys.stdin)
 names = sorted(j["name"].rsplit("/", 1)[-1] for j in jobs)
 want = sorted(["walrus-sync", "walrus-vuln-sync-nvd", "walrus-vuln-sync-osv", "walrus-vuln-sync-kev",
-               "walrus-vuln-sync-cvss", "walrus-vuln-backfill-auto"])
+               "walrus-vuln-sync-cvss", "walrus-vuln-backfill-auto", "walrus-watch-versions"])
 assert names == want, f"scheduler jobs {names} != {want}"
 bad = [j["name"].rsplit("/",1)[-1] for j in jobs if j.get("state") != "ENABLED"]
 assert not bad, f"not enabled: {bad}"
@@ -223,7 +223,7 @@ stale = [j["name"].rsplit("/",1)[-1] for j in jobs if not j.get("lastAttemptTime
 assert not stale, f"never fired: {stale}"
 errored = [j["name"].rsplit("/",1)[-1] for j in jobs if (j.get("status") or {}).get("code")]
 assert not errored, f"last attempt failed: {errored}"
-' && ok "WAL-40" "all six scheduler jobs enabled, fired, and last attempt reported success" \
+' && ok "WAL-40" "all seven scheduler jobs enabled, fired, and last attempt reported success" \
    || no "WAL-40" "scheduler jobs are not all healthy"
 
 # WAL-105 AC3. The check above reads each job's *last* attempt, so a tick that was refused three

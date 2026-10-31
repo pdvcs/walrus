@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { withBase } from "../common/base-path.js";
 import type { PackageRow, SyncJobRow } from "../types/db.js";
+import type { WatchedPackageRow } from "../db/queries/packages.js";
 import type { DataFreshness, VulnQueryResult } from "../services/vuln-query.js";
 import type { VulnSyncStatus } from "../db/queries/vuln-sync-state.js";
 import {
@@ -17,6 +18,8 @@ import {
   renderLookupForm,
   renderResult,
   renderSourceChips,
+  renderWatchedPage,
+  type WatchedPostureSummary,
   RESULT_FILTER_SCRIPT,
   SOURCE_CHIPS_SCRIPT,
   VULN_VIEW_CSS,
@@ -39,6 +42,10 @@ export interface CatalogRouteDeps extends PackageDetailLoaderDeps {
   queryVulns: (product: string, version?: string) => Promise<VulnQueryResult>;
   getDataFreshness: () => Promise<DataFreshness>;
   getSyncStatus: () => Promise<VulnSyncStatus>;
+  /** Watch-only packages (WAL-54): tracked for CVEs, never served. */
+  listWatchedPackages: () => Promise<WatchedPackageRow[]>;
+  /** Posture at a watched package's latest version. */
+  getWatchedPosture: (name: string) => Promise<WatchedPostureSummary | null>;
 }
 
 function queryString(value: unknown): string | undefined {
@@ -129,6 +136,23 @@ export function createCatalogRouter(deps: CatalogRouteDeps, basePath: string): R
           "viewer",
         ),
       );
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get("/watched", async (_req, res, next) => {
+    try {
+      const watched = await deps.listWatchedPackages();
+      const postures = new Map<string, WatchedPostureSummary>();
+      await Promise.all(
+        watched.map(async (w) => {
+          const p = await deps.getWatchedPosture(w.name);
+          if (p) postures.set(w.name, p);
+        }),
+      );
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.send(renderWatchedPage(watched, basePath, postures, "viewer"));
     } catch (err) {
       next(err);
     }

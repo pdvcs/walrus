@@ -15,6 +15,7 @@ COPY --from=builder /app/dist ./dist
 COPY src/db/migrations ./dist/db/migrations
 COPY src/routes/api-docs.md ./dist/routes/api-docs.md
 COPY packages ./packages
+COPY watchlist ./watchlist
 COPY config ./config
 # Default nav logos (WALRUS_LOGO / WALRUS_ADMIN_LOGO are paths relative to /app).
 COPY src/static/applogo.jpg src/static/applogo-admin.jpg ./src/static/

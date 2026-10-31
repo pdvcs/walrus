@@ -283,7 +283,7 @@ export const VulnerabilitiesSchema = z.object({
 export type VulnerabilitiesConfig = z.infer<typeof VulnerabilitiesSchema>;
 
 export const PackageConfigSchema = z
-  .object({
+  .strictObject({
     name: z.string().regex(/^[a-z][a-z0-9-]*$/, "Name must be lowercase alphanumeric with hyphens"),
     display_name: z.string(),
     vendor: z.string(),

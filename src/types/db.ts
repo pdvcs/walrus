@@ -9,6 +9,23 @@ export interface PackageRow {
   /** Tombstone (WAL-53): set when the package's TOML disappeared. Null = never removed. */
   removed_at: Date | null;
   /**
+   * Watch-only (WAL-54): vuln-tracked from `watchlist/*.toml`, never served. Owned by
+   * reconcile and rewritten from disk each boot; always paired with enabled = false on seed.
+   */
+  watch_only: boolean;
+  /** Watch-only latest release (WAL-54), from the TOML's [latest] block. Null = never resolved. */
+  latest_version: string | null;
+  latest_version_checked_at: Date | null;
+  /** Why the last latest-version attempt failed; null after a success. */
+  latest_version_error: string | null;
+  /** OSV package mapping (from `[vulnerabilities].osv`); both null = no OSV tracking. */
+  osv_ecosystem: string | null;
+  osv_name: string | null;
+  /** Set when a targeted NVD backfill covered the package's CPE pairs (migration 0007). */
+  vuln_backfill_completed_at: Date | null;
+  /** OSV was queried for this package at least once; null = never, so empty means unknown. */
+  osv_synced_at: Date | null;
+  /**
    * ADR-008: regex whose first capture yields the version used for CVE range evaluation.
    * NULL = compare the served version directly. Only range evaluation sees the normalised
    * form; the served version, version_sort, retention and downloads use the full version.

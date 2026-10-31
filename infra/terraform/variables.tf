@@ -164,6 +164,14 @@ variable "vuln_backfill_auto_schedule" {
   default     = "50 6 * * *"
 }
 
+# Daily is ample: a latest-version change only matters once an advisory also names it, and the
+# NVD/OSV feeds that would do so move on their own cadence. Placed before the 06:50 backfill sweep.
+variable "watch_versions_schedule" {
+  description = "Cron schedule for refreshing the latest version of watch-only packages (UTC)"
+  type        = string
+  default     = "30 6 * * *"
+}
+
 # 3600s was a default nobody had revisited, and it does not survive a first backfill: onboarding
 # IntelliJ alone transfers 25.8 GB across 16 artifacts, which at 8 concurrent streams and a
 # conservative 50 Mbps aggregate is over an hour before any other package is touched. 6h leaves

@@ -6,6 +6,7 @@
 import { Resolution } from "../vuln/resolver.js";
 import { AffectsWithCveRow, VULN_SUMMARY_MAX_CHARS } from "../db/queries/cves.js";
 import { VULN_DISCLAIMER } from "../routes/schemas.js";
+import { isRatedSeverity } from "./vuln-service.js";
 import {
   describeAffectedRange,
   evaluateRange,
@@ -67,6 +68,8 @@ export interface VulnCounts {
   high: number;
   medium: number;
   low: number;
+  /** Advisories with no severity (or one outside the four bands); total = bands + unrated. */
+  unrated: number;
   kev: number;
 }
 
@@ -214,6 +217,7 @@ export async function queryVulns(
     high: vulns.filter((v) => v.severity === "HIGH").length,
     medium: vulns.filter((v) => v.severity === "MEDIUM").length,
     low: vulns.filter((v) => v.severity === "LOW").length,
+    unrated: vulns.filter((v) => !isRatedSeverity(v.severity)).length,
     kev: vulns.filter((v) => v.is_kev).length,
   };
 
@@ -248,5 +252,5 @@ function truncate(s: string | null, n: number): string | null {
 }
 
 function emptyCounts(): VulnCounts {
-  return { total: 0, critical: 0, high: 0, medium: 0, low: 0, kev: 0 };
+  return { total: 0, critical: 0, high: 0, medium: 0, low: 0, unrated: 0, kev: 0 };
 }

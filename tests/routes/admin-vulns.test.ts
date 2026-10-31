@@ -183,6 +183,10 @@ describe("admin vuln explorer + sync (isolated)", () => {
     expect(res.text).toMatch(/Vulnerability Explorer/);
     expect(res.text).toMatch(/Data sources/);
     expect(res.text).toMatch(/Sync KEV/);
+    // Watched packages is a top-level nav item (WAL-54), not a link buried in the data-sources
+    // strip, which is about feed freshness and sync actions.
+    expect(res.text).not.toContain("watched-link");
+    expect(res.text).toMatch(/<a href="\/admin\/v1\/watched">Watched<\/a>/);
     // Chips carry data-ts for the client-side relative-time rendering, and the
     // never-attempted state is a chip class, not prose.
     expect(res.text).toMatch(/class="src-chip src-never"/);

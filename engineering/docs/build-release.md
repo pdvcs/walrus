@@ -447,6 +447,7 @@ routine operator action is required, including when a package is added.
 | CVE arrives with no severity           | `cvss`, daily                                | Yes         |
 | Version passes its cooling-off period  | Next package sync (`walrus-sync` Job)        | Yes         |
 | **New package, or new CPE pair added** | **`walrus-vuln-backfill-auto` sweep, daily** | **Yes**     |
+| Watch-only package has a new release   | `walrus-watch-versions`, daily               | Yes         |
 
 That last row is the one that needed building. Incremental NVD sync is cursor-based
 (`lastModStartDate`), so it only sees recently-modified CVEs — a newly tracked package's
@@ -458,6 +459,12 @@ The sweep (`POST /internal/vuln-backfill/auto`) compares each package's current 
 against the set its last backfill covered, and starts a targeted backfill where they differ.
 Comparing the _set_, not a timestamp, is what makes a CPE pair added to an already-covered
 package trigger a fresh backfill.
+
+A targeted backfill also reads OSV for that package (WAL-54). Without it an OSV-primary package
+sat with only its NVD advisories until the next weekly `osv` run — for `requests`, 6 of 8 CVEs.
+The package's `osv_synced_at` and `vuln_backfill_completed_at` record that each source was read;
+`GET /api/v1/packages/:name/posture` reports `unknown` (`coverage-incomplete`) rather than `clean`
+until both are set, so a package is never declared clean merely because nothing has been fetched.
 
 - One at a time: only one backfill may be active, so the rest are reported `deferred` and
   picked up by the next sweep.
@@ -573,7 +580,10 @@ an explicit admin decision because DB rows own storage objects a stray `git rm` 
 destroy. Re-adding the same TOML revives the package (`removed_at` cleared, enabled again);
 its historical NVD associations then need the usual targeted backfill.
 
-A watch-only or operator-disabled package is unaffected: the marker distinguishes an actual
-removal from either.
+"Configured" means the union of `packages/` and `watchlist/` (WAL-54): deleting a watch-only
+TOML tombstones its row exactly like a served one, and a watch-only package that is still on
+disk is never tombstoned. Reviving a tombstoned watch-only row leaves it disabled
+(`enabled = NOT watch_only`). An operator-disabled package is unaffected: the marker
+distinguishes an actual removal from either.
 
 ---

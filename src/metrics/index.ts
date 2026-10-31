@@ -7,7 +7,7 @@ import type { MetricsSnapshot } from "../services/metrics-snapshot.js";
 import { MetricsResponseSchema } from "../routes/schemas.js";
 
 const DATABASE_CACHE_MS = 60_000;
-const PACKAGE_STATES = ["enabled", "disabled", "removed"] as const;
+const PACKAGE_STATES = ["enabled", "disabled", "removed", "watch"] as const;
 const VULN_SOURCES = ["nvd", "kev", "osv", "cvss"] as const;
 const VULN_STATES = ["never", "running", "succeeded", "failed"] as const;
 const DEGRADATION_COMPONENTS = [

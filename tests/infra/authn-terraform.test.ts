@@ -53,7 +53,8 @@ describe("authentication deployment wiring", () => {
     expect(cloudRun).toContain("value = var.internal_oidc_audience");
     expect(cloudRun).toContain('name  = "WALRUS_INTERNAL_SERVICE_ACCOUNT"');
     expect(cloudRun).toContain("value = google_service_account.walrus_scheduler.email");
-    expect(scheduler.match(/audience\s+= var\.internal_oidc_audience/g)).toHaveLength(2);
+    // Three OIDC callers: the vuln-sync for_each, the backfill sweep, and the watch-version refresh.
+    expect(scheduler.match(/audience\s+= var\.internal_oidc_audience/g)).toHaveLength(3);
   });
 
   it("populates and imports secrets before rolling out the boot-validating image", () => {

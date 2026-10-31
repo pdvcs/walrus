@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { renderSharedHtml, escHtml, type PageMode } from "./admin.js";
+import { renderSharedHtml, renderViewerHtml, escHtml, type PageMode } from "./admin.js";
 import { withBase } from "../common/base-path.js";
 import { VulnQueryResult, DataFreshness } from "../services/vuln-query.js";
 import {
@@ -25,6 +25,14 @@ import type {
 import type { SuppressionPreview } from "../services/cve-suppression-service.js";
 import type { AdminActionRow, ListSuppressionAuditOptions } from "../db/queries/admin-actions.js";
 import type { AvailabilityTransition } from "../services/availability-history.js";
+import type { WatchedPackageRow } from "../db/queries/packages.js";
+import type { PostureResult } from "../services/posture.js";
+
+/** The slice of a posture the watched-packages table shows. */
+export type WatchedPostureSummary = Pick<
+  PostureResult,
+  "status" | "unknown_reasons" | "counts" | "upgrade_to" | "version"
+>;
 
 export interface AdminVulnsRouteDeps {
   /** Bound /vulns query (same code path as the public API). */
@@ -57,6 +65,10 @@ export interface AdminVulnsRouteDeps {
   }) => Promise<VulnBackfillJobRow[]>;
   /** WAL-100: clear the retry budget so the sweep picks a stuck package up again. */
   resetBackfillAttempts: (packageName?: string) => Promise<string[]>;
+  /** WAL-54: watch-only packages (`watchlist/*.toml`) — tracked for CVEs, never served. */
+  listWatchedPackages: () => Promise<WatchedPackageRow[]>;
+  /** Posture at a watched package's latest version, for the counts column. */
+  getWatchedPosture?: (name: string) => Promise<WatchedPostureSummary | null>;
   getActiveSuppressionCount: () => Promise<number>;
   listActiveSuppressions: () => Promise<CveSuppressionRow[]>;
   listSuppressionAudit: (opts: ListSuppressionAuditOptions) => Promise<AdminActionRow[]>;
@@ -116,6 +128,26 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps, basePath: stri
           basePath,
         ),
       );
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get("/watched", async (_req, res, next) => {
+    try {
+      const watched = await deps.listWatchedPackages();
+      const postures = new Map<string, WatchedPostureSummary>();
+      if (deps.getWatchedPosture) {
+        const get = deps.getWatchedPosture;
+        await Promise.all(
+          watched.map(async (w) => {
+            const p = await get(w.name);
+            if (p) postures.set(w.name, p);
+          }),
+        );
+      }
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.send(renderWatchedPage(watched, basePath, postures));
     } catch (err) {
       next(err);
     }
@@ -1307,6 +1339,103 @@ function renderVulnJobsPage(
     scripts,
     styleTail,
   );
+}
+
+/**
+ * WAL-54. Read-only listing of watch-only packages: tracked for vulnerabilities, never served,
+ * so they appear on no package dashboard. Shows what each one is matched on (CPE pairs, OSV
+ * mapping) and the state of its targeted backfill. No actions — the lookup link goes to the
+ * explorer, which already carries the per-package backfill form.
+ */
+export function renderWatchedPage(
+  watched: WatchedPackageRow[],
+  basePath: string,
+  postures: Map<string, WatchedPostureSummary> = new Map(),
+  mode: PageMode = "admin",
+): string {
+  const esc = escHtml;
+  const viewer = mode === "viewer";
+  const rows = watched
+    .map((w) => {
+      const lookup = `${withBase(basePath, viewer ? "/vulns" : "/admin/v1/vulns")}?product=${encodeURIComponent(w.name)}`;
+      const api = `${withBase(basePath, "/api/v1/packages/")}${encodeURIComponent(w.name)}/posture`;
+      const osv =
+        w.osv_ecosystem && w.osv_name
+          ? `${esc(w.osv_ecosystem)}: ${esc(w.osv_name)} ${w.osv_synced_at ? "" : `<span class="muted">(not synced yet)</span>`}`
+          : `<span class="muted">none</span>`;
+      const cpes = w.cpes.length
+        ? w.cpes.map((c) => `<code>${esc(c)}</code>`).join(" ")
+        : `<span class="muted">none</span>`;
+      const backfill = w.vuln_backfill_completed_at
+        ? `done ${esc(fmtTs(w.vuln_backfill_completed_at.toISOString()))}`
+        : `<span class="muted">not yet</span>`;
+      // Failure text and retry counts are operational detail: operators see them, viewers
+      // only see that a value is missing or pending.
+      const error =
+        !viewer && w.vuln_backfill_last_error
+          ? `<div class="error-msg">${esc(w.vuln_backfill_last_error)}</div>`
+          : "";
+      const latest = w.latest_version
+        ? `<code>${esc(w.latest_version)}</code>${
+            w.latest_version_checked_at
+              ? `<div class="muted">checked ${esc(fmtTs(w.latest_version_checked_at.toISOString()))}</div>`
+              : ""
+          }`
+        : `<span class="muted">not resolved</span>`;
+      const latestError =
+        !viewer && w.latest_version_error
+          ? `<div class="error-msg">${esc(w.latest_version_error)}</div>`
+          : "";
+      const p = postures.get(w.name);
+      const posture = p
+        ? `<span class="badge posture-${esc(p.status)}">${esc(p.status)}</span>
+           <div class="muted">${p.counts.critical} critical · ${p.counts.high} high · ${p.counts.medium} medium · ${p.counts.low} low${
+             p.counts.unrated ? ` · ${p.counts.unrated} unrated` : ""
+           }</div>
+           ${p.upgrade_to ? `<div class="muted">fix in ${esc(p.upgrade_to)}</div>` : ""}
+           ${p.status === "unknown" ? `<div class="muted">${p.unknown_reasons.map(esc).join(", ")}</div>` : ""}`
+        : `<span class="muted">—</span>`;
+      return `<tr>
+        <td><a href="${lookup}">${esc(w.display_name)}</a><div class="muted">${esc(w.name)} · ${esc(w.vendor)}</div></td>
+        <td>${latest}${latestError}</td>
+        <td><a href="${api}">${posture}</a></td>
+        <td>${cpes}</td>
+        <td>${osv}</td>
+        <td>${backfill}${error}</td>${viewer ? "" : `\n        <td>${w.vuln_backfill_attempts}</td>`}
+      </tr>`;
+    })
+    .join("");
+
+  const table =
+    watched.length === 0
+      ? `<p class="empty">No watch-only packages. Add a <code>watchlist/*.toml</code> file to track one.</p>`
+      : `<table>
+        <thead><tr><th>Package</th><th>Latest</th><th>Posture of latest</th><th>CPE pairs</th><th>OSV</th><th>NVD backfill</th>${viewer ? "" : "<th>Attempts</th>"}</tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+
+  const body = `
+    <h1>Watched Packages</h1>
+    <p class="meta">Tracked for vulnerabilities only — Walrus holds no binaries for these and serves
+    no downloads.${
+      viewer
+        ? ` Select a package for its known CVEs, or a posture for the per-advisory detail.`
+        : ` Defined in <code>watchlist/*.toml</code>. Click a posture for the per-advisory detail, or see the
+    <a href="${withBase(basePath, "/admin/v1/vulns")}">Vulnerability Explorer</a> to look one up.`
+    }</p>
+    ${table}`;
+
+  const styleTail = `<style>
+    .muted { color:#9ca3af; font-size:0.78rem; }
+    .error-msg { color:#b91c1c; font-size:0.78rem; margin-top:3px; }
+    .posture-clean { background:#dcfce7; color:#166534; }
+    .posture-vulnerable { background:#fee2e2; color:#991b1b; }
+    .posture-unknown { background:#fef3c7; color:#92400e; }
+  </style>`;
+
+  return viewer
+    ? renderViewerHtml("Watched Packages", "watched", body, basePath, "", styleTail)
+    : renderSharedHtml("Watched Packages", "watched", body, basePath, "", styleTail);
 }
 
 /** WAL-121. Detail page so a job id is not a link into a raw JSON body for a browser. */

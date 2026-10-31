@@ -42,6 +42,15 @@ export interface InternalRouteDeps {
    * Sweep for packages whose CPE set has never been backfilled and start one. Scheduled, so
    * a newly tracked package acquires its CVE history without anyone remembering to ask.
    */
+  /**
+   * Refresh the latest version of every watch-only package that declares `[latest]` (WAL-54).
+   * Scheduled: posture for a package walrus does not fetch is only as current as this.
+   */
+  refreshWatchVersions?: () => Promise<{
+    checked: number;
+    updated: number;
+    failures: Array<{ package: string; error: string }>;
+  }>;
   autoBackfill?: () => Promise<{
     enabled: boolean;
     pending: number;
@@ -205,6 +214,24 @@ export function createInternalRouter(deps: InternalRouteDeps): Router {
         outcomes,
         ...(hints.length > 0 ? { hints } : {}),
       });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.post("/watch-versions/refresh", async (_req, res, next) => {
+    try {
+      if (!deps.refreshWatchVersions) {
+        res.status(503).json({ error: "Watch-version refresh is not available" });
+        return;
+      }
+      const result = await deps.refreshWatchVersions();
+      // Same convention as vuln-sync: Cloud Scheduler treats any 2xx as success, so a total
+      // failure must not be a 2xx or the retry never fires and nothing alerts. A partial failure
+      // is 207 — some versions did refresh, and the failures are named in the body.
+      const status =
+        result.failures.length === 0 ? 200 : result.failures.length === result.checked ? 502 : 207;
+      res.status(status).json(result);
     } catch (err) {
       next(err);
     }

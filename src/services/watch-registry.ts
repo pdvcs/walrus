@@ -54,9 +54,19 @@ export function loadAllWatchConfigs(watchlistDir: string = WATCHLIST_DIR): Watch
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       errors.push({ filePath, error });
-      log.warn({ filePath, error }, "Failed to load watch config");
+      log.warn({ filePath, reason: error }, "Failed to load watch config");
     }
   }
 
   return { configs, errors };
+}
+
+/**
+ * Watch entries whose name is also a served package. `packages/` and `watchlist/` share one
+ * `packages.name` key, so a name in both is ambiguous; callers keep the served package and
+ * drop the watch entry. Returned in watchlist order.
+ */
+export function findWatchNameCollisions(servedNames: string[], watched: WatchConfig[]): string[] {
+  const served = new Set(servedNames);
+  return watched.filter((w) => served.has(w.name)).map((w) => w.name);
 }
