@@ -1,0 +1,67 @@
+name = "pycharm"
+display_name = "PyCharm Professional"
+vendor = "JetBrains"
+website = "https://www.jetbrains.com/pycharm/"
+description = "Python IDE for professional developers, web and data science"
+
+# JetBrains release API (same feed and shape as walrus-intellij.toml):
+#   GET /products/releases?code=PCP&latest=false&type=release
+#     -> { "PCP": [ { version, majorVersion, date, build, downloads: { <key>: {...} } }, ... ] }
+#   268 releases as of 2026-10-14. Everything comes from the API; nothing is constructed.
+# Commercial product — walrus mirrors it for licensed internal users, as with IntelliJ. Community was unified into Professional upstream; Professional (PCP) is what the API serves current builds for.
+
+[discovery]
+type = "json-api"
+url = "https://data.services.jetbrains.com/products/releases?code=PCP&latest=false&type=release"
+releases_path = "$.PCP[*]"
+release_version_field = "version"
+release_date_field = "date"
+files_field = "downloads"
+files_shape = "platform-map"
+file_url_field = "link"
+file_checksum_url_field = "checksumLink"
+file_size_field = "size"
+
+[versioning]
+type = "calver"
+# `majorVersion` equals the first two components of `version` for every release (verified 2026-10-14).
+version_group_extract = "^(\\d+\\.\\d+)"
+# Verified 2026-10-14: 69 releases at or above 2024.1, none missing windowsZip or macM1.
+# Nothing older is ever a retention candidate.
+min_version = "2024.1"
+lts_support = false
+
+[retention]
+versions_per_group = 1
+groups_to_keep = 1
+
+# Production retention. Not active: swap in for the production rollout.
+# versions_per_group = 2
+# groups_to_keep = 4
+
+# Date-anchored embargo, same rationale as IntelliJ (see walrus-intellij.toml).
+cooling_off_days = 3
+
+[checksum]
+type = "separate-file"
+algorithm = "sha256"
+
+# No filename_template: the filename is the API link's own tail (e.g. pycharm-2026.2.3.win.zip).
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "windowsZip"
+arch_upstream = "x64"
+extension = "zip"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "macM1"
+arch_upstream = "aarch64"
+extension = "dmg"
+
+[vulnerabilities]
+cpes = ["jetbrains:pycharm"]
+aliases = ["pycharm", "pycharm professional", "jetbrains pycharm"]

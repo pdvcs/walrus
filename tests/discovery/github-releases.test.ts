@@ -1,6 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { GitHubReleasesStrategy } from "../../src/discovery/github-releases.js";
 import { PackageConfig } from "../../src/types/package-config.js";
+import { config as appConfig } from "../../src/config/index.js";
 
 const UV_CONFIG: PackageConfig = {
   name: "uv",
@@ -312,6 +313,209 @@ describe("GitHubReleasesStrategy", () => {
   });
 });
 
+describe('GitHubReleasesStrategy — lts_source = "api"', () => {
+  const LTS_URL = "https://example.test/metadata.json";
+
+  function releasesFor(tags: string[]) {
+    return tags.map((tag) => ({
+      tag_name: tag,
+      prerelease: false,
+      draft: false,
+      published_at: "2024-03-15T10:00:00Z",
+      assets: [
+        {
+          name: "uv-x86_64-unknown-linux-gnu.tar.gz",
+          browser_download_url: `https://example.test/${tag}/uv-x86_64-unknown-linux-gnu.tar.gz`,
+          size: 1000,
+        },
+      ],
+    }));
+  }
+
+  /** Dispatches on URL: the releases list and the LTS document are two separate fetches. */
+  function stub(tags: string[], ltsDoc: unknown) {
+    const fn = vi.fn((url: string) => {
+      const body = url === LTS_URL ? ltsDoc : releasesFor(tags);
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(body),
+        text: () => Promise.resolve(""),
+      });
+    });
+    vi.stubGlobal("fetch", fn);
+    return fn;
+  }
+
+  function configWith(versioning: Partial<PackageConfig["versioning"]>): PackageConfig {
+    return { ...UV_CONFIG, versioning: { ...UV_CONFIG.versioning, ...versioning } };
+  }
+
+  const API_TAGS = {
+    lts_support: true,
+    lts_source: "api" as const,
+    lts_api_url: LTS_URL,
+    lts_api_path: "$.LTSReleaseTag",
+    lts_api_shape: "tags" as const,
+  };
+
+  it("reduces LTS release tags to version groups and marks those versions", async () => {
+    // Upstream names the current patch of each LTS line (PowerShell's LTSReleaseTag shape);
+    // "0.6.2" must mark the whole 0.6 group, not just that one version.
+    stub(["0.7.0", "0.6.2", "0.6.1"], { LTSReleaseTag: ["0.6.2"] });
+
+    const versions = await new GitHubReleasesStrategy().discoverVersions(configWith(API_TAGS));
+
+    const lts = Object.fromEntries(versions.map((v) => [v.version, v.isLts]));
+    expect(lts).toEqual({ "0.7.0": false, "0.6.2": true, "0.6.1": true });
+  });
+
+  it("treats values as groups already when lts_api_shape is omitted", async () => {
+    // The pre-existing shape, as Adoptium's $.available_lts_releases returns it.
+    stub(["0.7.0", "0.6.2"], { available_lts_releases: ["0.6"] });
+
+    const versions = await new GitHubReleasesStrategy().discoverVersions(
+      configWith({
+        lts_support: true,
+        lts_source: "api",
+        lts_api_url: LTS_URL,
+        lts_api_path: "$.available_lts_releases",
+      }),
+    );
+
+    const lts = Object.fromEntries(versions.map((v) => [v.version, v.isLts]));
+    expect(lts).toEqual({ "0.7.0": false, "0.6.2": true });
+  });
+
+  it("does not fetch the LTS document when lts_support is false", async () => {
+    const fn = stub(["0.6.2"], { LTSReleaseTag: ["0.6.2"] });
+
+    const versions = await new GitHubReleasesStrategy().discoverVersions(
+      configWith({ ...API_TAGS, lts_support: false }),
+    );
+
+    expect(versions[0].isLts).toBe(false);
+    expect(fn.mock.calls.map((c) => c[0])).not.toContain(LTS_URL);
+  });
+
+  it("skips an LTS tag it cannot reduce without discarding the rest", async () => {
+    // An upstream that changed tag style should cost that one entry, not the whole package.
+    stub(["0.7.0", "0.6.2"], { LTSReleaseTag: ["not-a-version", "0.6.2"] });
+
+    const versions = await new GitHubReleasesStrategy().discoverVersions(configWith(API_TAGS));
+
+    const lts = Object.fromEntries(versions.map((v) => [v.version, v.isLts]));
+    expect(lts).toEqual({ "0.7.0": false, "0.6.2": true });
+  });
+
+  it("propagates an LTS fetch failure rather than reporting nothing as LTS", async () => {
+    // Degrading to "no version is LTS" would persist a wrong is_lts on the version row, and
+    // silently: a loud failure is the recoverable outcome.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) =>
+        url === LTS_URL
+          ? Promise.resolve({ ok: false, status: 500, text: () => Promise.resolve("boom") })
+          : Promise.resolve({
+              ok: true,
+              status: 200,
+              json: () => Promise.resolve(releasesFor(["0.6.2"])),
+              text: () => Promise.resolve(""),
+            }),
+      ),
+    );
+
+    await expect(
+      new GitHubReleasesStrategy().discoverVersions(configWith(API_TAGS)),
+    ).rejects.toThrow();
+  });
+});
+
+describe("GitHubReleasesStrategy — min_version in tag-based mode", () => {
+  /** Releases carrying the version-less asset names UV_CONFIG's templates expect. */
+  function releasesFor(tags: string[]) {
+    return tags.map((tag) => ({
+      tag_name: tag,
+      prerelease: false,
+      draft: false,
+      published_at: "2024-03-15T10:00:00Z",
+      assets: [
+        {
+          name: "uv-x86_64-unknown-linux-gnu.tar.gz",
+          browser_download_url: `https://github.com/astral-sh/uv/releases/download/${tag}/uv-x86_64-unknown-linux-gnu.tar.gz`,
+          size: 1000,
+        },
+        {
+          name: "uv-aarch64-apple-darwin.tar.gz",
+          browser_download_url: `https://github.com/astral-sh/uv/releases/download/${tag}/uv-aarch64-apple-darwin.tar.gz`,
+          size: 1000,
+        },
+      ],
+    }));
+  }
+
+  function stubReleases(tags: string[]) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve(releasesFor(tags)),
+        text: () => Promise.resolve(""),
+      }),
+    );
+  }
+
+  function configWith(minVersion: string, retention?: PackageConfig["retention"]): PackageConfig {
+    return {
+      ...UV_CONFIG,
+      versioning: { ...UV_CONFIG.versioning, min_version: minVersion },
+      ...(retention ? { retention } : {}),
+    };
+  }
+
+  it("excludes versions below the threshold", async () => {
+    stubReleases(["0.6.2", "0.6.1", "0.6.0"]);
+
+    const versions = await new GitHubReleasesStrategy().discoverVersions(configWith("0.6.1"));
+
+    expect(versions.map((v) => v.version)).toEqual(["0.6.2", "0.6.1"]);
+  });
+
+  it("compares on version order rather than string order", async () => {
+    // The regression this guards: a byte-wise compare of the raw strings reads "9.0.0" as
+    // greater than "10.0.0" (because "9" > "1") and lets it past a 10.0.0 floor.
+    stubReleases(["10.0.0", "9.0.0"]);
+
+    const versions = await new GitHubReleasesStrategy().discoverVersions(configWith("10.0.0"));
+
+    expect(versions.map((v) => v.version)).toEqual(["10.0.0"]);
+  });
+
+  it("keeps an excluded version from consuming a retention slot", async () => {
+    // The floor is a discovery filter, not a post-retention trim: with it applied first, both
+    // surviving versions get artifacts resolved. If it ran after retention, 1.0.0 would take
+    // one of the two slots and 1.0.1 would come back with an empty artifact map.
+    stubReleases(["1.0.2", "1.0.1", "1.0.0"]);
+
+    const versions = await new GitHubReleasesStrategy().discoverVersions(
+      configWith("1.0.1", { versions_per_group: 2 }),
+    );
+
+    expect(versions.map((v) => v.version)).toEqual(["1.0.2", "1.0.1"]);
+    for (const v of versions) {
+      expect(v.artifacts.get("linux/x86-64")).toBeDefined();
+    }
+  });
+
+  it("keeps every version when no min_version is set", async () => {
+    stubReleases(["0.6.2", "0.6.1", "0.6.0"]);
+
+    const versions = await new GitHubReleasesStrategy().discoverVersions(UV_CONFIG);
+
+    expect(versions.map((v) => v.version)).toEqual(["0.6.2", "0.6.1", "0.6.0"]);
+  });
+});
+
 describe("GitHubReleasesStrategy — asset_version_pattern mode", () => {
   beforeEach(() => {
     vi.stubGlobal(
@@ -604,5 +808,219 @@ describe("GitHubReleasesStrategy — asset_version_pattern release dating", () =
     expect(art?.filename).toBe(
       "cpython-3.11.15+20260807-x86_64-unknown-linux-gnu-install_only.tar.gz",
     );
+  });
+});
+
+// ── gitwindows (WAL-60): tag and asset version disagree ─────────────────────
+//
+// git-for-windows/git tags releases v2.55.0.windows.5 but names the assets
+// Git-2.55.0.5-64-bit.tar.bz2, and the first build of a Windows series carries a
+// three-component version (Git-2.54.0-...). The config therefore pivots on the asset
+// filename; these tests pin the shapes the shipped packages/walrus-gitwindows.toml relies
+// on, including that .windows.N rebuilds stay distinct versions.
+
+const GITWINDOWS_CONFIG: PackageConfig = {
+  name: "gitwindows",
+  display_name: "Git for Windows",
+  vendor: "Git for Windows project",
+  discovery: {
+    type: "github-releases",
+    repo: "git-for-windows/git",
+    include_prereleases: false,
+    asset_version_pattern: "^Git-(\\d+(?:\\.\\d+)+)-(64-bit|arm64)\\.tar\\.bz2$",
+    max_releases: 10,
+  },
+  versioning: {
+    type: "semver",
+    version_group_extract: "^(\\d+\\.\\d+)",
+    lts_support: false,
+    lts_source: "none",
+  },
+  retention: { versions_per_group: 2, groups_to_keep: 2 },
+  checksum: { type: "github-asset-digest", algorithm: "sha256" },
+  platforms: [
+    {
+      os: "windows",
+      arch: "x86-64",
+      os_upstream: "windows",
+      arch_upstream: "x64",
+      extension: "tar.bz2",
+      filename_template: "Git-{version}-64-bit.tar.bz2",
+    },
+    {
+      os: "windows",
+      arch: "arm64",
+      os_upstream: "windows",
+      arch_upstream: "arm64",
+      extension: "tar.bz2",
+      filename_template: "Git-{version}-arm64.tar.bz2",
+    },
+  ],
+};
+
+function gitwindowsAsset(name: string, digest: string) {
+  return {
+    name,
+    browser_download_url: `https://github.com/git-for-windows/git/releases/download/placeholder/${name}`,
+    size: 117482532,
+    digest: `sha256:${digest}`,
+  };
+}
+
+const GITWINDOWS_MOCK_RELEASES = [
+  {
+    tag_name: "v2.55.0.windows.5",
+    prerelease: false,
+    draft: false,
+    published_at: "2026-08-20T16:21:31Z",
+    assets: [
+      gitwindowsAsset("Git-2.55.0.5-64-bit.tar.bz2", "x8664d1"),
+      gitwindowsAsset("Git-2.55.0.5-arm64.tar.bz2", "arm64d1"),
+      // Noise from the same release: nothing but the tar.bz2 assets may match.
+      gitwindowsAsset("PortableGit-2.55.0.5-64-bit.7z.exe", "noise01"),
+      gitwindowsAsset("MinGit-2.55.0.5-64-bit.zip", "noise02"),
+      gitwindowsAsset("Git-2.55.0.5-64-bit.exe", "noise03"),
+    ],
+  },
+  {
+    tag_name: "v2.55.0.windows.4",
+    prerelease: false,
+    draft: false,
+    published_at: "2026-08-11T17:35:02Z",
+    assets: [
+      gitwindowsAsset("Git-2.55.0.4-64-bit.tar.bz2", "x8664d2"),
+      gitwindowsAsset("Git-2.55.0.4-arm64.tar.bz2", "arm64d2"),
+    ],
+  },
+  {
+    tag_name: "v2.54.0.windows.1",
+    prerelease: false,
+    draft: false,
+    published_at: "2026-04-20T18:22:08Z",
+    assets: [
+      // First build of a Windows series: three-component version in the asset name.
+      gitwindowsAsset("Git-2.54.0-64-bit.tar.bz2", "x8664d3"),
+      gitwindowsAsset("Git-2.54.0-arm64.tar.bz2", "arm64d3"),
+    ],
+  },
+  {
+    // Prerelease: its assets would match no digit-only version anyway; include_prereleases
+    // = false is the second gate.
+    tag_name: "v2.55.0-rc2.windows.1",
+    prerelease: true,
+    draft: false,
+    published_at: "2026-06-24T11:21:34Z",
+    assets: [gitwindowsAsset("Git-2.55.0-rc2-64-bit.tar.bz2", "rcnoise")],
+  },
+];
+
+describe("GitHubReleasesStrategy — gitwindows (WAL-60)", () => {
+  beforeEach(() => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve(GITWINDOWS_MOCK_RELEASES),
+        text: () => Promise.resolve(""),
+      }),
+    );
+  });
+
+  it("extracts the version from the asset name, not the tag", async () => {
+    const versions = await new GitHubReleasesStrategy().discoverVersions(GITWINDOWS_CONFIG);
+    const strings = versions.map((v) => v.version);
+    expect(strings).toContain("2.55.0.5");
+    expect(strings).toContain("2.55.0.4");
+    expect(strings).toContain("2.54.0");
+    for (const v of versions) expect(v.version).not.toMatch(/^v2\.55\.0\.windows/);
+  });
+
+  it("keeps .windows.N revisions of one Git version distinct", async () => {
+    const versions = await new GitHubReleasesStrategy().discoverVersions(GITWINDOWS_CONFIG);
+    const strings = versions.map((v) => v.version);
+    expect(strings).toContain("2.55.0.5");
+    expect(strings).toContain("2.55.0.4");
+    expect(new Set(strings).size).toBe(strings.length);
+  });
+
+  it("resolves both arches for the current release and for prior releases", async () => {
+    const versions = await new GitHubReleasesStrategy().discoverVersions(GITWINDOWS_CONFIG);
+
+    const newest = versions.find((v) => v.version === "2.55.0.5")!;
+    expect(newest.artifacts.get("windows/x86-64")!.filename).toBe("Git-2.55.0.5-64-bit.tar.bz2");
+    expect(newest.artifacts.get("windows/arm64")!.filename).toBe("Git-2.55.0.5-arm64.tar.bz2");
+
+    const prior = versions.find((v) => v.version === "2.54.0")!;
+    expect(prior.artifacts.get("windows/x86-64")!.filename).toBe("Git-2.54.0-64-bit.tar.bz2");
+    expect(prior.artifacts.get("windows/arm64")!.filename).toBe("Git-2.54.0-arm64.tar.bz2");
+  });
+
+  it("carries the upstream asset digest as the source checksum", async () => {
+    const versions = await new GitHubReleasesStrategy().discoverVersions(GITWINDOWS_CONFIG);
+    const art = versions.find((v) => v.version === "2.55.0.5")!.artifacts.get("windows/x86-64")!;
+    expect(art.checksum).toBe("x8664d1");
+    expect(art.checksumType).toBe("sha256");
+    expect(art.size).toBe(117482532);
+  });
+
+  it("groups by the underlying Git minor and keeps the retention window real", async () => {
+    const versions = await new GitHubReleasesStrategy().discoverVersions(GITWINDOWS_CONFIG);
+
+    expect(versions.find((v) => v.version === "2.55.0.5")!.versionGroup).toBe("2.55");
+    expect(versions.find((v) => v.version === "2.54.0")!.versionGroup).toBe("2.54");
+
+    // versions_per_group = 2, groups_to_keep = 2: the two newest 2.55 rebuilds plus the
+    // whole 2.54 group survive — real history for retention to act on.
+    const retained = versions.filter((v) => v.artifacts.size > 0).map((v) => v.version);
+    expect(retained).toEqual(["2.55.0.5", "2.55.0.4", "2.54.0"]);
+  });
+
+  it("ignores prerelease and non-matching assets", async () => {
+    const versions = await new GitHubReleasesStrategy().discoverVersions(GITWINDOWS_CONFIG);
+    const strings = versions.map((v) => v.version);
+    expect(strings).not.toContain("2.55.0-rc2");
+    for (const v of versions) {
+      for (const art of v.artifacts.values()) {
+        expect(art.filename).toMatch(/\.tar\.bz2$/);
+        expect(art.filename).not.toMatch(/MinGit|PortableGit|\.exe$/);
+      }
+    }
+  });
+});
+
+// ── Upstream authentication ────────────────────────────────────────────────
+//
+// This was unreachable from a test until the token moved into the config schema: it was captured
+// into a module-level const at import time, so nothing a test set could change it. The header is
+// the whole point of the credential — unauthenticated discovery gets 60 requests/hour against a
+// Cloud Run egress address shared with other tenants.
+
+describe("GitHubReleasesStrategy — upstream authentication", () => {
+  const original = appConfig.GITHUB_TOKEN;
+  afterEach(() => {
+    appConfig.GITHUB_TOKEN = original;
+  });
+
+  function headersOf(): Record<string, string> {
+    const mock = fetch as unknown as ReturnType<typeof vi.fn>;
+    return (mock.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
+  }
+
+  it("sends a bearer token when one is configured", async () => {
+    appConfig.GITHUB_TOKEN = "ghp_example";
+    await new GitHubReleasesStrategy().discoverVersions(UV_CONFIG);
+    expect(headersOf()["Authorization"]).toBe("Bearer ghp_example");
+  });
+
+  it("sends no Authorization header when the token is unset", async () => {
+    appConfig.GITHUB_TOKEN = undefined;
+    await new GitHubReleasesStrategy().discoverVersions(UV_CONFIG);
+    expect(headersOf()).not.toHaveProperty("Authorization");
+  });
+
+  it("treats an empty token as unset rather than sending an empty bearer", async () => {
+    appConfig.GITHUB_TOKEN = "";
+    await new GitHubReleasesStrategy().discoverVersions(UV_CONFIG);
+    expect(headersOf()).not.toHaveProperty("Authorization");
   });
 });

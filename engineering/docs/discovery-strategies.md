@@ -84,15 +84,25 @@ Two config options address this:
 
 The `[checksum]` type is `github-asset-digest`, which reads the `digest` field directly from the GitHub asset object (GitHub populates this with a `sha256:hex` string) rather than fetching a sidecar file.
 
+**LTS for `powershell`**
+
+A GitHub release carries no LTS field — the API has nowhere to put one — so unlike `json-api` this strategy cannot read LTS off the release it is already looking at. `lts_source = "api"` therefore names a separate document: `lts_api_url` is fetched once per discovery run and `lts_api_path` (JSONPath) selects the LTS values from it. For PowerShell that document is the repo's own `tools/metadata.json`, whose `LTSReleaseTag` Microsoft updates with every release.
+
+Those values are release _tags_ (`["v7.4.20", "v7.6.6"]`), not version groups, so the config sets `lts_api_shape = "tags"` and each one is reduced through the same `tag_pattern` and `version_group_extract` a discovered release goes through — `v7.6.6` → `7.6.6` → `7.6`. The default `lts_api_shape = "groups"` keeps the pre-existing behaviour, where each value already is a group (Adoptium's `$.available_lts_releases`). An unreducible value is skipped with a warning; a failed fetch of the document propagates rather than silently marking everything non-LTS, since `is_lts` is persisted on the version row.
+
+`lts_source = "even_major"` is accepted by the schema but not implemented here: it would need a predicate over groups rather than a set, because the groups are not known until discovery has run. Nothing configures it.
+
+Note that `is_lts` only labels. Serving _only_ LTS releases is a `tag_pattern` job — `walrus-powershell.toml` admits just even minors, which is PowerShell's LTS convention, and `groups_to_keep = 1` then follows whichever even-minor line is newest.
+
 ---
 
 ## `json-api`
 
 **Implementation:** `src/discovery/json-api.ts`
 
-**Packages:** `golang`, `nodejs`, `gradle`, `openjdk`, `azuljdk`
+**Packages:** `golang`, `nodejs`, `gradle`, `openjdk`, `azuljdk`, `vscode`
 
-This is the most flexible strategy, covering four distinct API shapes through sub-modes selected by the presence or absence of certain config fields.
+This is the most flexible strategy, covering six distinct API shapes through sub-modes selected by the presence or absence of certain config fields — with one exception: the platform-map sub-mode (6) is selected by naming it, because it and sub-mode 2 both read `files_field` and inferring which is meant from the runtime shape of the response would make a typo look like an upstream change.
 
 ### Sub-mode 1: Two-step with `explicit_versions`
 
@@ -181,6 +191,68 @@ Omitting `files_field` and setting `release_download_url_field = "downloadUrl"` 
 
 The `releases_path` filter is the most complex of any current package, excluding snapshots, nightlies, release-nightlies, release candidates, milestones, and broken builds in a single JSONPath expression.
 
+### Sub-mode 5: Version list only (templated URLs)
+
+**Package:** `vscode`
+
+The weakest API shape the strategy handles: the endpoint returns bare version strings and nothing else — no release objects, no file lists, no dates, no checksums.
+
+```
+GET https://update.code.visualstudio.com/api/releases/stable
+→ ["1.135.0", "1.134.0", "1.133.0", ...]
+```
+
+Activated when `releases_path` yields strings rather than objects. Each string _is_ the version, so `release_version_field` is neither needed nor read. With no artifact data on the upstream side, each `[[platforms]]` block supplies its own `url_template` (`{version}`, `{os}`, `{arch}`, `{ext}` substituted) — the same construction `xml-api` uses, and the reason those two strategies look alike.
+
+`filename_template` is honoured here when present, because the URL tail is not always a usable filename. VS Code's download endpoint is `/{version}/{platform}/stable`, which redirects to the real CDN file; deriving the filename from the URL would name every artifact `stable`.
+
+Objects and strings cannot be mixed in one response: an object release without `release_version_field` configured is a config error and throws, rather than being silently skipped.
+
+### Sub-mode 6: Inline with a platform-keyed download map
+
+**Package:** `intellij` (WAL-68)
+
+Sub-mode 2 assumes `files_field` holds an _array_ of file objects, each carrying its platform in a field. JetBrains instead keys downloads by platform, so the discriminator is the object **key** and there is no field to match on:
+
+```
+GET https://data.services.jetbrains.com/products/releases?code=IIU&latest=false&type=release
+→ { "IIU": [
+      { "version": "2026.2.1", "majorVersion": "2026.2", "date": "2026-08-12",
+        "downloads": {
+          "windowsZip": { "link": "https://download.jetbrains.com/idea/idea-2026.2.1.win.zip",
+                          "size": 1614981679,
+                          "checksumLink": "https://.../idea-2026.2.1.win.zip.sha256" },
+          "macM1":      { "link": "...", "size": 1512591157, "checksumLink": "..." },
+          "linux":      { ... }, "windowsJBR8": { ... }, "thirdPartyLibrariesJson": { ... }
+        } } ] }
+```
+
+Selected explicitly with `files_shape = "platform-map"`:
+
+```toml
+[discovery]
+files_field = "downloads"
+files_shape = "platform-map"
+file_url_field = "link" # required — the filename is this URL's tail
+file_checksum_url_field = "checksumLink" # optional sidecar
+file_size_field = "size" # optional; checked against the transfer
+
+[[platforms]]
+os_upstream = "windowsZip" # matches the key in `downloads`, not a field in it
+```
+
+Each `[[platforms]]` entry selects its download by `os_upstream` matching a key. `arch_upstream` is not consulted — JetBrains' keys already encode the whole platform (`macM1`, `windowsZipARM64`).
+
+Three properties follow from iterating platforms rather than keys:
+
+- **Keys walrus does not serve are ignored silently.** `linux`, `windowsJBR8` and `thirdPartyLibrariesJson` are never looked at, so they generate no warning noise on every release.
+- **A configured `os_upstream` with no matching key is logged and skipped**, exactly as a missing asset is elsewhere. JetBrains publishes no `windowsZipARM64` in any release, and a config asking for one says so once per release rather than failing the sync.
+- **Filenames are never constructed.** JetBrains renamed its artifact prefix mid-window — `idea-2026.2.1.win.zip` but `ideaIU-2025.2.6.3.win.zip`, both inside one retention window — so no `filename_template` could span the versions retention keeps. The filename is the tail of `link`.
+
+`file_checksum_url_field` yields `checksumUrl` on the artifact, which `DownloadService` already knows how to fetch and parse: plain `.sha256` sidecars, the same path `github-asset` uses. The algorithm comes from `[checksum] algorithm`.
+
+The array-shape fields (`file_os_field`, `file_arch_field`, `file_kind_field`, `file_kind_value`, `file_filename_field`, `file_url_base`) are **schema errors** in this sub-mode rather than being ignored, and `file_url_field` / `file_checksum_url_field` / `file_size_field` are schema errors without it. A config that mixes the two shapes looks correct and silently discovers nothing, which is the failure this rejects up front.
+
 ---
 
 ## `xml-api`
@@ -220,9 +292,130 @@ Checksums use `[checksum] type = "separate-file"` with SHA1 (`.sha1` sidecar fil
 
 **Implementation:** `src/discovery/directory-listing.ts`
 
-**Packages:** none currently
+**Packages:** `postgresql`
 
-Last-resort strategy for servers that expose a browsable HTTP directory with no structured API. Fetches the listing page, extracts `href` values matching the configured `pattern` regex, and derives version strings from the filenames. Only use this when no structured API exists — the strategy is fragile to HTML changes.
+Last-resort strategy for a server that exposes a browsable HTTP directory and nothing structured. It is a **version-list-only** source: `pattern` (a regex with one capture group) is applied to the whole response body, and the first capture group yields a version string. The matched link is never treated as the artifact URL, which matters when the listing host and the download host are different services.
+
+PostgreSQL is the worked example. Its release history lives on `ftp.postgresql.org` (a plain Apache autoindex, the only full-history source), while its binaries are served from EnterpriseDB's CDN, which has no browsable listing of its own and no derivable version history. So discovery reads:
+
+```
+GET https://ftp.postgresql.org/pub/source/
+→ ... <a href="v18.6/">v18.6/</a> ...
+   pattern = 'href="v(\d+\.\d+)/"'   →  18.6
+```
+
+and each `[[platforms]]` block builds its own download URL:
+
+```toml
+[discovery]
+type = "directory-listing"
+url = "https://ftp.postgresql.org/pub/source/"
+pattern = "href=\"v(\\d+\\.\\d+)/\""
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "windows-x64"
+arch_upstream = "x64"
+extension = "zip"
+url_template = "https://get.enterprisedb.com/postgresql/postgresql-{version}-1-{os}-binaries.{ext}"
+```
+
+`{version}` is the extracted version (`18.6`), and `{os}`/`{arch}`/`{ext}` take the platform's `os_upstream`/`arch_upstream`/`extension`, the same substitution `json-api` and `xml-api` use. `filename_template` is honoured when present; otherwise the filename is the URL's tail.
+
+Every `[[platforms]]` block **must** carry `url_template` — the schema rejects a `directory-listing` config that omits it, because there is no href-as-artifact-URL fallback and no filename-construction mode. Generic `[versioning]` filtering (`min_version`, `version_group_extract`) applies to the extracted strings exactly as it does elsewhere, and versions are returned newest-first.
+
+No release date is parsed from a plain directory listing (Apache exposes a `Last-Modified` column, but reading it is out of scope), so `releasedAt` is left undefined and cooling-off anchors to `versions.discovered_at` through the existing date-less fallback path. Use this strategy only when no structured API exists: it is fragile to a change in the listing's markup.
+
+---
+
+## `rust-channel`
+
+**Implementation:** `src/discovery/rust-channel.ts`
+
+**Packages:** `rust`
+
+Rust publishes no binary assets on GitHub Releases and no JSON manifest, so none of the strategies above can consume it. The authoritative source is the **TOML channel manifest**, one file per release (`channel-rust-{version}.toml`, plus a `channel-rust-stable.toml` that is overwritten in place). The manifest's shape:
+
+```toml
+date = "2026-09-03"
+
+[pkg.rust]
+version = "1.98.1 (48a229cea 2026-09-01)"
+
+[pkg.rust.target.x86_64-unknown-linux-gnu]
+available = true
+url = "https://static.rust-lang.org/dist/2026-09-03/rust-1.98.1-x86_64-unknown-linux-gnu.tar.gz"
+hash = "24ba1338a2d35c5a3247936546429e163fa674d726102af18bdf624582c57aea"
+xz_url = "https://static.rust-lang.org/dist/2026-09-03/rust-1.98.1-x86_64-unknown-linux-gnu.tar.xz"
+xz_hash = "5326b36c53de11d148c8f8dab6553a3d1006c2cfd32123683073fad3c302605b"
+```
+
+The strategy:
+
+1. `GET listing_url`, parse the S3 `ListBucketResult` XML, and collect every key matching `dist/channel-rust-<version>.toml` — following `NextContinuationToken` while `IsTruncated`. This avoids scraping and GitHub rate limits.
+2. Filter by `min_version`, sort semver-descending, and keep the newest `max_versions` (default 10) so discovery fetches a bounded number of ~0.9 MB manifests.
+3. Fetch and TOML-parse each manifest. `releasedAt` comes from the top-level `date`, and the version from `[pkg.<package>].version` after stripping its ` (hash date)` suffix.
+4. For each `[[platforms]]` block, build the Rust target triple as `{arch_upstream}-{os_upstream}` (arch first, e.g. `x86_64` + `unknown-linux-gnu`) and read that `[pkg.<package>.target.<triple>]` block. `extension` chooses the gzip (`url`/`hash`) or xz (`xz_url`/`xz_hash`) artifact. Both are returned as inline SHA256 checksums, so no `[checksum]` section is needed.
+
+There is no `filename_template`: the served filename is the artifact URL's tail, which already carries the version and triple. Walrus streams whichever format it stores and never decompresses either, so serving xz requires no walrus-side xz decoder.
+
+---
+
+## `dotnet-releases`
+
+**Implementation:** `src/discovery/dotnet-releases.ts`
+
+**Packages:** `dotnetsdk`, `asp-hosting`
+
+`dotnet/sdk`, `dotnet/aspnetcore` and `dotnet/core` attach no assets to their GitHub Releases, so `github-releases` would discover versions with nothing to download. .NET instead publishes one channel document per major.minor under `dotnet/core/release-notes/<channel>/releases.json`, carrying the whole channel unpaginated with inline SHA-512 hashes and no sidecar checksum files:
+
+```json
+{
+  "releases": [
+    {
+      "release-date": "2026-09-08",
+      "sdk": { "version": "10.0.401", "runtime-version": "10.0.12", "files": [] },
+      "sdks": [
+        {
+          "version": "10.0.401",
+          "runtime-version": "10.0.12",
+          "files": [
+            {
+              "name": "dotnet-sdk-win-x64.zip",
+              "rid": "win-x64",
+              "url": "…/dotnet-sdk-10.0.401-win-x64.zip",
+              "hash": "…128 hex…"
+            }
+          ]
+        },
+        { "version": "10.0.112", "runtime-version": "10.0.12", "files": [] }
+      ],
+      "runtime": { "version": "10.0.12", "files": [] },
+      "aspnetcore-runtime": {
+        "version": "10.0.12",
+        "files": [
+          {
+            "name": "dotnet-hosting-win.exe",
+            "rid": "",
+            "url": "…/dotnet-hosting-10.0.12-win.exe",
+            "hash": "…"
+          }
+        ]
+      }
+    }
+  ]
+}
+```
+
+The strategy:
+
+1. `GET` each configured `url` (a string, or a list to track several channels — .NET publishes one document per channel, and the hosting bundle serves both 8.0 and 10.0), parse `releases[]`, and merge the channels.
+2. `component = "sdk"` emits one `DiscoveredVersion` per `sdks[]` entry: `version` from `version`, `cveVersion` from `runtime-version`, `releasedAt` from the enclosing `release-date`, files from the entry's `files`. `component = "runtime"` / `"aspnetcore-runtime"` emits one version per release from that component object, with no `cveVersion`.
+3. Per `[[platforms]]` block, select the file whose `rid === os_upstream`, whose `name` ends with `.<extension>`, and (when set) contains `name_must_contain`. Binaries and installers share a rid and differ only in the filename, so `extension` is what excludes the installer (`.zip` vs `.exe`, `.tar.gz` vs `.pkg`). The served filename is the URL tail, which carries the version the `name` field omits. `hash` is returned inline as `checksumType = "sha512"`, so no `[checksum]` section is needed. A missing file is logged and skipped per platform, not fatal.
+4. `versionGroup` comes from `version_group_extract`; because a release's `sdks[]` names several feature bands and the bands interleave across releases, results are de-duplicated by version and sorted semver-descending.
+
+`releases[]` is newest-first and an SDK version appears once across a channel, so no pagination or per-version fetch is needed. `cveVersion` is the ADR-008 generalisation for packages whose CVE version mapping is per-release data rather than a fixed regex: see the `versions.cve_version` column and `deriveCveVersion` in `src/vuln/cve-version.ts`.
 
 ---
 
@@ -240,6 +433,8 @@ Checksums are resolved separately from discovery, but the discovery strategy set
 | `none`                | No checksum available from upstream                                               | `azuljdk`                    |
 
 When `file_checksum_field` is set on the discovery config, no `[checksum]` section is needed — the hash is already in `ArtifactInfo.checksum` by the time the sync service picks up the result.
+
+The inline hash is not necessarily SHA-256: the strategy sets `ArtifactInfo.checksumType` too, and `dotnet-releases` returns SHA-512 (the `hash` field in .NET's channel document). `DownloadService` supports `sha256`, `sha1` and `sha512`, and the download route emits the matching `X-Checksum-Sha256` / `X-Checksum-Sha1` / `X-Checksum-Sha512` header.
 
 ---
 

@@ -1,0 +1,83 @@
+# .NET SDK — the `dotnetsdk` package. Windows/x86-64 only for now; macOS/arm64 and
+# Linux/x86-64 platform blocks are written and verified but commented out below.
+#
+# Why this config needs a dedicated discovery strategy: `dotnet/sdk`, `dotnet/aspnetcore`
+# and `dotnet/core` attach no assets to their GitHub Releases, so `github-releases` would
+# discover versions with nothing to download. The authoritative source is the channel
+# document `dotnet/core/release-notes/10.0/releases.json`, one file for the whole channel,
+# carrying inline SHA-512 hashes (no sidecar checksum files) and, per release, the active
+# SDK feature bands under `sdks[]`.
+#
+# The SDK version is NOT the version NVD files CVEs against. NVD has no `microsoft:.net_sdk`
+# product; .NET CVEs are filed against the bundled runtime under `microsoft:.net`. SDK
+# 10.0.401 bundles runtime 10.0.12, and the mapping changes per release, so discovery carries
+# it out as a per-version `cveVersion` (ADR-008 generalised, migration 0016) rather than a
+# regex. `runtime-version` is read straight off each `sdks[]` entry.
+
+name = "dotnetsdk"
+display_name = ".NET SDK"
+vendor = "Microsoft"
+website = "https://dotnet.microsoft.com"
+description = ".NET SDK for building and running .NET applications"
+
+[discovery]
+type = "dotnet-releases"
+# One document for the whole 10.0 channel; the whole channel unpaginated, with inline hashes.
+url = "https://raw.githubusercontent.com/dotnet/core/main/release-notes/10.0/releases.json"
+# Walk `sdks[]`: one entry per active feature band, each with its own files and runtime-version.
+component = "sdk"
+
+[versioning]
+type = "semver"
+# Feature band, not patch or minor: 10.0.401 -> "10.0.4", 10.0.112 -> "10.0.1". Retention then
+# keeps the newest release of each of the two newest bands (4xx and 3xx today). The regex stops
+# at the third numeric character, which is exactly what distinguishes .NET feature bands.
+version_group_extract = "^(\\d+\\.\\d+\\.\\d)"
+min_version = "10.0"
+lts_support = false
+
+[retention]
+# One release per feature band: a band's newest patch supersedes its earlier patches.
+versions_per_group = 1
+# The two newest bands (currently 10.0.401 and 10.0.303). Numeric sorting cannot select the
+# active set on its own — retired 2xx bands still sort above the live 3xx — so the band is the
+# group and only the two newest groups are kept.
+groups_to_keep = 2
+cooling_off_days = 3
+
+# No [checksum] section: the SHA-512 comes inline from the channel document.
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+# Matched against each file's `rid`.
+os_upstream = "win-x64"
+arch_upstream = "x64"
+# Selects the binary zip; the .exe installer shares the same rid and is excluded by extension.
+extension = "zip"
+
+# Dev scope is Windows-only. Production platforms, ready to enable:
+#
+# [[platforms]]
+# os = "macos"
+# arch = "arm64"
+# os_upstream = "osx-arm64"
+# arch_upstream = "arm64"
+# extension = "tar.gz"      # excludes .pkg
+#
+# [[platforms]]
+# os = "linux"
+# arch = "x86-64"
+# os_upstream = "linux-x64"
+# arch_upstream = "x64"
+# extension = "tar.gz"
+
+[vulnerabilities]
+# NVD files .NET CVEs against the bundled runtime under microsoft:.net; there is no
+# microsoft:.net_sdk or microsoft:dotnet product. The per-version cveVersion above maps each
+# served SDK to the runtime it bundles before ranges are evaluated, so an SDK 10.0.401 that
+# bundles runtime 10.0.12 is compared as 10.0.12.
+cpes = ["microsoft:.net"]
+# No OSV mapping: OSV has no package for the SDK or runtime (NuGet `dotnet` returns zero
+# advisories), so this is CPE-only, like rust.
+aliases = ["dotnet", ".net", "dotnet sdk", ".net sdk", "microsoft .net", "dotnet core"]

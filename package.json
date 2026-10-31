@@ -1,6 +1,6 @@
 {
   "name": "walrus",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "description": "Smart package ingress system",
   "main": "dist/main.js",
   "scripts": {
@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit",
     "dev": "npm run build:static && dotenv -e .env.local -e .env.secrets -- tsx watch src/main.ts",
     "test": "dotenv -e .env.local -e .env.secrets -- vitest run",
-    "test:unit": "vitest run tests/common tests/discovery tests/services tests/scripts tests/vuln/normalize.test.ts tests/vuln/version-ranges.test.ts tests/vuln/cpe.test.ts tests/vuln/sync/nvd-client.test.ts",
+    "test:unit": "vitest run tests/authn tests/infra tests/common tests/discovery tests/services tests/scripts tests/transform tests/vuln/normalize.test.ts tests/vuln/cve-version.test.ts tests/vuln/version-ranges.test.ts tests/vuln/cpe.test.ts tests/vuln/sync/nvd-client.test.ts",
     "test:integration": "dotenv -e .env.local -e .env.secrets -- vitest run tests/db",
     "migrate": "dotenv -e .env.local -e .env.secrets -- tsx src/db/client.ts migrate",
     "db:reset": "read -p 'Wipe walrus DB? [type \"yes\" to wipe] ' yn && [ \"$yn\" = yes ] && psql walrus -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO walrus;' && npm run migrate || echo Aborted.",
@@ -19,14 +19,17 @@
     "lint:eslint": "eslint src tests scripts",
     "lint:oxlint": "oxlint src tests scripts",
     "check-schemas": "tsx scripts/check-schemas.ts",
+    "latest-download-url": "tsx scripts/latest-download-url.ts",
     "vuln:backfill": "dotenv -e .env.local -e .env.secrets -- tsx scripts/vuln-backfill.ts",
     "validate": "dotenv -e .env.local -- tsx scripts/validate-package.ts",
-    "vuln:enrich": "dotenv -e .env.local -e .env.secrets -- tsx scripts/cvss-enrich.ts"
+    "vuln:enrich": "dotenv -e .env.local -e .env.secrets -- tsx scripts/cvss-enrich.ts",
+    "vuln:ingest-all": "dotenv -e .env.local -e .env.secrets -- tsx scripts/vuln-ingest-all.ts"
   },
   "dependencies": {
     "@asteasolutions/zod-to-openapi": "^8.4.3",
     "@google-cloud/storage": "^7.16.0",
     "@iarna/toml": "^2.2.5",
+    "@prometheus-io/client": "^0.16.1",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "fast-xml-parser": "^5.5.5",
@@ -37,6 +40,9 @@
     "pino-pretty": "^13.1.3",
     "postgres-migrations": "^5.3.0",
     "semver": "^7.7.1",
+    "tar-stream": "^3.2.1",
+    "unbzip2-stream": "^1.4.3",
+    "yazl": "^3.3.1",
     "zod": "^4.3.6"
   },
   "devDependencies": {
@@ -48,21 +54,28 @@
     "@types/pg": "^8.11.11",
     "@types/semver": "^7.5.8",
     "@types/supertest": "^6.0.2",
+    "@types/unbzip2-stream": "^1.4.3",
+    "@types/yazl": "^3.3.1",
     "codemirror": "^6.0.2",
     "dotenv-cli": "^11.0.0",
-    "esbuild": "^0.27.4",
+    "esbuild": "^0.28.2",
     "eslint": "^10.0.2",
     "fast-check": "^4.9.0",
     "msw": "^2.7.3",
-    "oxfmt": "^0.35.0",
+    "oxfmt": "^0.74.0",
     "oxlint": "^1.50.0",
     "supertest": "^7.0.0",
     "tsx": "^4.19.3",
     "typescript": "^5.7.3",
     "typescript-eslint": "^8.56.1",
-    "vitest": "^3.0.7"
+    "vitest": "^5.0.0"
+  },
+  "overrides": {
+    "qs": "^6.16.0",
+    "uuid": "^11.1.1"
   },
   "engines": {
     "node": ">= 24.0.0"
-  }
+  },
+  "gitUrl": "https://github.com/pdvcs/walrus"
 }

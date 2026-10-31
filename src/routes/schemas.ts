@@ -6,6 +6,8 @@ extendZodWithOpenApi(z);
 // ── Shared ────────────────────────────────────────────────────────────────────
 
 export const ErrorSchema = z.object({ error: z.string() }).openapi("Error");
+export const LandingPageResponseSchema = z.string().openapi("LandingPageResponse");
+export const MetricsResponseSchema = z.string().openapi("MetricsResponse");
 
 // ── GET /api/v1/packages/ ─────────────────────────────────────────────────────
 
@@ -49,7 +51,15 @@ export const PlatformSchema = z
   .object({
     os: z.string(),
     arch: z.string(),
-    status: z.enum(["pending", "downloading", "available", "failed", "removed"]),
+    status: z
+      .enum(["pending", "downloading", "available", "failed", "removed", "cooling_off"])
+      .openapi({
+        description:
+          "Artifact lifecycle state, except that an artifact still inside its release embargo reports `cooling_off` rather than the `pending` it is stored as — the two are indistinguishable otherwise, and mean very different things to a caller.",
+      }),
+    available_at: z.string().datetime().nullable().optional().openapi({
+      description: "When a `cooling_off` artifact becomes servable. Null for every other status.",
+    }),
   })
   .openapi("Platform");
 
@@ -58,9 +68,13 @@ export const VersionSchema = z
     version: z.string(),
     version_group: z.string(),
     is_lts: z.boolean(),
-    status: z.enum(["available", "blocked"]).openapi({
+    status: z.enum(["available", "blocked", "cooling_off"]).openapi({
       description:
-        "Version eligibility under the critical-CVE gate. Blocked means a concrete match to a known critical CVE (CVSS >= 9.0, or score-less CRITICAL).",
+        "Whether the version can be fetched. `blocked` is a concrete match to a known critical CVE (any CVSS base score — v3, v4, or v2 — >= 9.0, or score-less CRITICAL) and takes precedence. `cooling_off` means no platform is servable yet because every candidate artifact is inside its release embargo. `available` means at least one platform is downloadable now, or is pending for ordinary sync reasons.",
+    }),
+    available_at: z.string().datetime().nullable().optional().openapi({
+      description:
+        "For `cooling_off`, when the first platform leaves its embargo. Null for every other status.",
     }),
     platforms: z.array(PlatformSchema),
   })
@@ -85,6 +99,27 @@ export const ArtifactSchema = z
     checksum: z.string().nullable().optional(),
     checksum_type: z.string().nullable().optional().openapi({ example: "sha256" }),
     download_url: z.string(),
+    requires_range: z.boolean().openapi({
+      description:
+        "Whether this artifact can only be fetched with a `Range` request. An unranged GET of one is refused with 400 `range_required` rather than served, because a single request cannot complete inside the 3600s server deadline at this size. A ranged GET whose `If-Range` no longer matches is refused too, with 400 `stale_range_validator`, since the whole representation the RFC would have us send is the thing being refused. Published here so a client decides before it starts downloading.",
+      example: false,
+    }),
+    upstream_url: z.string().nullable().optional().openapi({
+      description:
+        "URL the source bytes were fetched from. For an untransformed artifact this is also where the served bytes came from; for a transformed one it is the start of the provenance chain.",
+    }),
+    source_checksum: z.string().nullable().optional().openapi({
+      description:
+        "Digest of the bytes upstream published, verified before any transform ran. Null means the served bytes are upstream's own and `checksum` already covers them.",
+    }),
+    source_file_size: z.number().int().nullable().optional().openapi({
+      description: "Byte count of the upstream source. Null on untransformed artifacts.",
+    }),
+    transform: z.string().nullable().optional().openapi({
+      description:
+        "Versioned identity of the conversion that produced the served bytes (e.g. `tar-bz2-to-zip@1`). Null means the artifact is untransformed.",
+      example: "tar-bz2-to-zip@1",
+    }),
   })
   .openapi("Artifact");
 
@@ -116,6 +151,7 @@ export const DataFreshnessSchema = z
     nvd_last_sync: z.string().nullable(),
     kev_last_sync: z.string().nullable(),
     osv_last_sync: z.string().nullable(),
+    cvss_last_sync: z.string().nullable(),
   })
   .openapi("DataFreshness");
 
@@ -133,6 +169,7 @@ export const VulnSyncStatusSchema = z
     nvd: VulnSourceStatusSchema,
     kev: VulnSourceStatusSchema,
     osv: VulnSourceStatusSchema,
+    cvss: VulnSourceStatusSchema,
   })
   .openapi("VulnSyncStatus");
 
@@ -171,9 +208,10 @@ export const VulnItemSchema = z
     cve_id: z.string(),
     severity: z.string().nullable(),
     // Which CVSS version produced `severity`. v2 has no CRITICAL band (v2 HIGH
-    // spans 7.0-10.0), so a v2-sourced severity is not comparable to a v3 one.
+    // spans 7.0-10.0), so a v2-sourced severity is not comparable to a v3/v4 one.
     severity_source: z.string().nullable(),
     cvss_v3_score: z.number().nullable(),
+    cvss_v4_score: z.number().nullable(),
     cvss_v2_score: z.number().nullable(),
     summary: z.string().nullable(),
     affected: z.object({
@@ -184,6 +222,16 @@ export const VulnItemSchema = z
     is_kev: z.boolean(),
     sources: z.array(z.string()),
     references: z.array(z.string()),
+    suppression: z
+      .object({
+        reason: z.string(),
+        expires_at: z.string().datetime().nullable(),
+      })
+      .nullable()
+      .openapi({
+        description:
+          "Active operator assertion excluding this CVE from the download gate. The advisory remains visible.",
+      }),
   })
   .openapi("VulnItem");
 
@@ -253,6 +301,8 @@ export const CveDetailResponseSchema = z
     severity_source: z.string().nullable(),
     cvss_v3_score: z.number().nullable(),
     cvss_v3_vector: z.string().nullable(),
+    cvss_v4_score: z.number().nullable(),
+    cvss_v4_vector: z.string().nullable(),
     cvss_v2_score: z.number().nullable(),
     cvss_v2_vector: z.string().nullable(),
     description: z.string().nullable(),
@@ -273,6 +323,12 @@ export const PackageVersionVulnSchema = z
     fixed_in: z.string().nullable(),
     is_kev: z.boolean(),
     matched_because: z.string().nullable(),
+    suppression: z
+      .object({
+        reason: z.string(),
+        expires_at: z.string().datetime().nullable(),
+      })
+      .nullable(),
   })
   .openapi("PackageVersionVuln");
 
@@ -295,16 +351,163 @@ export const PackageVulnsResponseSchema = z
   })
   .openapi("PackageVulnsResponse");
 
-// ── GET /health ───────────────────────────────────────────────────────────────
+// ── GET /health, /app/health, /app/status ────────────────────────────────────
+
+export const DegradationSchema = z
+  .object({
+    component: z.string().openapi({ example: "vuln-sync-nvd" }),
+    reason: z.string(),
+  })
+  .openapi("Degradation");
 
 export const HealthResponseSchema = z
   .object({
-    status: z.string().openapi({ example: "ok" }),
-    service: z.string().openapi({ example: "walrus" }),
-    vuln_data_freshness: DataFreshnessSchema.nullable(),
-    vuln_sync_status: VulnSyncStatusSchema.nullable(),
+    isAvailable: z.boolean().openapi({
+      example: true,
+      description:
+        "Whether the application is wholly available. Dependency degradations do not change " +
+        "this value, and it remains true during the startup grace period.",
+    }),
+    gitUrl: z.string().url(),
+    ts: z.string().datetime().openapi({ description: "Time this response was generated." }),
+    started: z.string().datetime().openapi({ description: "Application startup time." }),
+    inGracePeriod: z.boolean().openapi({
+      description: "Whether the 300-second startup availability grace period is active.",
+    }),
+    version: z.string().openapi({ example: "0.2.0" }),
   })
   .openapi("HealthResponse");
+
+export const CveSuppressionStatusSchema = z
+  .object({
+    active_count: z.number().int(),
+    next_expiry: z
+      .string()
+      .datetime()
+      .nullable()
+      .openapi({
+        description:
+          "Soonest expiry among active suppressions that have one; null when every active " +
+          "suppression stands until revoked.",
+      }),
+  })
+  .openapi("CveSuppressionStatus");
+
+export const EgressStatusSchema = z
+  .object({
+    mode: z.enum(["direct", "rules", "strict"]).openapi({
+      description: "Effective WALRUS_EGRESS_MODE governing outbound public-internet egress.",
+    }),
+    rule_count: z
+      .number()
+      .int()
+      .openapi({
+        description:
+          "Rules loaded from WALRUS_EGRESS_RULES. Never rule content or header values" +
+          " — see GET /admin/v1/egress?url= for a dry-run of what a specific URL would do.",
+      }),
+  })
+  .openapi("EgressStatus");
+
+export const UpstreamCredentialsSchema = z
+  .object({
+    nvd_api_key: z.boolean().openapi({
+      description:
+        "Whether NVD_API_KEY is set. False means NVD ingestion is limited to 4 requests/30s " +
+        "instead of 45: runs take far longer and are likelier to be cut off by the scheduler's " +
+        "attempt deadline. Presence only, never the value.",
+    }),
+  })
+  .openapi("UpstreamCredentials");
+
+export const StatusResponseSchema = HealthResponseSchema.extend({
+  vuln_data_freshness: DataFreshnessSchema.nullable(),
+  vuln_sync_status: VulnSyncStatusSchema.nullable(),
+  cve_suppressions: CveSuppressionStatusSchema.nullable().openapi({
+    description:
+      "Operator suppressions currently excluding a CVE from the critical-CVE gate. A " +
+      "suppression is a deliberate, audited decision rather than a fault, so it is " +
+      "reported here in its own right and never as a degradation. Null if unreadable.",
+  }),
+  egress: EgressStatusSchema.openapi({
+    description:
+      "Enterprise egress rewriting state (WAL-113). Mode and rule count only, safe to expose " +
+      "publicly; nothing here reveals a rule's match/rewrite targets or header values.",
+  }),
+  upstream_credentials: UpstreamCredentialsSchema.openapi({
+    description:
+      "Optional upstream API credentials this process holds. Absence is a supported " +
+      "configuration (walrus runs keyless) rather than a fault, so it is reported here in its " +
+      "own right and never as a degradation. GITHUB_TOKEN is deliberately not reported: it is " +
+      "mounted only into the walrus-sync job, so its absence here says nothing about the " +
+      "deployment — that job warns about it in its own boot log.",
+  }),
+  degradations: z.array(DegradationSchema).openapi({
+    description:
+      "Parts of the system currently not doing their job unattended — stale or failing " +
+      "vulnerability ingestion, stuck or disabled autonomous backfills. Empty means " +
+      "self-healing is healthy. Shown as a banner on the admin UI.",
+  }),
+  base_path: z.string().openapi({
+    description:
+      "Effective WALRUS_BASE_PATH (WAL-117). Empty string means walrus is mounted at root, " +
+      "today's default. Every link this response's own request reached — including this one " +
+      "— already carries it.",
+    example: "",
+  }),
+}).openapi("StatusResponse");
+
+// ── GET /api/v1/packages/:name/availability ──────────────────────────────────
+
+export const AvailabilityTransitionSchema = z
+  .object({
+    version: z.string(),
+    status: z.enum(["blocked", "available"]),
+    cve_id: z.string().nullable().openapi({
+      description: "The CVE that caused a `blocked` transition. Null on `available`.",
+    }),
+    cvss_v3_score: z
+      .number()
+      .nullable()
+      .openapi({
+        description:
+          "CVSS v3 base score of the blocking CVE at transition time, when stored. " +
+          "A block may be explained by v4 or v2 instead — see `severity_source`.",
+      }),
+    cvss_v4_score: z.number().nullable().openapi({
+      description: "CVSS v4 base score of the blocking CVE at transition time, when stored.",
+    }),
+    cvss_v2_score: z.number().nullable().openapi({
+      description: "CVSS v2 base score of the blocking CVE at transition time, when stored.",
+    }),
+    severity: z.string().nullable(),
+    severity_source: z
+      .string()
+      .nullable()
+      .openapi({
+        description:
+          "Which CVSS version produced `severity`: nvd-cvss-v3 | nvd-cvss-v4 | nvd-cvss-v2. " +
+          "Null on `available`, on unscored rows, and on events recorded before this column existed.",
+      }),
+    source: z.string().openapi({
+      description: "Ingestion that produced the change: nvd | kev | osv | cvss | backfill.",
+      example: "cvss",
+    }),
+    trigger: z.string().openapi({
+      description: "`internal` for a scheduled run, `admin` for an operator.",
+      example: "internal",
+    }),
+    at: z.string().datetime(),
+  })
+  .openapi("AvailabilityTransition");
+
+export const AvailabilityHistoryResponseSchema = z
+  .object({
+    package: z.string(),
+    version: z.string().nullable(),
+    transitions: z.array(AvailabilityTransitionSchema),
+  })
+  .openapi("AvailabilityHistoryResponse");
 
 // ── GET /download/:package/:version/:os/:arch ─────────────────────────────────
 
@@ -314,3 +517,59 @@ export const CoolingOffErrorSchema = z
     available_at: z.string().datetime(),
   })
   .openapi("CoolingOffError");
+
+/**
+ * The gate's 403 (WAL-79). `error` alone has to be useful, because a build tool that surfaces
+ * one field surfaces that one — so it names the CVE and, when known, where to move to. The
+ * structured half carries what a human needs to judge the block: the advisory to read, the
+ * comparison walrus made, and every score, since the gate is any-of across CVSS versions
+ * (ADR-005) and naming only v3 would misdescribe a v4- or v2-caused refusal.
+ *
+ * Naming the CVE is deliberate. It is public NVD data, walrus is an internal mirror, and a
+ * developer who can read `CVE-2026-1234` can read the advisory and judge for themselves whether
+ * it applies — which is the whole bargain ADR-008 strikes when it chooses to over-block.
+ *
+ * `blocked_by` is optional because explaining a refusal must never be able to prevent one. If the
+ * detail cannot be assembled, the 403 still goes out carrying `error` alone; downgrading it to a
+ * 500 would tell a client "walrus is broken, retry" about a version walrus deliberately withheld.
+ */
+export const BlockedVersionErrorSchema = z
+  .object({
+    error: z.string(),
+    blocked_by: z
+      .object({
+        cve_id: z.string(),
+        matched_because: z.string().openapi({
+          description:
+            "The version comparison that matched, e.g. `0.10.10 == 0.10.10` or `2.55.0 < 2.56.0`. " +
+            "Says so explicitly when the served version was normalised before comparison.",
+          example: "0.10.10 == 0.10.10",
+        }),
+        severity: z.string().nullable(),
+        severity_source: z.string().nullable().openapi({
+          description:
+            "Which CVSS version produced `severity`: nvd-cvss-v3 | nvd-cvss-v4 | nvd-cvss-v2.",
+        }),
+        cvss_v3_score: z.number().nullable(),
+        cvss_v4_score: z.number().nullable(),
+        cvss_v2_score: z.number().nullable(),
+        is_kev: z.boolean().openapi({
+          description:
+            "Known exploited in the wild (CISA KEV). Reported, but not itself a reason for the block.",
+        }),
+        fixed_in: z.string().nullable().openapi({
+          description:
+            "The version the advisory says fixes this, when it names one. Where to go next.",
+        }),
+      })
+      .optional()
+      .openapi({
+        description:
+          "The CVE that caused the refusal. Where several critical CVEs match, this is the " +
+          "highest-scoring one; the rest are listed by GET /api/v1/packages/{name}/vulns. " +
+          "Absent only when walrus cannot describe the block it just made — the refusal itself " +
+          "is never conditional on being explainable, so treat a missing `blocked_by` as a " +
+          "block with an unavailable explanation, never as a softer refusal.",
+      }),
+  })
+  .openapi("BlockedVersionError");

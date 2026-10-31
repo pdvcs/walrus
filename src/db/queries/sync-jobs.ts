@@ -19,7 +19,16 @@ export interface ArtifactSummary {
 export interface JobDetail {
   job: SyncJobRow;
   artifacts: ArtifactSummary[];
+  /** Total time since the row was created — includes any cold-start wait. */
   elapsed_ms: number;
+  /**
+   * Time from row creation to the container actually starting (`container_started_at`), or to
+   * completion/now if it never did. For an old row from before migration 0017 this is the whole
+   * `elapsed_ms` — there is no better answer once that data was never recorded.
+   */
+  queued_ms: number;
+  /** Time from the container starting to completion/now. Null until it has started. */
+  transfer_ms: number | null;
   cooling_off_days?: number;
 }
 
@@ -44,6 +53,7 @@ export interface SyncJobUpdate {
   artifacts_downloaded?: number;
   artifacts_failed?: number;
   error_message?: string | null;
+  container_started_at?: Date | null;
   completed_at?: Date | null;
 }
 
@@ -62,6 +72,7 @@ export async function updateSyncJob(
     ["artifacts_downloaded", "artifacts_downloaded"],
     ["artifacts_failed", "artifacts_failed"],
     ["error_message", "error_message"],
+    ["container_started_at", "container_started_at"],
     ["completed_at", "completed_at"],
   ];
 
@@ -107,6 +118,8 @@ export interface ListSyncJobsOpts {
   packageName?: string;
   status?: SyncJobStatus;
   limit?: number;
+  /** Offset for page-based browsing of the jobs list (admin jobs page). */
+  offset?: number;
 }
 
 export async function incrementJobCounters(
@@ -149,8 +162,11 @@ export async function getJobWithArtifacts(pool: Pool, id: number): Promise<JobDe
 
   const endMs = job.completed_at ? job.completed_at.getTime() : Date.now();
   const elapsed_ms = endMs - job.started_at.getTime();
+  const queuedEndMs = job.container_started_at ? job.container_started_at.getTime() : endMs;
+  const queued_ms = queuedEndMs - job.started_at.getTime();
+  const transfer_ms = job.container_started_at ? endMs - job.container_started_at.getTime() : null;
 
-  return { job, artifacts: artifactRes.rows, elapsed_ms };
+  return { job, artifacts: artifactRes.rows, elapsed_ms, queued_ms, transfer_ms };
 }
 
 export async function listSyncJobs(pool: Pool, opts: ListSyncJobsOpts = {}): Promise<SyncJobRow[]> {
@@ -168,10 +184,15 @@ export async function listSyncJobs(pool: Pool, opts: ListSyncJobsOpts = {}): Pro
 
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   const limit = opts.limit ?? 50;
-  params.push(limit);
+  // Push values FIRST, then read indexes: push() returns the new length, so building
+  // the placeholders inline interleaved with pushes made LIMIT and OFFSET share an
+  // index ($2 $2), leaving $1 unbound — "could not determine data type of parameter $1".
+  const limitIdx = params.push(limit);
+  const offsetIdx = opts.offset && opts.offset > 0 ? params.push(opts.offset) : null;
+  const offsetClause = offsetIdx !== null ? ` OFFSET $${offsetIdx}::int` : "";
 
   const { rows } = await pool.query<SyncJobRow>(
-    `SELECT * FROM sync_jobs ${where} ORDER BY started_at DESC LIMIT $${params.length}`,
+    `SELECT * FROM sync_jobs ${where} ORDER BY started_at DESC LIMIT $${limitIdx}${offsetClause}`,
     params,
   );
   return rows;

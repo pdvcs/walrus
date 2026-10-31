@@ -1,5 +1,6 @@
 import { Pool } from "pg";
 import { ArtifactRow, ArtifactStatus } from "../../types/db.js";
+import { Queryable } from "../queryable.js";
 
 export async function insertArtifact(
   pool: Pool,
@@ -55,6 +56,10 @@ export interface ArtifactStatusUpdate {
   file_size?: number | null;
   checksum?: string | null;
   checksum_type?: string | null;
+  /** Provenance (WAL-58): set when the stored bytes differ from upstream's. */
+  source_checksum?: string | null;
+  source_file_size?: number | null;
+  transform?: string | null;
   error_message?: string | null;
   download_started_at?: Date | null;
   download_completed_at?: Date | null;
@@ -74,6 +79,9 @@ export async function updateArtifactStatus(
     ["file_size", "file_size"],
     ["checksum", "checksum"],
     ["checksum_type", "checksum_type"],
+    ["source_checksum", "source_checksum"],
+    ["source_file_size", "source_file_size"],
+    ["transform", "transform"],
     ["error_message", "error_message"],
     ["download_started_at", "download_started_at"],
     ["download_completed_at", "download_completed_at"],
@@ -177,4 +185,20 @@ export async function listArtifactsForVersion(
     [versionId],
   );
   return rows;
+}
+
+/**
+ * Release every embargoed artifact of a version at once. Returns how many rows were released.
+ * Pairs with a cooling_off_waivers row: clearing the column alone would be rewritten by the next
+ * sync, and the waiver alone would leave the artifacts embargoed until that sync runs.
+ */
+export async function clearCoolingOffForVersion(q: Queryable, versionId: number): Promise<number> {
+  const { rowCount } = await q.query(
+    `UPDATE artifacts
+        SET cooling_off_until = NULL
+      WHERE version_id = $1
+        AND cooling_off_until IS NOT NULL`,
+    [versionId],
+  );
+  return rowCount ?? 0;
 }

@@ -1,0 +1,72 @@
+name = "pack"
+display_name = "Pack CLI"
+vendor = "Cloud Native Buildpacks"
+website = "https://github.com/buildpacks/pack"
+description = "CLI for building apps with Cloud Native Buildpacks"
+
+# GitHub Releases API capabilities:
+#   Release date: "published_at" field on each release (ISO 8601) — captured automatically
+#   Checksum:     per-asset "digest" field ("sha256:…") — configured below
+#                 (upstream also attaches .sha256 sidecars, but the digest needs no extra fetch)
+
+[discovery]
+type = "github-releases"
+repo = "buildpacks/pack"
+include_prereleases = false
+# Plain releases only: drops the -rc tags (v0.40.0-rc1), which are also flagged prerelease.
+tag_pattern = "^v(\\d+\\.\\d+\\.\\d+)$"
+
+[versioning]
+type = "semver"
+# pack is pre-1.0 and bumps the minor for ordinary releases, so a minor is not a maintained
+# series. One group ("0") makes versions_per_group the "last N releases" knob.
+version_group_extract = "^(\\d+)"
+# Digest floor: v0.38.0 (2025-06-13) is the oldest stable release whose assets carry a GitHub
+# per-asset digest; v0.37.0 and older would be served unverified.
+min_version = "0.38.0"
+lts_support = false
+
+[retention]
+versions_per_group = 3 # the last three releases
+groups_to_keep = 1
+cooling_off_days = 3
+
+[checksum]
+type = "github-asset-digest"
+algorithm = "sha256"
+
+# Filenames keep the tag's "v" prefix, which the tag_pattern capture strips — hence the literal
+# "v" in each template. Upstream names carry no architecture token for the x86-64 builds
+# (pack-v0.40.9-linux.tgz), so those templates omit {arch}; macOS arm64 does carry one.
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "windows"
+arch_upstream = "amd64"
+extension = "zip"
+filename_template = "pack-v{version}-{os}.{ext}"
+
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "linux"
+arch_upstream = "amd64"
+extension = "tgz"
+filename_template = "pack-v{version}-{os}.{ext}"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "macos"
+arch_upstream = "arm64"
+extension = "tgz"
+filename_template = "pack-v{version}-{os}-{arch}.{ext}"
+
+[vulnerabilities]
+# No NVD CPE presence for pack (probed buildpacks:pack and cncf:buildpacks, plus a keyword search
+# for "buildpacks pack": 0 results each, 2026-10-07) — OSV-only tracking. The module path is
+# the repository's go.mod module. OSV has no advisories for it today; as with fd, a future one
+# lands here without a config change.
+osv = { ecosystem = "Go", name = "github.com/buildpacks/pack" }
+aliases = ["pack", "pack cli", "buildpacks", "cloud native buildpacks", "cnb"]

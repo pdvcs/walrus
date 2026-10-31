@@ -16,6 +16,7 @@ import {
 } from "../../db/queries/cves.js";
 import { loadCpeLookup, listDistinctCpePairs } from "../../db/queries/package-aliases.js";
 import { getSyncCursor, setSyncState } from "../../db/queries/vuln-sync-state.js";
+import { config } from "../../config/index.js";
 
 export interface IngestCounts {
   cves: number;
@@ -24,13 +25,16 @@ export interface IngestCounts {
 }
 
 /** Which CVSS version produced a row's `severity`. */
-export type SeveritySource = "nvd-cvss-v3" | "nvd-cvss-v2";
+export type SeveritySource = "nvd-cvss-v3" | "nvd-cvss-v4" | "nvd-cvss-v2";
 
 export interface ExtractedCvss {
-  /** CVSS v3 base score; null when the CVE is only scored under v2. */
+  /** CVSS v3 base score; null when the CVE is only scored under v4 and/or v2. */
   score: number | null;
   vector: string | null;
-  /** CVSS v2 base score, populated independently of v3. */
+  /** CVSS v4 base score, populated independently of v3/v2. */
+  v4Score: number | null;
+  v4Vector: string | null;
+  /** CVSS v2 base score, populated independently of v3/v4. */
   v2Score: number | null;
   v2Vector: string | null;
   severity: string | null;
@@ -60,24 +64,35 @@ function readMetric(
 /**
  * Pick the best CVSS metrics, tolerating NVD's variants.
  *
- * v3 wins when present. v2 is a fallback rather than an equal: it has no
- * CRITICAL band (v2 HIGH spans 7.0-10.0, where v3 splits HIGH 7.0-8.9 from
- * CRITICAL 9.0+), so a v2-derived severity is not comparable to a v3 one and
- * `severitySource` records which produced it. v2 score/vector are stored in
- * their own fields either way, so a CVE scored under both keeps both.
+ * Severity precedence is v3 → v4 → v2. v3 stays primary so already-scored rows
+ * do not churn; v4 sits above v2 because it shares v3's severity bands
+ * (CRITICAL 9.0+), where v2 has no CRITICAL band at all (v2 HIGH spans
+ * 7.0-10.0) — so a v2-derived severity is not comparable to a v3/v4 one and
+ * `severitySource` records which produced it. Each version's score/vector is
+ * stored in its own fields regardless of which wins the severity, so a CVE
+ * scored under several keeps them all.
  */
 export function extractCvss(item: NvdCveItem): ExtractedCvss {
   const metrics = (item.cve.metrics ?? {}) as Record<string, Array<Record<string, unknown>>>;
   const v3 = readMetric(metrics, "cvssMetricV31") ?? readMetric(metrics, "cvssMetricV30");
+  const v4 = readMetric(metrics, "cvssMetricV40");
   const v2 = readMetric(metrics, "cvssMetricV2");
 
   return {
     score: v3?.score ?? null,
     vector: v3?.vector ?? null,
+    v4Score: v4?.score ?? null,
+    v4Vector: v4?.vector ?? null,
     v2Score: v2?.score ?? null,
     v2Vector: v2?.vector ?? null,
-    severity: v3?.severity ?? v2?.severity ?? null,
-    severitySource: v3?.severity ? "nvd-cvss-v3" : v2?.severity ? "nvd-cvss-v2" : null,
+    severity: v3?.severity ?? v4?.severity ?? v2?.severity ?? null,
+    severitySource: v3?.severity
+      ? "nvd-cvss-v3"
+      : v4?.severity
+        ? "nvd-cvss-v4"
+        : v2?.severity
+          ? "nvd-cvss-v2"
+          : null,
   };
 }
 
@@ -102,8 +117,12 @@ export function extractAffects(
           continue;
         }
 
-        const exactVersion =
-          parsed.version !== "*" && parsed.version !== "-" ? parsed.version : null;
+        // CPE 2.3 gives the version component two logical values, and they are not synonyms:
+        // `*` is ANY (the entry applies to every version) and `-` is NA (the version attribute
+        // does not apply to this entry at all). Both yield no exact version to match on, but
+        // only ANY may be read as "all versions" — see WAL-69 and `findBlockingCve`.
+        const versionNa = parsed.version === "-";
+        const exactVersion = parsed.version !== "*" && !versionNa ? parsed.version : null;
         const versionStart = m.versionStartIncluding ?? m.versionStartExcluding ?? null;
         const versionEnd = m.versionEndIncluding ?? m.versionEndExcluding ?? null;
         // Same criteria can appear in multiple nodes with different ranges, so
@@ -139,6 +158,7 @@ export function extractAffects(
             fixed_in: m.versionEndExcluding ?? null,
             source: "nvd",
             raw_cpe: rawCpe,
+            version_na: versionNa,
           });
         }
       }
@@ -162,7 +182,8 @@ export async function ingestCveItems(
     for (const item of items) {
       const cve = item.cve;
       const desc = cve.descriptions?.find((d) => d.lang === "en")?.value ?? null;
-      const { score, vector, v2Score, v2Vector, severity, severitySource } = extractCvss(item);
+      const { score, vector, v4Score, v4Vector, v2Score, v2Vector, severity, severitySource } =
+        extractCvss(item);
 
       await upsertCveFull(client, {
         id: cve.id,
@@ -170,6 +191,8 @@ export async function ingestCveItems(
         modified_at: cve.lastModified ?? null,
         cvss_v3_score: score,
         cvss_v3_vector: vector,
+        cvss_v4_score: v4Score,
+        cvss_v4_vector: v4Vector,
         cvss_v2_score: v2Score,
         cvss_v2_vector: v2Vector,
         severity,
@@ -201,7 +224,19 @@ export async function ingestCveItems(
 
 type Logger = (msg: string) => void;
 const DAY_MS = 24 * 3600 * 1000;
-const MAX_NVD_DATE_WINDOW_MS = 119 * DAY_MS;
+/** The API caps lastMod windows at 120 days; stay under with room for margins. */
+export const MAX_NVD_DATE_WINDOW_MS = 119 * DAY_MS;
+/**
+ * Safety margin subtracted from each incremental window's start.
+ *
+ * NVD's lastModStartDate index lags real time: a CVE modified just before a window's
+ * end can become queryable only after the query executed, so with abutting windows it
+ * falls permanently between them — silently, and (per the gate's data flow) biased
+ * toward under-blocking. Starting each window a little earlier re-fetches the boundary
+ * zone every run; per-CVE ingestion is idempotent (`upsertCveFull` + affects rebuild),
+ * so the overlap costs a handful of re-walked records and closes the gap.
+ */
+export const NVD_LASTMOD_LAG_MARGIN_MS = 2 * 3600 * 1000;
 
 export interface PublicationWindow extends Record<string, string> {
   pubStartDate: string;
@@ -278,10 +313,24 @@ export async function backfillNvd(
       const matchString = buildMatchString(pair.cpe_vendor, pair.cpe_product);
       log(`backfill: ${pair.cpe_vendor}:${pair.cpe_product} (${matchString})`);
       for (const window of windows) {
-        const items = await nvd.cvesForCpe(matchString, window);
-        const counts = await ingestCveItems(pool, items, lookup);
+        // Streamed a page at a time, never accumulated (WAL-97, same defect as WAL-95 on the
+        // incremental path). A broad CPE pair over a 119-day publication window returns an
+        // unbounded number of CVEs, and this job runs with no resource pin at all -- so the
+        // heap it may ask for is unbounded on a container taking Cloud Run's default memory.
+        // Unlike the incremental path there is no relevance filter here: a backfill ingests
+        // everything the CPE matched, which is the point of it.
+        const counts: IngestCounts = { cves: 0, affects: 0, skippedCpes: 0 };
+        let fetched = 0;
+        for await (const page of nvd.cvePages({ virtualMatchString: matchString, ...window })) {
+          fetched += page.vulnerabilities.length;
+          if (page.vulnerabilities.length === 0) continue;
+          const pageCounts = await ingestCveItems(pool, page.vulnerabilities, lookup);
+          counts.cves += pageCounts.cves;
+          counts.affects += pageCounts.affects;
+          counts.skippedCpes += pageCounts.skippedCpes;
+        }
         log(
-          `  ${items.length} CVEs → ${counts.affects} affects rows (${counts.skippedCpes} untracked CPEs skipped)`,
+          `  ${fetched} CVEs → ${counts.affects} affects rows (${counts.skippedCpes} untracked CPEs skipped)`,
         );
         totals.cves += counts.cves;
         totals.affects += counts.affects;
@@ -303,37 +352,98 @@ export async function backfillNvd(
  * bootstraps a 119-day lookback window rather than erroring, so the /internal
  * trigger works before a full backfill (which remains the way to get history).
  * The cursor advances only on success.
+ *
+ * The window is `[cursor - lag margin, now]` rather than abutting the previous
+ * run's end: NVD's modification index lags, and an abutting window would let a
+ * late-indexed CVE fall permanently between runs. See NVD_LASTMOD_LAG_MARGIN_MS.
  */
 export async function incrementalNvdSync(
   pool: Pool,
   nvd: NvdClient,
-  opts: { log?: Logger } = {},
+  opts: { log?: Logger; now?: Date } = {},
 ): Promise<IngestCounts> {
   const log = opts.log ?? (() => {});
   const cursor = await getSyncCursor(pool, "nvd-cve");
-  const now = new Date();
-  const start = cursor ? new Date(cursor) : new Date(now.getTime() - MAX_NVD_DATE_WINDOW_MS);
+  const now = opts.now ?? new Date();
+  // Overlap backwards, never forwards: the fresh-DB bootstrap keeps its full lookback
+  // (there is no previous window to bridge), while an existing cursor re-fetches the
+  // boundary zone ahead of it. End still bounds at `now`, so everything indexed up to
+  // now stays covered by this window.
+  const start = new Date(
+    cursor
+      ? new Date(cursor).getTime() - NVD_LASTMOD_LAG_MARGIN_MS
+      : now.getTime() - MAX_NVD_DATE_WINDOW_MS,
+  );
   const end = new Date(Math.min(now.getTime(), start.getTime() + MAX_NVD_DATE_WINDOW_MS));
 
+  const startedAt = Date.now();
+  const windowDays = ((end.getTime() - start.getTime()) / DAY_MS).toFixed(1);
+  log(
+    `incremental: walking lastMod window ${start.toISOString()} → ${end.toISOString()} (${windowDays} days, ${
+      cursor ? "from cursor" : "fresh-DB bootstrap"
+    }); a long gap since the last sync means many pages at the NVD rate limit`,
+  );
+
   try {
-    const items = await nvd.cvesModifiedSince(start.toISOString(), end.toISOString());
-    // A lastMod window returns EVERYTHING modified; keep only CVEs that touch a
-    // tracked package (or that we already know about).
+    // Streamed a page at a time, never accumulated (WAL-95). A lastMod window returns
+    // EVERYTHING modified, and on a fresh database there is no cursor, so the very first
+    // sync of any new environment requests the full MAX_NVD_DATE_WINDOW_MS lookback --
+    // hundreds of thousands of records. Holding them as parsed objects exhausted V8's heap
+    // and aborted the process (signal 6) roughly two minutes in, well before the scheduler's
+    // attempt deadline. Peak memory is now one page plus the ingested-id set, so it is flat
+    // in the window's size rather than linear.
     const lookup = await loadCpeLookup(pool);
-    const known = await knownCveIds(
-      pool,
-      items.map((item) => item.cve.id),
-    );
-    const relevantById = new Map<string, NvdCveItem>();
-    for (const item of items) {
-      if (known.has(item.cve.id) || extractAffects(item, lookup).rows.length > 0) {
-        relevantById.set(item.cve.id, item);
-      }
+    const counts: IngestCounts = { cves: 0, affects: 0, skippedCpes: 0 };
+    let modified = 0;
+    let relevantCount = 0;
+    // Ids only, not items: the window can legitimately repeat a CVE across pages when NVD's
+    // index shifts mid-pagination. The previous whole-window Map deduped by id and kept the
+    // last copy; this keeps the first and skips the rest, which differs only for a CVE
+    // modified again *during* the walk -- and the next run's overlapping window re-fetches it.
+    const ingested = new Set<string>();
+    let pageNo = 0;
+
+    for await (const page of nvd.cvePages(
+      {
+        lastModStartDate: start.toISOString(),
+        lastModEndDate: end.toISOString(),
+      },
+      // The bootstrap pages differently on purpose -- opposite workload, opposite trade.
+      // See VULN_NVD_BOOTSTRAP_PAGE_SIZE.
+      cursor ? {} : { resultsPerPage: config.VULN_NVD_BOOTSTRAP_PAGE_SIZE },
+    )) {
+      modified += page.vulnerabilities.length;
+      pageNo++;
+      const elapsedS = Math.round((Date.now() - startedAt) / 1000);
+      log(
+        `incremental: page ${pageNo} — ${modified}/${page.totalResults} CVEs walked, ${relevantCount} relevant so far, ${elapsedS}s elapsed`,
+      );
+      const fresh = page.vulnerabilities.filter((item) => !ingested.has(item.cve.id));
+      // Per page, so the id list stays bounded: a single query carrying every id in a
+      // 119-day window would be its own problem.
+      const known = await knownCveIds(
+        pool,
+        fresh.map((item) => item.cve.id),
+      );
+      const relevant = fresh.filter(
+        (item) => known.has(item.cve.id) || extractAffects(item, lookup).rows.length > 0,
+      );
+      if (relevant.length === 0) continue;
+
+      // One transaction per page rather than one for the window. The cursor still only
+      // advances on full success, and every write here is an upsert keyed by CVE id with
+      // its nvd-sourced affects rebuilt per CVE, so a failure part-way through leaves the
+      // next run to redo the same work idempotently instead of discarding what landed.
+      const pageCounts = await ingestCveItems(pool, relevant, lookup);
+      counts.cves += pageCounts.cves;
+      counts.affects += pageCounts.affects;
+      counts.skippedCpes += pageCounts.skippedCpes;
+      relevantCount += relevant.length;
+      for (const item of relevant) ingested.add(item.cve.id);
     }
-    const relevant = [...relevantById.values()];
-    const counts = await ingestCveItems(pool, relevant, lookup);
+
     log(
-      `incremental: ${items.length} modified CVEs in window, ${relevant.length} relevant, ${counts.affects} affects rows`,
+      `incremental: ${modified} modified CVEs in window, ${relevantCount} relevant, ${counts.affects} affects rows (${Math.round((Date.now() - startedAt) / 1000)}s)`,
     );
     await setSyncState(pool, "nvd-cve", end.toISOString(), true);
     return counts;

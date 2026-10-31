@@ -1,0 +1,73 @@
+# Named git-delta, not delta: that is the crate name, what distributions call it, and what
+# keeps it distinct from the several unrelated products called "delta" (including in the CPE
+# dictionary). The display name stays the one users know.
+name = "git-delta"
+display_name = "delta"
+vendor = "dandavison"
+website = "https://github.com/dandavison/delta"
+description = "Syntax-highlighting pager for git, diff, and grep output"
+
+# GitHub Releases API capabilities:
+#   Release date: "published_at" field on each release (ISO 8601) — captured automatically
+#   Checksum:     per-asset "digest" field ("sha256:…") — configured below
+
+[discovery]
+type = "github-releases"
+repo = "dandavison/delta"
+include_prereleases = false
+# Tags carry no prefix (0.19.2), unlike most Rust CLIs.
+tag_pattern = "^(\\d+\\.\\d+\\.\\d+)$"
+
+[versioning]
+type = "semver"
+version_group_extract = "^(\\d+\\.\\d+)" # delta is pre-1.0; group by minor (0.18, 0.19, ...)
+# Digest floor: 0.19.0 (2026-03-20) is the oldest release whose assets carry a GitHub
+# per-asset digest. Below it an artifact would be served unverified.
+min_version = "0.19.0"
+lts_support = false
+
+[retention]
+versions_per_group = 3
+groups_to_keep = 1
+cooling_off_days = 7
+
+[checksum]
+type = "github-asset-digest"
+algorithm = "sha256"
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "pc-windows-msvc"
+arch_upstream = "x86_64"
+extension = "zip"
+filename_template = "delta-{version}-{arch}-{os}.{ext}"
+
+# musl rather than gnu, deliberately: 0.19.0 publishes only the musl tarball, while 0.19.1
+# and 0.19.2 publish both. Choosing gnu would silently drop Linux from the oldest version
+# in the retention window — discovery skips a platform whose asset is absent.
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "unknown-linux-musl"
+arch_upstream = "x86_64"
+extension = "tar.gz"
+filename_template = "delta-{version}-{arch}-{os}.{ext}"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "apple-darwin"
+arch_upstream = "aarch64"
+extension = "tar.gz"
+filename_template = "delta-{version}-{arch}-{os}.{ext}"
+
+[vulnerabilities]
+# CPE delta_project:delta — 36 dictionary entries (verified live against the NVD CPE
+# dictionary 2026-09-12). Confirmed to be this delta: titles "Delta Project Delta 0.8.3"
+# and versions 0.0.1–0.8.3, matching delta's own pre-0.9 history. "dandavison:delta" and
+# "git-delta_project:git-delta" have no entries.
+cpes = ["delta_project:delta"]
+# OSV crates.io "git-delta" carries CVE-2021-36376 (GHSA-5xg3-j2j6-rcx4 / RUSTSEC-2021-0105).
+osv = { ecosystem = "crates.io", name = "git-delta" }
+aliases = ["delta", "git-delta", "git delta"]

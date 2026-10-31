@@ -7,7 +7,23 @@ set -euo pipefail
 #   TF_VAR_project_id          - GCP project ID
 #   TF_VAR_gcs_bucket_name     - GCS artifact bucket name
 #   TF_VAR_cloud_sql_db_password - Cloud SQL walrus user password
+#   WALRUS_SESSION_SECRET      - HMAC session key (at least 32 bytes)
+#   WALRUS_ADMIN_PASSWORD      - built-in admin password (at least 16 bytes)
 #   TERRAFORM_STATE_BUCKET     - GCS bucket for Terraform state
+# Optional env vars:
+#   NVD_API_KEY                - upstream NVD API 2.0 key (WAL-92). Absent, the deployment runs
+#                                keyless at NVD's 5 req/30s instead of 50: slower ingestion, and
+#                                a historical backfill measured in hours rather than minutes.
+#                                Never required, so a fresh project can bootstrap without one.
+#   GITHUB_TOKEN               - GitHub API token (WAL-103). Absent, discovery for the
+#                                github-releases packages runs unauthenticated at 60 req/hour
+#                                per IP — and Cloud Run's egress address is shared with other
+#                                tenants, so that budget runs out and fails a whole sync. A
+#                                fine-grained PAT with public read-only access is enough.
+#   WALRUS_SESSION_SECRET_PREVIOUS - old session key during rotation
+#   WALRUS_CREATE_STATE_BUCKET - set to 1 to create a missing Terraform state bucket without
+#                                prompting. For non-interactive runs only; it accepts whatever
+#                                TERRAFORM_STATE_BUCKET says, typo included.
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,12 +38,37 @@ for cmd in gcloud docker terraform npm; do
   fi
 done
 
-for var in TF_VAR_project_id TF_VAR_gcs_bucket_name TF_VAR_cloud_sql_db_password TERRAFORM_STATE_BUCKET; do
+for var in TF_VAR_project_id TF_VAR_gcs_bucket_name TF_VAR_cloud_sql_db_password WALRUS_SESSION_SECRET WALRUS_ADMIN_PASSWORD TERRAFORM_STATE_BUCKET; do
   if [[ -z "${!var:-}" ]]; then
     echo "ERROR: required env var '$var' is not set" >&2
     exit 1
   fi
 done
+
+# Keep the address out of Terraform source. A project with exactly one human owner needs no
+# extra deploy configuration; shared projects must opt in with TF_VAR_alert_notification_email.
+if [[ -z "${TF_VAR_alert_notification_email:-}" ]]; then
+  mapfile -t WALRUS_PROJECT_OWNERS < <(
+    gcloud projects get-iam-policy "${TF_VAR_project_id}" \
+      --flatten="bindings[].members" \
+      --filter='bindings.role=roles/owner AND bindings.members:user:' \
+      --format='value(bindings.members)' | sed 's/^user://'
+  )
+  if (( ${#WALRUS_PROJECT_OWNERS[@]} != 1 )); then
+    echo "ERROR: set TF_VAR_alert_notification_email; project does not have exactly one user owner" >&2
+    exit 1
+  fi
+  export TF_VAR_alert_notification_email="${WALRUS_PROJECT_OWNERS[0]}"
+fi
+
+if (( ${#WALRUS_SESSION_SECRET} < 32 )); then
+  echo "ERROR: WALRUS_SESSION_SECRET must be at least 32 bytes" >&2
+  exit 1
+fi
+if (( ${#WALRUS_ADMIN_PASSWORD} < 16 )); then
+  echo "ERROR: WALRUS_ADMIN_PASSWORD must be at least 16 bytes" >&2
+  exit 1
+fi
 
 PROJECT_ID="${TF_VAR_project_id}"
 REGION="${TF_VAR_region:-us-central1}"
@@ -35,15 +76,72 @@ IMAGE_BASE="${REGION}-docker.pkg.dev/${PROJECT_ID}/walrus/walrus-api"
 GIT_SHA="$(git -C "${REPO_ROOT}" rev-parse --short HEAD)"
 export TF_VAR_image_tag="${GIT_SHA}"
 
+# The NVD key is optional, but Cloud Run refuses to start a revision that references a secret
+# with no versions — so Terraform must know whether one was populated before it wires the
+# secret_key_ref. Derived from the environment rather than exposed as a second operator switch,
+# which could disagree with what this script actually put in Secret Manager below.
+if [[ -n "${NVD_API_KEY:-}" ]]; then
+  export TF_VAR_nvd_api_key_configured="true"
+else
+  export TF_VAR_nvd_api_key_configured="false"
+  echo "NOTE: NVD_API_KEY is not set — deploying keyless. NVD ingestion is rate-limited to" >&2
+  echo "      5 req/30s (vs 50 with a key); set it and re-run to enable the higher limit." >&2
+fi
+
+# Same contract for the GitHub token (WAL-103): derived from the environment rather than exposed
+# as a second operator switch that could disagree with what was actually put in Secret Manager.
+if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+  export TF_VAR_github_token_configured="true"
+else
+  export TF_VAR_github_token_configured="false"
+  echo "NOTE: GITHUB_TOKEN is not set — package discovery will call api.github.com" >&2
+  echo "      unauthenticated at 60 req/hour, shared with other tenants on this egress IP." >&2
+  echo "      A sync that exhausts it fails outright; set a token and re-run." >&2
+fi
+
 echo "==> Phase 1: TypeScript build"
 npm --prefix "${REPO_ROOT}" run build
 
 echo "==> Phase 2: Ensure Terraform state bucket exists"
 if ! gcloud storage buckets describe "gs://${TERRAFORM_STATE_BUCKET}" --project="${PROJECT_ID}" &>/dev/null; then
+  # Creating this silently made a typo in TERRAFORM_STATE_BUCKET indistinguishable from a genuine
+  # first deploy: the run bootstrapped an empty state under the wrong name and then built a
+  # second, parallel copy of the entire deployment against it. Confirm first, and print the name
+  # being created so a typo is visible at the point of decision.
+  echo ""
+  echo "Terraform state bucket gs://${TERRAFORM_STATE_BUCKET} does not exist."
+  echo "  project:  ${PROJECT_ID}"
+  echo "  location: ${REGION}"
+  echo ""
+  echo "Creating it is correct for a first deploy. If this project already has a state bucket,"
+  echo "the name is wrong: answer no and fix TERRAFORM_STATE_BUCKET, because deploying against"
+  echo "an empty state builds a second copy of the deployment rather than updating the first."
+  echo ""
+  if [[ "${WALRUS_CREATE_STATE_BUCKET:-}" == "1" ]]; then
+    echo "WALRUS_CREATE_STATE_BUCKET=1 — creating without prompting."
+  elif [[ ! -t 0 ]]; then
+    # read would hit EOF here and, under `set -e`, abort with nothing explaining why.
+    echo "ERROR: no terminal to confirm on. Create the bucket first, or re-run with" >&2
+    echo "       WALRUS_CREATE_STATE_BUCKET=1 to accept the name above." >&2
+    exit 1
+  else
+    read -rp "Type 'yes' to create it: " CREATE_STATE_BUCKET
+    if [[ "${CREATE_STATE_BUCKET}" != "yes" ]]; then
+      echo "Aborted." >&2
+      exit 1
+    fi
+  fi
+  # Versioned: this bucket is the only record of the whole deployment, and a truncated or
+  # corrupted state write is otherwise unrecoverable (WAL-40, 2026-08-30).
   gcloud storage buckets create "gs://${TERRAFORM_STATE_BUCKET}" \
     --project="${PROJECT_ID}" \
     --location="${REGION}" \
     --uniform-bucket-level-access
+  # `gcloud storage buckets create` has no versioning flag; enable it immediately
+  # afterwards so the remote Terraform state is recoverable from a bad write.
+  gcloud storage buckets update "gs://${TERRAFORM_STATE_BUCKET}" \
+    --project="${PROJECT_ID}" \
+    --versioning
 fi
 
 echo "==> Phase 3: Ensure Artifact Registry repo exists"
@@ -59,24 +157,37 @@ docker build -t "${IMAGE_BASE}:${GIT_SHA}" -t "${IMAGE_BASE}:latest" "${REPO_ROO
 docker push "${IMAGE_BASE}:${GIT_SHA}"
 docker push "${IMAGE_BASE}:latest"
 
-echo "==> Phase 4b: Deploy new image to Cloud Run (if service exists)"
-if gcloud run services describe walrus-api --region="${REGION}" --project="${PROJECT_ID}" &>/dev/null; then
-  gcloud run services update walrus-api \
-    --image="${IMAGE_BASE}:${GIT_SHA}" \
-    --region="${REGION}" \
-    --project="${PROJECT_ID}"
-fi
-
-echo "==> Phase 5: Populate DATABASE_URL secret"
+echo "==> Phase 5: Populate runtime secrets"
 INSTANCE_CONNECTION_NAME="${PROJECT_ID}:${REGION}:walrus-postgres"
 DATABASE_URL="postgresql://walrus:${TF_VAR_cloud_sql_db_password}@/walrus?host=/cloudsql/${INSTANCE_CONNECTION_NAME}"
+PREVIOUS_SESSION_SECRET="${WALRUS_SESSION_SECRET_PREVIOUS:-${WALRUS_SESSION_SECRET}}"
 
-if gcloud secrets describe walrus-database-url --project="${PROJECT_ID}" &>/dev/null; then
-  echo "${DATABASE_URL}" | gcloud secrets versions add walrus-database-url \
-    --project="${PROJECT_ID}" --data-file=-
-else
-  echo "${DATABASE_URL}" | gcloud secrets create walrus-database-url \
-    --project="${PROJECT_ID}" --data-file=-
+populate_secret() {
+  local secret_name="$1"
+  local secret_value="$2"
+  if gcloud secrets describe "${secret_name}" --project="${PROJECT_ID}" &>/dev/null; then
+    printf '%s' "${secret_value}" | gcloud secrets versions add "${secret_name}" \
+      --project="${PROJECT_ID}" --data-file=-
+  else
+    printf '%s' "${secret_value}" | gcloud secrets create "${secret_name}" \
+      --project="${PROJECT_ID}" --data-file=-
+  fi
+}
+
+populate_secret walrus-database-url "${DATABASE_URL}"
+populate_secret walrus-session-secret "${WALRUS_SESSION_SECRET}"
+populate_secret walrus-session-secret-previous "${PREVIOUS_SESSION_SECRET}"
+populate_secret walrus-admin-password "${WALRUS_ADMIN_PASSWORD}"
+# Optional (WAL-92 AC4): only add a version when a key was supplied. An empty version would be
+# worse than none — the workloads would mount a blank apiKey header rather than fall back to the
+# keyless path the client already implements.
+if [[ "${TF_VAR_nvd_api_key_configured}" == "true" ]]; then
+  populate_secret walrus-nvd-api-key "${NVD_API_KEY}"
+fi
+# Same reasoning as the NVD key: only add a version when a token was supplied, so an empty
+# version never shadows the unauthenticated path the client already implements.
+if [[ "${TF_VAR_github_token_configured}" == "true" ]]; then
+  populate_secret walrus-github-token "${GITHUB_TOKEN}"
 fi
 
 echo "==> Phase 6: Terraform apply (full)"
@@ -86,8 +197,46 @@ if ! terraform -chdir="${TF_DIR}" state show google_secret_manager_secret.databa
     google_secret_manager_secret.database_url \
     "projects/${PROJECT_ID}/secrets/walrus-database-url" || true
 fi
+if ! terraform -chdir="${TF_DIR}" state show google_secret_manager_secret.session_secret &>/dev/null; then
+  terraform -chdir="${TF_DIR}" import \
+    google_secret_manager_secret.session_secret \
+    "projects/${PROJECT_ID}/secrets/walrus-session-secret" || true
+fi
+if ! terraform -chdir="${TF_DIR}" state show google_secret_manager_secret.session_secret_previous &>/dev/null; then
+  terraform -chdir="${TF_DIR}" import \
+    google_secret_manager_secret.session_secret_previous \
+    "projects/${PROJECT_ID}/secrets/walrus-session-secret-previous" || true
+fi
+if ! terraform -chdir="${TF_DIR}" state show google_secret_manager_secret.admin_password &>/dev/null; then
+  terraform -chdir="${TF_DIR}" import \
+    google_secret_manager_secret.admin_password \
+    "projects/${PROJECT_ID}/secrets/walrus-admin-password" || true
+fi
+# Only when populated above: keyless, the secret has never been created outside Terraform, and
+# the apply below creates the (versionless) resource itself.
+if [[ "${TF_VAR_nvd_api_key_configured}" == "true" ]] &&
+  ! terraform -chdir="${TF_DIR}" state show google_secret_manager_secret.nvd_api_key &>/dev/null; then
+  terraform -chdir="${TF_DIR}" import \
+    google_secret_manager_secret.nvd_api_key \
+    "projects/${PROJECT_ID}/secrets/walrus-nvd-api-key" || true
+fi
+if [[ "${TF_VAR_github_token_configured}" == "true" ]] &&
+  ! terraform -chdir="${TF_DIR}" state show google_secret_manager_secret.github_token &>/dev/null; then
+  terraform -chdir="${TF_DIR}" import \
+    google_secret_manager_secret.github_token \
+    "projects/${PROJECT_ID}/secrets/walrus-github-token" || true
+fi
 
 terraform -chdir="${TF_DIR}" apply -auto-approve
+
+echo "==> Phase 7: Deploy new image to Cloud Run"
+# Apply the secret references and OIDC configuration before starting an image whose production
+# boot checks require them. On a first deployment Terraform already used this image; update is
+# harmless and keeps the lifecycle-ignore image workflow consistent on later deployments.
+gcloud run services update walrus-api \
+  --image="${IMAGE_BASE}:${GIT_SHA}" \
+  --region="${REGION}" \
+  --project="${PROJECT_ID}"
 
 echo ""
 echo "Deploy complete."

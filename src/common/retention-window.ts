@@ -18,12 +18,27 @@ export interface RetainableVersion {
  * Single source of truth for the retention window (which versions to keep), the artifact rows
  * (which downloads to defer), and `npm run validate` (what it reports) — they must agree, or the
  * window keeps a version the download step never fetches.
+ *
+ * `firstSeenAt` is the fallback anchor for versions whose upstream publishes no release date. It
+ * MUST be supplied by every caller that persists the result: the embargo end is written back to
+ * the artifact row on each sync, so an anchor that moves with the clock is rewritten forward every
+ * run and the embargo never elapses (WAL-91). `versions.discovered_at` is the stable anchor —
+ * `insertVersion` is `ON CONFLICT DO NOTHING`, so it keeps the moment walrus first saw the version.
+ * Callers that only ask *whether* a version is embargoed, before any row exists to read it from,
+ * may omit it and get the conservative answer.
+ *
+ * `waived` is an operator override (cooling_off_waivers): the version is released at once. It is
+ * applied here, not at the download route, because this value is persisted on every sync — a
+ * waiver anywhere else would be rewritten away by the next run.
  */
 export function computeCoolingOffUntil(
   version: Pick<RetainableVersion, "version" | "releasedAt">,
   retention: PackageConfig["retention"],
   coolingOffThreshold: string | null,
+  firstSeenAt?: Date,
+  waived = false,
 ): Date | null {
+  if (waived) return null;
   const coolingOffDays = retention.cooling_off_days;
   if (!coolingOffDays || coolingOffDays <= 0) return null;
 
@@ -35,8 +50,13 @@ export function computeCoolingOffUntil(
   }
   if (coolingOffThreshold !== null && generateSortKey(version.version) > coolingOffThreshold) {
     // No upstream date — fall back to threshold-based logic: only block versions
-    // discovered for the first time above the pre-sync watermark.
-    return new Date(Date.now() + coolingOffDays * 86_400_000);
+    // discovered for the first time above the pre-sync watermark. Anchored to when walrus first
+    // saw the version, never to now: this branch is re-evaluated on every sync for as long as the
+    // version stays embargoed, and the watermark cannot advance past a version that is still
+    // waiting on it, so a `now` anchor is a timer that restarts itself forever.
+    const anchor = firstSeenAt ?? new Date();
+    const candidate = new Date(anchor.getTime() + coolingOffDays * 86_400_000);
+    return candidate > new Date() ? candidate : null;
   }
   return null;
 }
@@ -57,6 +77,7 @@ export function selectRetentionWindow<T extends RetainableVersion>(
   versions: T[],
   retention: PackageConfig["retention"],
   coolingOffThreshold: string | null = null,
+  waivedVersions: ReadonlySet<string> = new Set(),
 ): T[] {
   const { versions_per_group: versionsPerGroup, groups_to_keep: groupsToKeep } = retention;
 
@@ -91,7 +112,8 @@ export function selectRetentionWindow<T extends RetainableVersion>(
     );
     let servable = 0;
     for (const v of sorted) {
-      if (computeCoolingOffUntil(v, retention, coolingOffThreshold) !== null) {
+      const waived = waivedVersions.has(v.version);
+      if (computeCoolingOffUntil(v, retention, coolingOffThreshold, undefined, waived) !== null) {
         result.push(v);
       } else if (servable < versionsPerGroup) {
         result.push(v);

@@ -1,0 +1,87 @@
+name = "jq"
+display_name = "jq"
+vendor = "jqlang"
+website = "https://github.com/jqlang/jq"
+description = "Command-line JSON processor"
+
+# GitHub Releases API capabilities:
+#   Release date: "published_at" field on each release (ISO 8601) — captured automatically
+#   Checksum:     per-asset "digest" field ("sha256:…") — configured below
+#
+# jq attaches BARE EXECUTABLES, not archives: jq-linux-amd64, jq-macos-arm64,
+# jq-windows-amd64.exe. This is the only package in the estate that serves an unarchived
+# binary, and that is deliberate (see [[platforms]] below) — it is the form consumers want,
+# and the alternative is a binary-to-zip transform that would turn a config-only onboarding
+# into a code change and give up byte-for-byte upstream provenance for nothing.
+
+[discovery]
+type = "github-releases"
+repo = "jqlang/jq"
+include_prereleases = false
+# Tags are prefixed with the project name (jq-1.8.2). Requiring three components also drops
+# the two-component historical tags (jq-1.6, jq-1.5, jq-1.4), which predate these assets.
+tag_pattern = "^jq-(\\d+\\.\\d+\\.\\d+)$"
+
+[versioning]
+type = "semver"
+version_group_extract = "^(\\d+\\.\\d+)"
+# Digest floor: jq-1.8.0 (2025-06-01) is the oldest release whose assets carry a GitHub
+# per-asset digest.
+min_version = "1.8.0"
+lts_support = false
+
+[retention]
+versions_per_group = 3
+groups_to_keep = 1
+cooling_off_days = 7
+
+[checksum]
+# Per-asset digest from the GitHub API. The release's sha256sum.txt is NOT usable: the
+# download service takes the first digest in a sidecar file, which in a 29-entry manifest is
+# the wrong asset (same constraint recorded in walrus-mise.toml).
+type = "github-asset-digest"
+algorithm = "sha256"
+
+# Linux and macOS assets have no file extension at all, so those platforms set
+# extension = "" and omit ".{ext}" from the template. Safe by construction: on the
+# github-releases path `extension` is read in exactly one place — the {ext} substitution in
+# buildFilename — and asset matching is exact filename equality, so an empty extension never
+# reaches storage or the download route.
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "windows"
+arch_upstream = "amd64"
+extension = "exe"
+filename_template = "jq-{os}-{arch}.{ext}"
+
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "linux"
+arch_upstream = "amd64"
+extension = ""
+filename_template = "jq-{os}-{arch}"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "macos"
+arch_upstream = "arm64"
+extension = ""
+filename_template = "jq-{os}-{arch}"
+
+[vulnerabilities]
+# CPE jqlang:jq — 21 dictionary entries spanning 1.5 through 1.8.2 (verified live against
+# the NVD CPE dictionary 2026-09-12). jq_project:jq is the legacy pair, 1 entry (1.5 only),
+# kept as a secondary so historical CVE configurations still resolve.
+cpes = ["jqlang:jq", "jq_project:jq"]
+# No OSV mapping, deliberately. jq is C, so it appears in OSV only under distro ecosystems
+# (Debian/jq 27 advisories, Ubuntu/jq 29, Alpine/jq 23). Their affected[] entries are
+# stamped with per-release ecosystems ("Debian:12", "Debian:13"), which osv-sync skips
+# because they do not equal the configured ecosystem string — so configuring "Debian" would
+# insert ZERO cve_affects rows while still creating 27 global stub CVE rows. Even if the
+# filter matched, the ranges are distro versions (fixed = "1.5+dfsg-1.1") and would be
+# compared against our served 1.8.2. The NVD coverage above is complete, so nothing is lost.
+aliases = ["jq", "jqlang"]

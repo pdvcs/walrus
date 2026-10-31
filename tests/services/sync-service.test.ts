@@ -1,10 +1,23 @@
 import { describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { DiscoveredVersion } from "../../src/discovery/types.js";
-import { SyncService } from "../../src/services/sync-service.js";
+import { SyncAlreadyRunningError, SyncService } from "../../src/services/sync-service.js";
 import { PackageConfig } from "../../src/types/package-config.js";
 import { DownloadService } from "../../src/services/download-service.js";
 import { RetentionService } from "../../src/services/retention-service.js";
+
+/**
+ * SyncService now takes a per-package advisory lock around every real run, so the fake pool
+ * has to serve `connect()`. `acquired` flips the lock's answer.
+ */
+function lockablePool(acquired = true): Pool {
+  return {
+    connect: async () => ({
+      query: async () => ({ rows: [{ acquired }] }),
+      release: () => {},
+    }),
+  } as unknown as Pool;
+}
 
 const pkg: PackageConfig = {
   name: "uv",
@@ -91,9 +104,10 @@ describe("SyncService", () => {
         .fn()
         .mockResolvedValue({ versionsPruned: 1, artifactsDeleted: 1, versionIdsPruned: [7] }),
       getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
     };
 
-    const service = new SyncService({} as Pool, pkg, downloadService, retentionService, {
+    const service = new SyncService(lockablePool(), pkg, downloadService, retentionService, {
       deps,
       syncConcurrency: 2,
       downloadConcurrency: 2,
@@ -154,10 +168,11 @@ describe("SyncService", () => {
         .fn()
         .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
       getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
     };
 
     const service = new SyncService(
-      {} as Pool,
+      lockablePool(),
       pkg,
       {} as DownloadService,
       {} as RetentionService,
@@ -208,10 +223,11 @@ describe("SyncService", () => {
         .fn()
         .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
       getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
     };
 
     const service = new SyncService(
-      {} as Pool,
+      lockablePool(),
       pkgWithGroups,
       {} as DownloadService,
       {} as RetentionService,
@@ -269,10 +285,11 @@ describe("SyncService", () => {
         .fn()
         .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
       getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
     };
 
     const service = new SyncService(
-      {} as Pool,
+      lockablePool(),
       pkgWithCoolingOff,
       {} as DownloadService,
       {} as RetentionService,
@@ -321,10 +338,11 @@ describe("SyncService", () => {
         .fn()
         .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
       getMaxAvailableVersionSort: vi.fn().mockResolvedValue(thresholdSort),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
     };
 
     const service = new SyncService(
-      {} as Pool,
+      lockablePool(),
       pkgWithCoolingOff,
       {} as DownloadService,
       {} as RetentionService,
@@ -343,6 +361,53 @@ describe("SyncService", () => {
       expect.objectContaining({ artifactId: 21 }),
       false,
     );
+  });
+
+  it("persists no embargo for a version an operator has waived", async () => {
+    const pkgWithCoolingOff: PackageConfig = {
+      ...pkg,
+      retention: { versions_per_group: 2, cooling_off_days: 3 },
+    };
+
+    const run = async (waived: string[]) => {
+      const deps = {
+        discoverVersions: vi.fn().mockResolvedValue([discovered("0.10.10"), discovered("0.10.9")]),
+        upsertPackage: vi.fn().mockResolvedValue({}),
+        createSyncJob: vi.fn().mockResolvedValue({ id: 310 }),
+        updateSyncJob: vi.fn().mockResolvedValue({}),
+        insertVersion: vi.fn().mockResolvedValueOnce({ id: 1 }).mockResolvedValueOnce({ id: 2 }),
+        insertArtifact: vi
+          .fn()
+          .mockResolvedValue({ id: 20, status: "pending", cooling_off_until: null }),
+        updateArtifactStatus: vi.fn().mockResolvedValue({}),
+        incrementJobCounters: vi.fn().mockResolvedValue(undefined),
+        downloadArtifact: vi.fn().mockResolvedValue({ status: "available", attempts: 1 }),
+        enforceRetention: vi
+          .fn()
+          .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
+        getMaxAvailableVersionSort: vi.fn().mockResolvedValue("000000.000010.000009~"),
+        listWaivedVersions: vi.fn().mockResolvedValue(new Set(waived)),
+      };
+      const service = new SyncService(
+        lockablePool(),
+        pkgWithCoolingOff,
+        {} as DownloadService,
+        {} as RetentionService,
+        { deps },
+      );
+      await service.run({ triggerType: "scheduled" });
+      // The embargo that insertArtifact is asked to persist, per version: this is the value the
+      // next sync would otherwise rewrite, so it is what a waiver has to change.
+      return new Map(
+        deps.insertArtifact.mock.calls.map((call, i) => [
+          i === 0 ? "0.10.10" : "0.10.9",
+          (call[1] as { cooling_off_until: Date | null }).cooling_off_until,
+        ]),
+      );
+    };
+
+    expect((await run([])).get("0.10.10")).toBeInstanceOf(Date);
+    expect((await run(["0.10.10"])).get("0.10.10")).toBeNull();
   });
 
   it("does not apply cooling off when threshold is null (bootstrap: no available artifacts yet)", async () => {
@@ -369,10 +434,11 @@ describe("SyncService", () => {
         .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
       // null threshold = no available artifacts yet (bootstrap)
       getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
     };
 
     const service = new SyncService(
-      {} as Pool,
+      lockablePool(),
       pkgWithCoolingOff,
       {} as DownloadService,
       {} as RetentionService,
@@ -411,10 +477,11 @@ describe("SyncService", () => {
         .fn()
         .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
       getMaxAvailableVersionSort: vi.fn().mockResolvedValue(thresholdSort),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
     };
 
     const service = new SyncService(
-      {} as Pool,
+      lockablePool(),
       pkgWithCoolingOff,
       {} as DownloadService,
       {} as RetentionService,
@@ -435,18 +502,25 @@ describe("SyncService", () => {
     };
 
     const thresholdSort = "000000.000010.000009~";
-    // cooling_off_until is 1 day in the past — window has elapsed
-    const pastCoolingOff = new Date(Date.now() - 86_400_000);
+    // First discovered 4 days ago, so with cooling_off_days = 3 the embargo has elapsed. The
+    // artifact mock echoes back whatever embargo the service computed rather than asserting one
+    // of its own: hard-coding an elapsed `cooling_off_until` here is what let WAL-91 survive —
+    // the real upsert recomputed the value at this very call and pushed it into the future again.
+    const discoveredAt = new Date(Date.now() - 4 * 86_400_000);
 
     const deps = {
       discoverVersions: vi.fn().mockResolvedValue([discovered("0.10.10")]),
       upsertPackage: vi.fn().mockResolvedValue({}),
       createSyncJob: vi.fn().mockResolvedValue({ id: 600 }),
       updateSyncJob: vi.fn().mockResolvedValue({}),
-      insertVersion: vi.fn().mockResolvedValueOnce({ id: 1 }),
+      insertVersion: vi.fn().mockResolvedValueOnce({ id: 1, discovered_at: discoveredAt }),
       insertArtifact: vi
         .fn()
-        .mockResolvedValueOnce({ id: 50, status: "pending", cooling_off_until: pastCoolingOff }),
+        .mockImplementation(async (_pool: unknown, a: { cooling_off_until: Date | null }) => ({
+          id: 50,
+          status: "pending",
+          cooling_off_until: a.cooling_off_until,
+        })),
       updateArtifactStatus: vi.fn().mockResolvedValue({}),
       incrementJobCounters: vi.fn().mockResolvedValue(undefined),
       downloadArtifact: vi.fn().mockResolvedValue({ status: "available", attempts: 1 }),
@@ -454,10 +528,11 @@ describe("SyncService", () => {
         .fn()
         .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
       getMaxAvailableVersionSort: vi.fn().mockResolvedValue(thresholdSort),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
     };
 
     const service = new SyncService(
-      {} as Pool,
+      lockablePool(),
       pkgWithCoolingOff,
       {} as DownloadService,
       {} as RetentionService,
@@ -469,6 +544,59 @@ describe("SyncService", () => {
     // 0.10.10 is above the threshold but the cooling off window has elapsed — should download
     expect(result.downloaded).toBe(1);
     expect(deps.downloadArtifact).toHaveBeenCalledTimes(1);
+    expect(deps.insertArtifact.mock.calls[0][1].cooling_off_until).toBeNull();
+  });
+
+  it("keeps the embargo anchored to first discovery, not to the sync clock", async () => {
+    const pkgWithCoolingOff: PackageConfig = {
+      ...pkg,
+      retention: { versions_per_group: 2, cooling_off_days: 3 },
+    };
+
+    // Discovered a day ago and still embargoed. Two syncs must agree on when the embargo ends;
+    // anchored to the clock, the second sync would push it a further day out (WAL-91).
+    const discoveredAt = new Date(Date.now() - 86_400_000);
+    const makeDeps = () => ({
+      discoverVersions: vi.fn().mockResolvedValue([discovered("0.10.10")]),
+      upsertPackage: vi.fn().mockResolvedValue({}),
+      createSyncJob: vi.fn().mockResolvedValue({ id: 601 }),
+      updateSyncJob: vi.fn().mockResolvedValue({}),
+      insertVersion: vi.fn().mockResolvedValue({ id: 1, discovered_at: discoveredAt }),
+      insertArtifact: vi
+        .fn()
+        .mockImplementation(async (_pool: unknown, a: { cooling_off_until: Date | null }) => ({
+          id: 51,
+          status: "pending",
+          cooling_off_until: a.cooling_off_until,
+        })),
+      updateArtifactStatus: vi.fn().mockResolvedValue({}),
+      incrementJobCounters: vi.fn().mockResolvedValue(undefined),
+      downloadArtifact: vi.fn().mockResolvedValue({ status: "available", attempts: 1 }),
+      enforceRetention: vi
+        .fn()
+        .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
+      getMaxAvailableVersionSort: vi.fn().mockResolvedValue("000000.000010.000009~"),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
+    });
+
+    const embargoEnds: Date[] = [];
+    for (let i = 0; i < 2; i++) {
+      const deps = makeDeps();
+      const service = new SyncService(
+        lockablePool(),
+        pkgWithCoolingOff,
+        {} as DownloadService,
+        {} as RetentionService,
+        { deps },
+      );
+      const result = await service.run({ triggerType: "scheduled" });
+      expect(result.downloaded).toBe(0);
+      embargoEnds.push(deps.insertArtifact.mock.calls[0][1].cooling_off_until);
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    expect(embargoEnds[1].getTime()).toBe(embargoEnds[0].getTime());
+    expect(embargoEnds[0].getTime()).toBe(discoveredAt.getTime() + 3 * 86_400_000);
   });
 
   it("applies cooling off on bootstrap when releasedAt is available and recent", async () => {
@@ -505,10 +633,11 @@ describe("SyncService", () => {
         .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
       // null threshold = bootstrap
       getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
     };
 
     const service = new SyncService(
-      {} as Pool,
+      lockablePool(),
       pkgWithCoolingOff,
       {} as DownloadService,
       {} as RetentionService,
@@ -536,6 +665,139 @@ describe("SyncService", () => {
     expect(secondInsertCall.cooling_off_until).toBeNull();
   });
 
+  it("serves a transformed artifact under the transform's name, path, and config", async () => {
+    // The seam where a package config meets production sync: the row's filename and the
+    // storage path must describe the transform's OUTPUT while upstream_url keeps pointing at
+    // the source bytes, and the transform block has to reach the download request at all
+    // (WAL-73 finding 8).
+    const transformed: PackageConfig = {
+      ...pkg,
+      name: "gitwindows",
+      platforms: [
+        {
+          os: "windows",
+          arch: "x86-64",
+          os_upstream: "windows",
+          arch_upstream: "x64",
+          extension: "tar.bz2",
+          transform: {
+            type: "tar-bz2-to-zip",
+            extension: "zip",
+            filename_template: "Git-{version}-{os}-{arch}.{ext}",
+          },
+        },
+      ],
+    } as PackageConfig;
+
+    const discoveredWindows: DiscoveredVersion = {
+      version: "2.55.0.5",
+      versionGroup: "2.55",
+      isLts: false,
+      artifacts: new Map([
+        [
+          "windows/x86-64",
+          {
+            url: "https://example.test/Git-2.55.0.5-64-bit.tar.bz2",
+            filename: "Git-2.55.0.5-64-bit.tar.bz2",
+            checksum: "cc".repeat(32),
+            checksumType: "sha256",
+          },
+        ],
+      ]),
+    };
+
+    const deps = {
+      discoverVersions: vi.fn().mockResolvedValue([discoveredWindows]),
+      upsertPackage: vi.fn().mockResolvedValue({}),
+      createSyncJob: vi.fn().mockResolvedValue({ id: 400 }),
+      updateSyncJob: vi.fn().mockResolvedValue({}),
+      insertVersion: vi.fn().mockResolvedValue({ id: 1 }),
+      insertArtifact: vi
+        .fn()
+        .mockResolvedValue({ id: 40, status: "pending", cooling_off_until: null }),
+      updateArtifactStatus: vi.fn().mockResolvedValue({}),
+      incrementJobCounters: vi.fn().mockResolvedValue(undefined),
+      downloadArtifact: vi.fn().mockResolvedValue({ status: "available", attempts: 1 }),
+      enforceRetention: vi
+        .fn()
+        .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
+      getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
+    };
+
+    const service = new SyncService(
+      lockablePool(),
+      transformed,
+      {} as unknown as DownloadService,
+      {} as unknown as RetentionService,
+      { deps, syncConcurrency: 1, downloadConcurrency: 1 },
+    );
+
+    await service.run({ triggerType: "admin" });
+
+    const insertedRow = vi.mocked(deps.insertArtifact).mock.calls[0][1] as {
+      filename: string;
+      upstream_url: string;
+    };
+    expect(insertedRow.filename).toBe("Git-2.55.0.5-windows-x86-64.zip");
+    expect(insertedRow.upstream_url).toBe("https://example.test/Git-2.55.0.5-64-bit.tar.bz2");
+
+    expect(deps.downloadArtifact).toHaveBeenCalledWith(
+      {
+        artifactId: 40,
+        upstreamUrl: "https://example.test/Git-2.55.0.5-64-bit.tar.bz2",
+        storagePath: "gitwindows/2.55.0.5/windows/x86-64/Git-2.55.0.5-windows-x86-64.zip",
+        expectedChecksum: "cc".repeat(32),
+        checksumUrl: undefined,
+        checksumType: "sha256",
+        expectedSize: undefined,
+        transform: transformed.platforms[0].transform,
+      },
+      false,
+    );
+  });
+
+  it("keeps the upstream filename when the platform declares no transform", async () => {
+    const deps = {
+      discoverVersions: vi.fn().mockResolvedValue([discovered("0.6.2")]),
+      upsertPackage: vi.fn().mockResolvedValue({}),
+      createSyncJob: vi.fn().mockResolvedValue({ id: 401 }),
+      updateSyncJob: vi.fn().mockResolvedValue({}),
+      insertVersion: vi.fn().mockResolvedValue({ id: 1 }),
+      insertArtifact: vi
+        .fn()
+        .mockResolvedValue({ id: 41, status: "pending", cooling_off_until: null }),
+      updateArtifactStatus: vi.fn().mockResolvedValue({}),
+      incrementJobCounters: vi.fn().mockResolvedValue(undefined),
+      downloadArtifact: vi.fn().mockResolvedValue({ status: "available", attempts: 1 }),
+      enforceRetention: vi
+        .fn()
+        .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
+      getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
+    };
+
+    const service = new SyncService(
+      lockablePool(),
+      pkg,
+      {} as unknown as DownloadService,
+      {} as unknown as RetentionService,
+      { deps, syncConcurrency: 1, downloadConcurrency: 1 },
+    );
+
+    await service.run({ triggerType: "admin" });
+
+    const insertedRow = vi.mocked(deps.insertArtifact).mock.calls[0][1] as { filename: string };
+    expect(insertedRow.filename).toBe("uv.tar.gz");
+    expect(deps.downloadArtifact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        storagePath: "uv/0.6.2/linux/x86-64/uv.tar.gz",
+        transform: undefined,
+      }),
+      false,
+    );
+  });
+
   it("supports dry-run mode without DB writes or downloads", async () => {
     const deps = {
       discoverVersions: vi.fn().mockResolvedValue([discovered("0.6.2"), discovered("0.6.1")]),
@@ -550,7 +812,7 @@ describe("SyncService", () => {
     };
 
     const service = new SyncService(
-      {} as Pool,
+      lockablePool(),
       pkg,
       {} as DownloadService,
       {} as RetentionService,
@@ -566,6 +828,357 @@ describe("SyncService", () => {
     expect(result.artifactsQueued).toBe(2);
     expect(deps.upsertPackage).not.toHaveBeenCalled();
     expect(deps.createSyncJob).not.toHaveBeenCalled();
+    expect(deps.downloadArtifact).not.toHaveBeenCalled();
+  });
+});
+
+describe("SyncService job-row handoff", () => {
+  it("prepareJob creates the row without running discovery or downloads", async () => {
+    const deps = {
+      discoverVersions: vi.fn(),
+      upsertPackage: vi.fn().mockResolvedValue({}),
+      createSyncJob: vi.fn().mockResolvedValue({ id: 900 }),
+      getSyncJob: vi.fn(),
+      updateSyncJob: vi.fn(),
+      downloadArtifact: vi.fn(),
+    };
+
+    const service = new SyncService(
+      lockablePool(),
+      pkg,
+      {} as DownloadService,
+      {} as RetentionService,
+      { deps },
+    );
+
+    const job = await service.prepareJob("admin");
+
+    expect(job).toEqual({ id: 900 });
+    expect(deps.createSyncJob).toHaveBeenCalledWith(expect.anything(), "uv", "admin");
+    expect(deps.discoverVersions).not.toHaveBeenCalled();
+  });
+
+  it("run() with existingJobId resumes that row instead of creating a new one", async () => {
+    const deps = {
+      discoverVersions: vi.fn().mockResolvedValue([discovered("0.6.2")]),
+      upsertPackage: vi.fn().mockResolvedValue({}),
+      createSyncJob: vi.fn(),
+      getSyncJob: vi.fn().mockResolvedValue({ id: 900 }),
+      updateSyncJob: vi.fn().mockResolvedValue({}),
+      insertVersion: vi.fn().mockResolvedValue({ id: 1 }),
+      insertArtifact: vi
+        .fn()
+        .mockResolvedValue({ id: 41, status: "pending", cooling_off_until: null }),
+      updateArtifactStatus: vi.fn().mockResolvedValue({}),
+      incrementJobCounters: vi.fn().mockResolvedValue(undefined),
+      downloadArtifact: vi.fn().mockResolvedValue({ status: "available", attempts: 1 }),
+      enforceRetention: vi
+        .fn()
+        .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
+      getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
+    };
+
+    const service = new SyncService(
+      lockablePool(),
+      pkg,
+      {} as DownloadService,
+      {} as RetentionService,
+      { deps },
+    );
+
+    await service.run({ triggerType: "admin", existingJobId: 900 });
+
+    expect(deps.getSyncJob).toHaveBeenCalledWith(expect.anything(), 900);
+    expect(deps.createSyncJob).not.toHaveBeenCalled();
+  });
+
+  it("run() with an unknown existingJobId fails rather than syncing into nothing", async () => {
+    const deps = {
+      discoverVersions: vi.fn().mockResolvedValue([discovered("0.6.2")]),
+      upsertPackage: vi.fn().mockResolvedValue({}),
+      createSyncJob: vi.fn(),
+      getSyncJob: vi.fn().mockResolvedValue(null),
+      updateSyncJob: vi.fn(),
+      downloadArtifact: vi.fn(),
+    };
+
+    const service = new SyncService(
+      lockablePool(),
+      pkg,
+      {} as DownloadService,
+      {} as RetentionService,
+      { deps },
+    );
+
+    await expect(service.run({ triggerType: "admin", existingJobId: 404 })).rejects.toThrow(
+      /Sync job 404 not found/,
+    );
+  });
+
+  it("stamps container_started_at before discovery, so a cold-starting launch is distinguishable from a hang", async () => {
+    const order: string[] = [];
+    const deps = {
+      discoverVersions: vi.fn().mockImplementation(async () => {
+        order.push("discoverVersions");
+        return [];
+      }),
+      upsertPackage: vi.fn().mockResolvedValue({}),
+      createSyncJob: vi.fn(),
+      getSyncJob: vi.fn().mockResolvedValue({ id: 900 }),
+      updateSyncJob: vi.fn().mockImplementation(async (_pool, _id, update) => {
+        if ("container_started_at" in update) order.push("container_started_at");
+        return {};
+      }),
+      downloadArtifact: vi.fn(),
+      enforceRetention: vi
+        .fn()
+        .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
+      getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
+    };
+
+    const service = new SyncService(
+      lockablePool(),
+      pkg,
+      {} as DownloadService,
+      {} as RetentionService,
+      { deps },
+    );
+
+    await service.run({ triggerType: "admin", existingJobId: 900 });
+
+    expect(order[0]).toBe("container_started_at");
+    expect(order).toContain("discoverVersions");
+  });
+});
+
+describe("SyncService concurrency", () => {
+  it("refuses a second run for the same package instead of racing it", async () => {
+    const service = new SyncService(
+      lockablePool(false),
+      pkg,
+      {} as unknown as DownloadService,
+      {} as unknown as RetentionService,
+    );
+
+    await expect(service.run({ triggerType: "scheduled" })).rejects.toThrow(
+      SyncAlreadyRunningError,
+    );
+  });
+
+  it("does not take the lock for a dry run, which writes nothing", async () => {
+    let connected = false;
+    const pool = {
+      connect: async () => {
+        connected = true;
+        return { query: async () => ({ rows: [{ acquired: false }] }), release: () => {} };
+      },
+    } as unknown as Pool;
+
+    const service = new SyncService(
+      pool,
+      pkg,
+      {} as unknown as DownloadService,
+      {} as unknown as RetentionService,
+      { deps: { discoverVersions: vi.fn().mockResolvedValue([]) } as never },
+    );
+
+    const result = await service.run({ dryRun: true });
+
+    expect(result.dryRun).toBe(true);
+    // A contended lock must not block a read-only preview.
+    expect(connected).toBe(false);
+  });
+});
+
+/**
+ * WAL-102. `artifacts.checksum` describes the bytes walrus has stored, so discovery — which
+ * runs before anything is fetched — must never write it onto an artifact that is already
+ * serving. The defect was `checksum: artifact.checksum ?? null` behind a guard satisfied by
+ * `checksumType` alone: for a package whose config supplies a checksum *URL* rather than a
+ * value (`uv` here, and intellij, ripgrep and maven3 in the estate) the digest is unknown
+ * until DownloadService fetches it, so every re-sync erased a correct digest. It could not
+ * self-heal, because only pending artifacts were ever queued for download.
+ */
+describe("SyncService checksum handling", () => {
+  function depsFor(artifactRow: Record<string, unknown>) {
+    return {
+      discoverVersions: vi.fn().mockResolvedValue([discovered("0.6.2")]),
+      upsertPackage: vi.fn().mockResolvedValue({}),
+      createSyncJob: vi.fn().mockResolvedValue({ id: 100 }),
+      updateSyncJob: vi.fn().mockResolvedValue({}),
+      insertVersion: vi.fn().mockResolvedValue({ id: 1 }),
+      insertArtifact: vi.fn().mockResolvedValue({ cooling_off_until: null, ...artifactRow }),
+      updateArtifactStatus: vi.fn().mockResolvedValue({}),
+      incrementJobCounters: vi.fn().mockResolvedValue(undefined),
+      downloadArtifact: vi.fn().mockResolvedValue({ status: "available", attempts: 1 }),
+      enforceRetention: vi
+        .fn()
+        .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
+      getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
+    };
+  }
+
+  function serviceFor(deps: ReturnType<typeof depsFor>) {
+    return new SyncService(
+      lockablePool(),
+      pkg,
+      { downloadArtifact: vi.fn() } as unknown as DownloadService,
+      { enforceRetention: vi.fn() } as unknown as RetentionService,
+      { deps, syncConcurrency: 1, downloadConcurrency: 1 },
+    );
+  }
+
+  it("never overwrites the stored checksum of an artifact that is already serving", async () => {
+    const deps = depsFor({
+      id: 10,
+      status: "available",
+      checksum: "d1ge57",
+      checksum_type: "sha256",
+    });
+
+    await serviceFor(deps).run({ triggerType: "scheduled" });
+
+    expect(deps.updateArtifactStatus).not.toHaveBeenCalled();
+  });
+
+  it("does not write a null checksum when discovery supplies only the algorithm", async () => {
+    const deps = depsFor({ id: 10, status: "pending", checksum: null, checksum_type: null });
+
+    await serviceFor(deps).run({ triggerType: "scheduled" });
+
+    for (const [, , update] of deps.updateArtifactStatus.mock.calls) {
+      expect(update).not.toHaveProperty("checksum");
+    }
+    expect(deps.updateArtifactStatus).toHaveBeenCalledWith(
+      expect.anything(),
+      10,
+      expect.objectContaining({ checksum_type: "sha256" }),
+    );
+  });
+
+  it("re-downloads an available artifact left with no digest, so the estate self-heals", async () => {
+    const deps = depsFor({
+      id: 10,
+      status: "available",
+      checksum: null,
+      checksum_type: "sha256",
+    });
+
+    const result = await serviceFor(deps).run({ triggerType: "scheduled" });
+
+    expect(result.artifactsQueued).toBe(1);
+    expect(deps.downloadArtifact).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves a package configured without checksums alone", async () => {
+    // checksum_type NULL means "no digest is expected here", not "the digest was lost" —
+    // re-fetching these every sync would be a permanent re-download loop.
+    const deps = depsFor({ id: 10, status: "available", checksum: null, checksum_type: null });
+
+    const result = await serviceFor(deps).run({ triggerType: "scheduled" });
+
+    expect(result.artifactsQueued).toBe(0);
+    expect(deps.downloadArtifact).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * WAL-102's second face, found by running examples/windows-endpoint-test.ps1 against GCP Dev:
+ * `gitwindows` served bytes hashing to feeea25e… while publishing 58fdf567…, which is its
+ * *upstream* tar.bz2 digest. Where discovery supplies a checksum value rather than a URL, the
+ * old discovery-time write replaced the served digest with upstream's. On an untransformed
+ * artifact the two are the same number and nothing shows; on a transformed one the published
+ * digest describes bytes walrus does not serve, and every verifying client fails on a good file.
+ */
+describe("SyncService transformed-artifact digest repair", () => {
+  function poolFor(artifactRow: Record<string, unknown>) {
+    return {
+      discoverVersions: vi.fn().mockResolvedValue([discovered("0.6.2")]),
+      upsertPackage: vi.fn().mockResolvedValue({}),
+      createSyncJob: vi.fn().mockResolvedValue({ id: 100 }),
+      updateSyncJob: vi.fn().mockResolvedValue({}),
+      insertVersion: vi.fn().mockResolvedValue({ id: 1 }),
+      insertArtifact: vi.fn().mockResolvedValue({
+        cooling_off_until: null,
+        checksum: null,
+        checksum_type: null,
+        source_checksum: null,
+        transform: null,
+        ...artifactRow,
+      }),
+      updateArtifactStatus: vi.fn().mockResolvedValue({}),
+      incrementJobCounters: vi.fn().mockResolvedValue(undefined),
+      downloadArtifact: vi.fn().mockResolvedValue({ status: "available", attempts: 1 }),
+      enforceRetention: vi
+        .fn()
+        .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
+      getMaxAvailableVersionSort: vi.fn().mockResolvedValue(null),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
+    };
+  }
+
+  function run(deps: ReturnType<typeof poolFor>) {
+    const service = new SyncService(
+      lockablePool(),
+      pkg,
+      { downloadArtifact: vi.fn() } as unknown as DownloadService,
+      { enforceRetention: vi.fn() } as unknown as RetentionService,
+      { deps, syncConcurrency: 1, downloadConcurrency: 1 },
+    );
+    return service.run({ triggerType: "scheduled" });
+  }
+
+  it("re-downloads a transformed artifact whose digest equals its upstream source digest", async () => {
+    const deps = poolFor({
+      id: 10,
+      status: "available",
+      checksum: "58fdf567",
+      checksum_type: "sha256",
+      source_checksum: "58fdf567",
+      transform: "tar-bz2-to-zip@1",
+    });
+
+    const result = await run(deps);
+
+    expect(result.artifactsQueued).toBe(1);
+    expect(deps.downloadArtifact).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves a healthy transformed artifact alone", async () => {
+    // The correct state: the served zip's digest, distinct from the upstream tar.bz2's.
+    const deps = poolFor({
+      id: 10,
+      status: "available",
+      checksum: "feeea25e",
+      checksum_type: "sha256",
+      source_checksum: "58fdf567",
+      transform: "tar-bz2-to-zip@1",
+    });
+
+    const result = await run(deps);
+
+    expect(result.artifactsQueued).toBe(0);
+    expect(deps.downloadArtifact).not.toHaveBeenCalled();
+  });
+
+  it("leaves an untransformed artifact alone when its digest equals the source digest", async () => {
+    // With no transform the served bytes ARE the upstream bytes, so equality is correct and
+    // must not be mistaken for the defect.
+    const deps = poolFor({
+      id: 10,
+      status: "available",
+      checksum: "abc123",
+      checksum_type: "sha256",
+      source_checksum: "abc123",
+      transform: null,
+    });
+
+    const result = await run(deps);
+
+    expect(result.artifactsQueued).toBe(0);
     expect(deps.downloadArtifact).not.toHaveBeenCalled();
   });
 });

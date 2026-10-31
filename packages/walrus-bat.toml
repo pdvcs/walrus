@@ -1,0 +1,72 @@
+name = "bat"
+display_name = "bat"
+vendor = "sharkdp"
+website = "https://github.com/sharkdp/bat"
+description = "A cat(1) clone with syntax highlighting and Git integration"
+
+# GitHub Releases API capabilities:
+#   Release date: "published_at" field on each release (ISO 8601) — captured automatically
+#   Checksum:     per-asset "digest" field ("sha256:…") — configured below
+
+[discovery]
+type = "github-releases"
+repo = "sharkdp/bat"
+include_prereleases = false
+tag_pattern = "^v(\\d+\\.\\d+\\.\\d+)$"
+
+[versioning]
+type = "semver"
+version_group_extract = "^(\\d+\\.\\d+)" # bat is pre-1.0; group by minor (0.25, 0.26, ...)
+# Digest floor, not a support floor. GitHub only began populating the per-asset "digest"
+# field in mid-2025, and v0.26.0 (2025-10-19) is the oldest bat release whose assets carry
+# one. Older releases would still download — the pipeline only compares a checksum when it
+# has one — and would reach `available` unverified, which is the thing to avoid.
+min_version = "0.26.0"
+lts_support = false
+
+[retention]
+versions_per_group = 2
+groups_to_keep = 1
+cooling_off_days = 7
+
+[checksum]
+# Per-asset digest from the GitHub API ("sha256:…"); bat publishes no sidecar files.
+type = "github-asset-digest"
+algorithm = "sha256"
+
+# Filenames keep the tag's "v" prefix, which the tag_pattern capture strips — hence the
+# literal "v" in each template.
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "pc-windows-msvc"
+arch_upstream = "x86_64"
+extension = "zip"
+filename_template = "bat-v{version}-{arch}-{os}.{ext}"
+
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "unknown-linux-gnu"
+arch_upstream = "x86_64"
+extension = "tar.gz"
+filename_template = "bat-v{version}-{arch}-{os}.{ext}"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "apple-darwin"
+arch_upstream = "aarch64"
+extension = "tar.gz"
+filename_template = "bat-v{version}-{arch}-{os}.{ext}"
+
+[vulnerabilities]
+# CPE bat_project:bat — 31 dictionary entries (verified live against the NVD CPE
+# dictionary 2026-09-12). Confirmed to be this bat and not a namesake: the titles read
+# "BAT Project BAT 0.18.2 for Rust" and the versions run 0.1.0–0.18.2. Note the vendor is
+# bat_project, NOT sharkdp — "sharkdp:bat" has no dictionary entry.
+cpes = ["bat_project:bat"]
+# OSV crates.io "bat" carries CVE-2021-36753 (GHSA-p24j-h477-76q3 / RUSTSEC-2021-0106).
+osv = { ecosystem = "crates.io", name = "bat" }
+aliases = ["bat", "bat-cat", "cat with wings"]

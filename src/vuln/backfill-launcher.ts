@@ -44,7 +44,15 @@ export class CloudRunBackfillLauncher implements BackfillLauncher {
         Authorization: `Bearer ${token.access_token}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ overrides: { containerOverrides: [{ args: ["--job-id", jobId] }] } }),
+      // String(), not the bare value: `id` is BIGSERIAL, and db/client.ts installs a global
+      // BIGINT parser that hands back a JS number — so `jobId` arrives as a number at runtime
+      // however this signature types it. Postgres coerces either happily, which is why nothing
+      // else noticed, but the Cloud Run API type-checks the payload and rejects a number with
+      // `Invalid value at 'overrides.container_overrides[0].args[0]' (TYPE_STRING)`. Every
+      // autonomous backfill launch failed this way until 2026-08-30 (WAL-98).
+      body: JSON.stringify({
+        overrides: { containerOverrides: [{ args: ["--job-id", String(jobId)] }] },
+      }),
       signal: AbortSignal.timeout(15_000),
     });
     if (!response.ok)

@@ -1,22 +1,30 @@
 import express from "express";
+import type { RequestHandler } from "express";
 import fs from "fs";
 import path from "path";
+import packageMetadata from "../package.json";
 import { config } from "./config/index.js";
 import { log } from "./common/log.js";
 import { pool, runMigrations } from "./db/client.js";
 import { createStorageBackend } from "./storage/index.js";
 import { loadAllPackages } from "./services/package-registry.js";
-import { loadAllWatchConfigs } from "./services/watch-registry.js";
-import { reconcileAllPackageVulns, reconcileAllWatchVulns } from "./services/vuln-config.js";
+import { reconcileAllPackageVulns } from "./services/vuln-config.js";
 import { createVulnSyncImpls } from "./vuln/sync/impls.js";
-import { DownloadService, ChecksumAlgorithm } from "./services/download-service.js";
+import { DownloadService } from "./services/download-service.js";
 import { RetentionService } from "./services/retention-service.js";
-import { SyncService, SyncRunOptions, SyncRunResult } from "./services/sync-service.js";
+import {
+  SyncAlreadyRunningError,
+  SyncService,
+  SyncRunOptions,
+  SyncRunResult,
+} from "./services/sync-service.js";
 import { createPackagesRouter } from "./routes/packages.js";
 import { createDownloadRouter } from "./routes/download.js";
-import { buildRedownloadPath, createAdminRouter } from "./routes/admin.js";
+import { buildRedownloadRequest, createAdminRouter } from "./routes/admin.js";
 import { createInternalRouter } from "./routes/internal.js";
 import { createVulnsRouter } from "./routes/vulns.js";
+import { createCatalogRouter } from "./routes/catalog.js";
+import { resolveLogoFile } from "./common/brand-assets.js";
 import { createCvesRouter } from "./routes/cves.js";
 import { createPackageVulnsRouter } from "./routes/package-vulns.js";
 import { createAdminVulnsRouter } from "./routes/admin-vulns.js";
@@ -25,7 +33,18 @@ import { isPackageTracked, listDistinctCpePairs } from "./db/queries/package-ali
 import { crossReferenceVersions, getVersionAvailabilityStatus } from "./services/vuln-service.js";
 import { queryVulns, VulnQueryDeps } from "./services/vuln-query.js";
 import { getVulnHints } from "./services/vuln-hints.js";
-import { insertAdminAction } from "./db/queries/admin-actions.js";
+import { getDegradations } from "./services/degradations.js";
+import {
+  autoBackfillPendingPackages,
+  resetBackfillAttempts,
+} from "./services/vuln-backfill-autostart.js";
+import {
+  listAvailabilityHistory,
+  listRecentTransitions,
+  listTransitionsSince,
+  recordAvailabilityTransitions,
+} from "./services/availability-history.js";
+import { insertAdminAction, listSuppressionAuditActions } from "./db/queries/admin-actions.js";
 import { resolvePackage } from "./vuln/resolver.js";
 import {
   listAffectsWithCveForPackage,
@@ -36,7 +55,9 @@ import { getVulnProductMetadata, searchAliases } from "./db/queries/package-alia
 import { getDataFreshness, getVulnSyncStatus } from "./db/queries/vuln-sync-state.js";
 import { logUnresolvedQuery } from "./db/queries/unresolved-queries.js";
 import { createOpenApiRouter } from "./routes/openapi.js";
-import { HealthResponseSchema } from "./routes/schemas.js";
+import { createHealthRouter } from "./routes/health.js";
+import { renderLandingPage } from "./routes/page-shell.js";
+import { LandingPageResponseSchema } from "./routes/schemas.js";
 import {
   getPackage,
   listPackages,
@@ -51,8 +72,11 @@ import {
   listArtifactsInGroup,
   listAvailableVersionsInGroup,
   listAvailableVersionsByGroup,
+  getEarliestCoolingOffInGroup,
   listVersionGroups,
+  listVersionGroupsWithLts,
   listVersions,
+  resyncVersionSortKeys,
 } from "./db/queries/versions.js";
 import {
   getArtifact,
@@ -61,15 +85,47 @@ import {
   listPendingArtifacts,
   updateArtifactStatus,
 } from "./db/queries/artifacts.js";
-import { getRecentSyncJob, getJobWithArtifacts, listSyncJobs } from "./db/queries/sync-jobs.js";
+import {
+  getRecentSyncJob,
+  getJobWithArtifacts,
+  listSyncJobs,
+  updateSyncJob,
+} from "./db/queries/sync-jobs.js";
 import {
   createVulnBackfillJob,
   getActiveVulnBackfillJob,
   getVulnBackfillJob,
+  listVulnBackfillJobs,
   updateVulnBackfillJob,
 } from "./db/queries/vuln-backfill-jobs.js";
 import { CloudRunBackfillLauncher, LocalBackfillLauncher } from "./vuln/backfill-launcher.js";
+import { CloudRunSyncLauncher, LocalSyncLauncher } from "./services/sync-launcher.js";
 import { isVulnSyncRunning } from "./vuln/sync/lock.js";
+import {
+  countActiveCveSuppressions,
+  getActiveCveSuppressionSummary,
+  listActiveCveSuppressions,
+} from "./db/queries/cve-suppressions.js";
+import { listActiveCoolingOffWaivers } from "./db/queries/cooling-off-waivers.js";
+import {
+  createAuditedCoolingOffWaiver,
+  revokeAuditedCoolingOffWaiver,
+} from "./services/cooling-off-waiver-service.js";
+import {
+  createAuditedCveSuppression,
+  previewCveSuppression,
+  previewCveSuppressionRevocation,
+  revokeAuditedCveSuppression,
+} from "./services/cve-suppression-service.js";
+import { installOperatorAuth } from "./authn/operator.js";
+import { loadOperatorAuthRuntime, type OperatorAuthRuntime } from "./authn/runtime.js";
+import { loadMachineAuth } from "./authn/google-oidc.js";
+import { createAuthAuditSinks } from "./authn/audit.js";
+import { loadEgressConfig, getEgressState } from "./common/egress-rules.js";
+import { withBase } from "./common/base-path.js";
+import { getUpstreamCredentialStatus, warnIfNvdKeyless } from "./common/upstream-credentials.js";
+import { createMetricsRuntime } from "./metrics/index.js";
+import { getMetricsSnapshot, type MetricsSnapshot } from "./services/metrics-snapshot.js";
 
 const storage = createStorageBackend();
 const vulnSyncImpls = createVulnSyncImpls(pool);
@@ -84,18 +140,10 @@ if (packageRegistry.errors.length > 0) {
   }
 }
 
-// Watch-only packages: vuln-tracked, never discovered/downloaded/served.
-const watchRegistry = loadAllWatchConfigs();
-if (watchRegistry.errors.length > 0) {
-  for (const error of watchRegistry.errors) {
-    log.warn({ file: error.filePath, error: error.error }, "Watch config failed to load");
-  }
-}
-
 const configs = packageRegistry.configs.map((entry) => entry.config);
-const watchConfigs = watchRegistry.configs.map((entry) => entry.config);
 const syncServices = new Map<string, SyncService>();
 const sharedDownloadService = new DownloadService(pool, storage, { maxRetries: 2 });
+const applicationStartedAt = new Date();
 
 for (const packageConfig of configs) {
   const packageDownloadService = new DownloadService(pool, storage, { maxRetries: 2 });
@@ -111,6 +159,23 @@ for (const packageConfig of configs) {
     },
   );
   syncServices.set(packageConfig.name, syncService);
+}
+
+const syncLauncher =
+  config.NODE_ENV === "production"
+    ? new CloudRunSyncLauncher()
+    : new LocalSyncLauncher((packageName) => syncServices.get(packageName));
+
+/**
+ * `version_sort` is written once per row and never revisited, so a change to the sort-key
+ * algorithm has to be applied to existing rows by something. Boot is that something — the
+ * service has no shell to run a fixup from (see `resyncVersionSortKeys`).
+ */
+async function repairDerivedSortKeys(): Promise<void> {
+  const repaired = await resyncVersionSortKeys(pool);
+  if (repaired > 0) {
+    log.info({ repaired }, "Recomputed stale version_sort keys");
+  }
 }
 
 async function recoverInterruptedState(): Promise<void> {
@@ -139,19 +204,66 @@ async function runSync(packageName: string, options: SyncRunOptions): Promise<Sy
 
 async function runSyncAll(
   options: SyncRunOptions,
-): Promise<Array<{ package: string; result: SyncRunResult }>> {
+): Promise<Array<{ package: string; result?: SyncRunResult; skipped?: string }>> {
   const entries = Array.from(syncServices.entries());
-  const results: Array<{ package: string; result: SyncRunResult }> = [];
+  const results: Array<{ package: string; result?: SyncRunResult; skipped?: string }> = [];
   for (const [packageName, service] of entries) {
     const pkg = await getPackage(pool, packageName);
     if (pkg?.enabled === false) continue;
-    const result = await service.run(options);
-    results.push({ package: packageName, result });
+    try {
+      results.push({ package: packageName, result: await service.run(options) });
+    } catch (error) {
+      // One package already syncing is a normal outcome of overlapping triggers, not a
+      // failed run — report it and carry on rather than aborting the remaining packages.
+      if (error instanceof SyncAlreadyRunningError) {
+        log.info({ package: packageName }, "Skipping package: sync already running");
+        results.push({ package: packageName, skipped: "already_running" });
+        continue;
+      }
+      throw error;
+    }
   }
   return results;
 }
 
+/**
+ * Admin-triggered sync, launched onto the `walrus-sync` Cloud Run Job rather than run
+ * in-process. It used to run detached in this same request-serving container after
+ * responding 202 — exactly the "respond early, keep working" shape `sync-job.ts`'s header
+ * says Cloud Run's CPU throttling makes unsafe, and which starved rust/powershell/ms-edit mid-
+ * download when a burst of admin triggers left this instance looking idle to Cloud Run's
+ * autoscaler. The job row is created here, before the launch, so the caller gets a real id to
+ * poll immediately regardless of the launched execution's own startup latency.
+ */
 async function startSyncAsync(packageName: string, opts: SyncRunOptions): Promise<number> {
+  const service = syncServices.get(packageName);
+  if (!service) throw new Error(`Unknown package: ${packageName}`);
+  const job = await service.prepareJob(opts.triggerType ?? "admin");
+  try {
+    const executionName = await syncLauncher.launch(job.id, packageName);
+    log.info({ jobId: job.id, package: packageName, executionName }, "Launched package sync");
+  } catch (error) {
+    await updateSyncJob(pool, job.id, {
+      status: "failed",
+      error_message: error instanceof Error ? error.message : String(error),
+      completed_at: new Date(),
+    });
+    throw error;
+  }
+  return job.id;
+}
+
+/**
+ * Historical backfill stays on the old in-process path deliberately: it is operator-supervised
+ * (started from one package's own admin view, not fired in the bursts that starved the plain
+ * sync above) and carries discovery options (`releasePage`, `maxReleases`, `versionGroups`)
+ * `sync-job.ts`'s CLI has no argument surface for yet. Widening that surface to move this one
+ * too is future work, not something to fold into the fix above.
+ */
+async function startHistoricalBackfillAsync(
+  packageName: string,
+  opts: SyncRunOptions,
+): Promise<number> {
   const service = syncServices.get(packageName);
   if (!service) throw new Error(`Unknown package: ${packageName}`);
   return service.startAsync(opts);
@@ -196,50 +308,170 @@ async function startVulnBackfill(since?: string, packageName?: string) {
   }
 }
 
-export function createApp(): express.Express {
+export interface CreateAppOptions {
+  operatorAuth?: OperatorAuthRuntime;
+  internalAuth?: RequestHandler;
+  health?: {
+    startedAt?: Date;
+    now?: () => Date;
+    checkDatabase?: () => Promise<void>;
+  };
+  /** Defaults to config.WALRUS_BASE_PATH; overridable so tests don't need to touch env/config. */
+  basePath?: string;
+  /** Landing-page product name. Defaults to config.WALRUS_BRANDING; same test override pattern. */
+  branding?: string;
+  /**
+   * Absolute paths of the nav logos. start() passes the boot-validated WALRUS_LOGO /
+   * WALRUS_ADMIN_LOGO files; left unset, createApp resolves the configured paths itself without
+   * checking they exist (a missing file then just 404s), so tests need no files or env.
+   */
+  logoFiles?: { public: string; admin: string };
+  metrics?: {
+    loadSnapshot?: () => Promise<MetricsSnapshot>;
+    now?: () => Date;
+    databaseCacheMs?: number;
+  };
+}
+
+export const SECURITY_TIER_MOUNTS = [
+  { tier: "operator", prefix: "/admin/v1" },
+  { tier: "machine", prefix: "/internal" },
+  { tier: "public", prefix: "/" },
+] as const;
+
+export type SecurityTier = (typeof SECURITY_TIER_MOUNTS)[number]["tier"];
+export interface SecurityTierMount {
+  tier: SecurityTier;
+  prefix: string;
+  router: express.Router;
+}
+
+export function createApp(options: CreateAppOptions = {}): express.Express {
+  const basePath = options.basePath ?? config.WALRUS_BASE_PATH;
+  const branding = options.branding ?? config.WALRUS_BRANDING;
   const app = express();
+  const metrics = createMetricsRuntime({
+    pool,
+    version: packageMetadata.version,
+    basePath,
+    loadSnapshot:
+      options.metrics?.loadSnapshot ??
+      (() => getMetricsSnapshot(pool, { autoBackfillEnabled: config.VULN_AUTO_BACKFILL })),
+    now: options.metrics?.now,
+    databaseCacheMs: options.metrics?.databaseCacheMs,
+  });
+  // Cloud Run terminates TLS and supplies the original scheme/client address through one
+  // trusted proxy hop. Origin checks and login throttling must see those external values.
+  app.set("trust proxy", 1);
   app.set("json spaces", 2);
+  app.use(metrics.middleware);
   app.use(express.json());
-  app.use("/static", express.static(path.join(process.cwd(), "dist/public")));
+  // The admin UI posts plain HTML forms. Without this, every form field is silently dropped and
+  // the handler sees an empty body — which turned "Backfill this package" into an unscoped
+  // backfill of all 11 packages, since a missing `package` means "everything" (WAL-71).
+  app.use(express.urlencoded({ extended: false }));
+  const publicRouter = express.Router();
+  publicRouter.use("/metrics", metrics.router);
+  publicRouter.use("/static", express.static(path.join(process.cwd(), "dist/public")));
 
-  app.get("/", (_req, res) => {
-    res.redirect("/admin/v1/");
-  });
-
-  app.get("/admin", (_req, res) => {
-    res.redirect("/admin/v1/");
-  });
-
-  app.get("/health", async (_req, res, next) => {
-    try {
-      const [vuln_data_freshness, vuln_sync_status] = await Promise.all([
-        getDataFreshness(pool).catch(() => null),
-        getVulnSyncStatus(pool).catch(() => null),
-      ]);
-      res.json(
-        HealthResponseSchema.parse({
-          status: "ok",
-          service: "walrus",
-          vuln_data_freshness,
-          vuln_sync_status,
-        }),
+  // The nav logos. Stable URLs, so page templates never see config; the files behind them are
+  // WALRUS_LOGO / WALRUS_ADMIN_LOGO. Both are public: the admin logo is an <img> in an
+  // authenticated page, but an image request is just a GET and the art is not a secret.
+  const logoFiles = options.logoFiles ?? {
+    public: path.resolve(config.WALRUS_LOGO),
+    admin: path.resolve(config.WALRUS_ADMIN_LOGO),
+  };
+  for (const [route, file] of [
+    ["/brand/logo", logoFiles.public],
+    ["/brand/admin-logo", logoFiles.admin],
+  ] as const) {
+    publicRouter.get(route, (_req, res) => {
+      res.sendFile(
+        file,
+        { maxAge: "1h", headers: { "X-Content-Type-Options": "nosniff" } },
+        (err) => {
+          if (err && !res.headersSent) res.status(404).end();
+        },
       );
-    } catch (err) {
-      next(err);
-    }
+    });
+  }
+
+  const operatorRouter = express.Router();
+  if (options.operatorAuth) {
+    installOperatorAuth(operatorRouter, options.operatorAuth, basePath);
+  } else {
+    operatorRouter.use((_req, res) =>
+      res.status(503).json({ error: "Operator authentication unavailable" }),
+    );
+  }
+  publicRouter.get("/", (_req, res) => {
+    res
+      .type("html")
+      .send(
+        LandingPageResponseSchema.parse(
+          renderLandingPage(packageMetadata.version, basePath, branding),
+        ),
+      );
   });
 
-  app.use("/api", createApiDocsRouter());
-  app.use("/openapi.json", createOpenApiRouter());
+  publicRouter.get("/admin", (_req, res) => {
+    res.redirect(withBase(basePath, "/admin/v1/"));
+  });
+
+  const healthRouter = createHealthRouter({
+    metadata: { gitUrl: packageMetadata.gitUrl, version: packageMetadata.version },
+    startedAt: options.health?.startedAt ?? applicationStartedAt,
+    now: options.health?.now,
+    checkDatabase:
+      options.health?.checkDatabase ??
+      (async () => {
+        await pool.query("SELECT 1");
+      }),
+    getStatusDetails: async () => {
+      const [vuln_data_freshness, vuln_sync_status, cve_suppressions, degradations] =
+        await Promise.all([
+          getDataFreshness(pool).catch(() => null),
+          getVulnSyncStatus(pool).catch(() => null),
+          getActiveCveSuppressionSummary(pool).catch(() => null),
+          getDegradations(pool, { autoBackfillEnabled: config.VULN_AUTO_BACKFILL }).catch(() => []),
+        ]);
+      const egressState = getEgressState();
+      const egress = { mode: egressState.mode, rule_count: egressState.rules.length };
+      return {
+        vuln_data_freshness,
+        vuln_sync_status,
+        cve_suppressions,
+        degradations,
+        egress,
+        upstream_credentials: getUpstreamCredentialStatus(),
+        base_path: basePath,
+      };
+    },
+  });
+  // Reachable prefixed (below, as part of publicRouter) for anyone going through the same
+  // path an adopter's proxy forwards, and — only when a base path is actually configured —
+  // also unprefixed directly on `app`, since Cloud Run's own startup_probe (cloudrun.tf) hits
+  // the container directly and was never told about WALRUS_BASE_PATH.
+  publicRouter.use(healthRouter);
+  if (basePath) {
+    app.use(healthRouter);
+  }
+
+  publicRouter.use("/api", createApiDocsRouter(basePath));
+  publicRouter.use("/openapi.json", createOpenApiRouter(basePath));
 
   const vulnQueryDeps: VulnQueryDeps = {
     resolvePackage: (query) => resolvePackage(pool, query),
     listAffectsForPackage: (name) => listAffectsWithCveForPackage(pool, name),
     getDataFreshness: () => getDataFreshness(pool),
     logUnresolved: (query, top) => logUnresolvedQuery(pool, query, top),
+    getStoredCveVersion: async (packageName, version) => {
+      const row = await getVersion(pool, packageName, version);
+      return row?.cve_version ?? null;
+    },
   };
 
-  app.use(
+  publicRouter.use(
     "/api/v1/vulns",
     createVulnsRouter({
       ...vulnQueryDeps,
@@ -248,21 +480,42 @@ export function createApp(): express.Express {
     }),
   );
 
-  app.use(
-    "/admin/v1",
-    createAdminVulnsRouter({
-      queryVulns: (product, version) => queryVulns(vulnQueryDeps, { product, version }),
-      getDataFreshness: () => getDataFreshness(pool),
-      getSyncStatus: () => getVulnSyncStatus(pool),
-      getHints: () => getVulnHints(pool),
-      vulnSyncImpls,
-      logAdminAction: (details) => insertAdminAction(pool, { action_type: "vuln-sync", details }),
-      startVulnBackfill,
-      getVulnBackfill: (id) => getVulnBackfillJob(pool, id),
-    }),
+  operatorRouter.use(
+    createAdminVulnsRouter(
+      {
+        queryVulns: (product, version) => queryVulns(vulnQueryDeps, { product, version }),
+        getDataFreshness: () => getDataFreshness(pool),
+        getSyncStatus: () => getVulnSyncStatus(pool),
+        getHints: () => getVulnHints(pool, { autoBackfillEnabled: config.VULN_AUTO_BACKFILL }),
+        vulnSyncImpls,
+        logAdminAction: (details, subject) =>
+          insertAdminAction(pool, {
+            action_type: "vuln-sync",
+            performed_by: subject,
+            details,
+          }),
+        recordAvailability: (source) =>
+          recordAvailabilityTransitions(pool, { source, trigger: "admin" }),
+        listTransitionsSince: (since, limit) => listTransitionsSince(pool, since, limit),
+        startVulnBackfill,
+        getVulnBackfill: (id) => getVulnBackfillJob(pool, id),
+        listVulnBackfills: (opts) => listVulnBackfillJobs(pool, opts),
+        resetBackfillAttempts: (packageName) => resetBackfillAttempts(pool, packageName),
+        getActiveSuppressionCount: () => countActiveCveSuppressions(pool),
+        listActiveSuppressions: () => listActiveCveSuppressions(pool),
+        listSuppressionAudit: (opts) => listSuppressionAuditActions(pool, opts),
+        cveExists: async (cveId) => (await getCveById(pool, cveId)) !== null,
+        packageExists: async (packageName) => (await getPackage(pool, packageName)) !== null,
+        previewSuppression: (input) => previewCveSuppression(pool, input),
+        createSuppression: (input) => createAuditedCveSuppression(pool, input),
+        previewSuppressionRevocation: (id) => previewCveSuppressionRevocation(pool, id),
+        revokeSuppression: (input) => revokeAuditedCveSuppression(pool, input),
+      },
+      basePath,
+    ),
   );
 
-  app.use(
+  publicRouter.use(
     "/api/v1/cves",
     createCvesRouter({
       getCve: (cveId) => getCveById(pool, cveId),
@@ -271,210 +524,292 @@ export function createApp(): express.Express {
     }),
   );
 
-  app.use(
+  publicRouter.use(
     "/api/v1/packages",
     createPackageVulnsRouter({
       packageExists: async (name) => (await getPackage(pool, name)) !== null,
       isTracked: (name) => isPackageTracked(pool, name),
       listCachedVersions: async (name, version) => {
         const rows = await listVersions(pool, name, {});
-        const mapped = rows.map((r) => ({ version: r.version, version_group: r.version_group }));
+        const mapped = rows.map((r) => ({
+          version: r.version,
+          version_group: r.version_group,
+          cve_version: r.cve_version,
+        }));
         return version ? mapped.filter((v) => v.version === version) : mapped;
       },
       listAffectsForPackage: (name) => listAffectsWithCveForPackage(pool, name),
       getDataFreshness: () => getDataFreshness(pool),
+      listAvailabilityHistory: (name, version) => listAvailabilityHistory(pool, name, version),
+      listRecentTransitions: (name) => listRecentTransitions(pool, name),
     }),
   );
 
-  app.use(
+  publicRouter.use(
     "/api/v1/packages",
-    createPackagesRouter({
-      listEnabledPackages: () => listPackages(pool, true),
-      getPackage: (name) => getPackage(pool, name),
-      listVersionGroups: (packageName) => listVersionGroups(pool, packageName),
-      listAvailableVersionsByGroup: (packageName, opts) =>
-        listAvailableVersionsByGroup(pool, packageName, opts),
-      listAffectsForPackage: (name) => listAffectsWithCveForPackage(pool, name),
-      listVersions: (packageName, opts) => listVersions(pool, packageName, opts),
-      listAvailableVersionsInGroup: (packageName, group, opts) =>
-        listAvailableVersionsInGroup(pool, packageName, group, opts),
-      listArtifactsForVersion: (versionId) => listArtifactsForVersion(pool, versionId),
-      getRecentSyncJob: (packageName, withinMinutes) =>
-        getRecentSyncJob(pool, packageName, withinMinutes),
-      triggerOnDemandSync: async (packageName) => {
-        await runSync(packageName, { triggerType: "on-demand" });
+    createPackagesRouter(
+      {
+        listEnabledPackages: () => listPackages(pool, true),
+        getPackage: (name) => getPackage(pool, name),
+        listVersionGroups: (packageName) => listVersionGroups(pool, packageName),
+        listVersionGroupsWithLts: (packageName) => listVersionGroupsWithLts(pool, packageName),
+        getEarliestCoolingOffInGroup: (packageName, group, opts) =>
+          getEarliestCoolingOffInGroup(pool, packageName, group, opts),
+        listAvailableVersionsByGroup: (packageName, opts) =>
+          listAvailableVersionsByGroup(pool, packageName, opts),
+        listAffectsForPackage: (name) => listAffectsWithCveForPackage(pool, name),
+        listVersions: (packageName, opts) => listVersions(pool, packageName, opts),
+        listAvailableVersionsInGroup: (packageName, group, opts) =>
+          listAvailableVersionsInGroup(pool, packageName, group, opts),
+        listArtifactsForVersion: (versionId) => listArtifactsForVersion(pool, versionId),
+        getRecentSyncJob: (packageName, withinMinutes) =>
+          getRecentSyncJob(pool, packageName, withinMinutes),
+        triggerOnDemandSync: async (packageName) => {
+          await runSync(packageName, { triggerType: "on-demand" });
+        },
       },
-    }),
+      basePath,
+    ),
   );
 
-  app.use(
+  publicRouter.use(
     "/download",
     createDownloadRouter({
       getVersion: (packageName, version) => getVersion(pool, packageName, version),
+      getPackageRow: (packageName) => getPackage(pool, packageName),
       listAffectsForPackage: (packageName) => listAffectsWithCveForPackage(pool, packageName),
       getArtifact: (versionId, os, arch) => getArtifact(pool, versionId, os, arch),
-      streamFromStorage: (key) => storage.stream(key),
+      streamFromStorage: (key, range) => storage.stream(key, range),
     }),
   );
 
-  app.use(
-    "/admin/v1",
-    createAdminRouter({
-      listConfiguredPackages: () => Array.from(syncServices.keys()),
-      getConfiguredPackageMeta: () =>
-        configs.map((c) => ({ name: c.name, display_name: c.display_name, vendor: c.vendor })),
-      runSync: (packageName, opts) => runSync(packageName, opts),
-      runSyncAll: (opts) => runSyncAll(opts),
-      startSyncAsync,
-      startHistoricalBackfill: (packageName, opts) => startSyncAsync(packageName, opts),
-      getArtifactByPackageVersionPlatform: async (packageName, version, os, arch) => {
-        const versionRow = await getVersion(pool, packageName, version);
-        if (!versionRow) return null;
-        const artifact = await getArtifact(pool, versionRow.id, os, arch);
-        if (!artifact) return null;
-        return { artifact, version: versionRow.version };
-      },
-      redownloadArtifact: async (artifact, packageName, version) => {
-        const request = {
-          artifactId: artifact.id,
-          upstreamUrl: artifact.upstream_url,
-          storagePath: buildRedownloadPath(packageName, version, artifact),
-          expectedChecksum: artifact.checksum ?? undefined,
-          checksumType: normalizeChecksumType(artifact.checksum_type),
-        };
-        return sharedDownloadService.downloadArtifact(request, false);
-      },
-      listArtifactsByPackageVersion: async (packageName, version, platform) => {
-        const versionRow = await getVersion(pool, packageName, version);
-        if (!versionRow) return [];
-        const artifacts = await listArtifactsForVersion(pool, versionRow.id);
-        if (!platform) return artifacts;
-        return artifacts.filter(
-          (artifact) => artifact.os === platform.os && artifact.arch === platform.arch,
-        );
-      },
-      removeArtifact: async (artifact) => {
-        if (artifact.gcs_path) {
-          await storage.delete(artifact.gcs_path);
-        }
-        await updateArtifactStatus(pool, artifact.id, {
-          status: "removed",
-          removed_at: new Date(),
-        });
-      },
-      listFailedArtifacts: (opts) => listFailedArtifacts(pool, opts),
-      listPendingArtifacts: (opts) => listPendingArtifacts(pool, opts),
-      listJobs: (opts) => listSyncJobs(pool, opts),
-      getJob: async (id) => {
-        const detail = await getJobWithArtifacts(pool, id);
-        if (!detail) return null;
-        const pkgConfig = packageRegistry.configs.find(
-          (e) => e.config.name === detail.job.package_name,
-        )?.config;
-        return {
-          ...detail,
-          cooling_off_days: pkgConfig?.retention.cooling_off_days,
-        };
-      },
-      removeAllVersionGroups: async (packageName) => {
-        const artifacts = await listAllArtifactsForPackage(pool, packageName);
-        for (const a of artifacts) {
-          if (a.gcs_path) {
-            await storage.delete(a.gcs_path);
+  // Shared by the admin package page and the public viewer page so both report the same gate.
+  const getPackageVulnBadges = async (name: string) => {
+    if (!(await isPackageTracked(pool, name))) return { tracked: false, byVersion: {} };
+    const versionRows = await listVersions(pool, name, {});
+    const affects = await listAffectsWithCveForPackage(pool, name);
+    const cveVersionByVersion = new Map(versionRows.map((r) => [r.version, r.cve_version]));
+    const perVersion = crossReferenceVersions(
+      versionRows.map((r) => ({
+        version: r.version,
+        version_group: r.version_group,
+        cve_version: r.cve_version,
+      })),
+      affects,
+    );
+    const byVersion: Record<
+      string,
+      { total: number; critical: number; high: number; kev: number; blocked: boolean }
+    > = {};
+    for (const v of perVersion) {
+      byVersion[v.version] = {
+        total: v.counts.total,
+        critical: v.counts.critical,
+        high: v.counts.high,
+        kev: v.counts.kev,
+        // Same predicate the download route enforces, over the affects rows already loaded.
+        blocked:
+          getVersionAvailabilityStatus(v.version, affects, cveVersionByVersion.get(v.version)) ===
+          "blocked",
+      };
+    }
+    return { tracked: true, byVersion };
+  };
+
+  operatorRouter.use(
+    createAdminRouter(
+      {
+        listConfiguredPackages: () => Array.from(syncServices.keys()),
+        getConfiguredPackageMeta: () =>
+          configs.map((c) => ({ name: c.name, display_name: c.display_name, vendor: c.vendor })),
+        runSync: (packageName, opts) => runSync(packageName, opts),
+        runSyncAll: (opts) => runSyncAll(opts),
+        startSyncAsync,
+        startHistoricalBackfill: (packageName, opts) =>
+          startHistoricalBackfillAsync(packageName, opts),
+        getArtifactByPackageVersionPlatform: async (packageName, version, os, arch) => {
+          const versionRow = await getVersion(pool, packageName, version);
+          if (!versionRow) return null;
+          const artifact = await getArtifact(pool, versionRow.id, os, arch);
+          if (!artifact) return null;
+          return { artifact, version: versionRow.version };
+        },
+        redownloadArtifact: async (artifact, packageName, version) => {
+          const request = buildRedownloadRequest(
+            packageName,
+            version,
+            artifact,
+            configs.find((c) => c.name === packageName),
+          );
+          return sharedDownloadService.downloadArtifact(request, false);
+        },
+        listArtifactsByPackageVersion: async (packageName, version, platform) => {
+          const versionRow = await getVersion(pool, packageName, version);
+          if (!versionRow) return [];
+          const artifacts = await listArtifactsForVersion(pool, versionRow.id);
+          if (!platform) return artifacts;
+          return artifacts.filter(
+            (artifact) => artifact.os === platform.os && artifact.arch === platform.arch,
+          );
+        },
+        removeArtifact: async (artifact) => {
+          if (artifact.gcs_path) {
+            await storage.delete(artifact.gcs_path);
           }
-        }
-        const { versionsDeleted, artifactsDeleted } = await deleteAllVersionsForPackage(
-          pool,
-          packageName,
-        );
-        return { versions: versionsDeleted, artifacts: artifactsDeleted };
-      },
-      removeVersionGroup: async (packageName, group) => {
-        const artifacts = await listArtifactsInGroup(pool, packageName, group);
-        for (const a of artifacts) {
-          if (a.gcs_path) {
-            await storage.delete(a.gcs_path);
-          }
-        }
-        const { versionsDeleted, artifactsDeleted } = await deleteVersionGroup(
-          pool,
-          packageName,
-          group,
-        );
-        return { versions: versionsDeleted, artifacts: artifactsDeleted };
-      },
-      setPackageEnabled: async (packageName, enabled) => {
-        const config = configs.find((c) => c.name === packageName);
-        if (!config) return false;
-        // Ensure the DB row exists (package may not have synced yet)
-        await upsertPackage(pool, {
-          name: config.name,
-          display_name: config.display_name,
-          vendor: config.vendor,
-          description: config.description ?? null,
-          website: config.website ?? null,
-          config_hash: "",
-          enabled,
-        });
-        // upsertPackage no longer updates enabled on conflict, so set it explicitly
-        await setPackageEnabled(pool, packageName, enabled);
-        return true;
-      },
-      isPackageEnabled: async (packageName) => {
-        const pkg = await getPackage(pool, packageName);
-        return pkg?.enabled ?? null;
-      },
-      listAllPackages: () => listPackages(pool),
-      listVersionGroupNamesForPackage: (packageName) => listVersionGroups(pool, packageName),
-      listVersionsInGroup: (packageName, group) => listVersions(pool, packageName, { group }),
-      listArtifactsForVersionId: (versionId) => listArtifactsForVersion(pool, versionId),
-      getTomlSource: (name: string) => {
-        const entry = packageRegistry.configs.find((e) => e.config.name === name);
-        if (!entry) return null;
-        try {
-          return fs.readFileSync(entry.filePath, "utf-8");
-        } catch {
-          return null;
-        }
-      },
-      getPackageVulnBadges: async (name: string) => {
-        if (!(await isPackageTracked(pool, name))) return { tracked: false, byVersion: {} };
-        const versionRows = await listVersions(pool, name, {});
-        const affects = await listAffectsWithCveForPackage(pool, name);
-        const perVersion = crossReferenceVersions(
-          versionRows.map((r) => ({ version: r.version, version_group: r.version_group })),
-          affects,
-        );
-        const byVersion: Record<
-          string,
-          { total: number; critical: number; high: number; kev: number; blocked: boolean }
-        > = {};
-        for (const v of perVersion) {
-          byVersion[v.version] = {
-            total: v.counts.total,
-            critical: v.counts.critical,
-            high: v.counts.high,
-            kev: v.counts.kev,
-            // Same predicate the download route enforces, over the affects rows already loaded.
-            blocked: getVersionAvailabilityStatus(v.version, affects) === "blocked",
+          await updateArtifactStatus(pool, artifact.id, {
+            status: "removed",
+            removed_at: new Date(),
+          });
+        },
+        listFailedArtifacts: (opts) => listFailedArtifacts(pool, opts),
+        listPendingArtifacts: (opts) => listPendingArtifacts(pool, opts),
+        listJobs: (opts) => listSyncJobs(pool, opts),
+        getJob: async (id) => {
+          const detail = await getJobWithArtifacts(pool, id);
+          if (!detail) return null;
+          const pkgConfig = packageRegistry.configs.find(
+            (e) => e.config.name === detail.job.package_name,
+          )?.config;
+          return {
+            ...detail,
+            cooling_off_days: pkgConfig?.retention.cooling_off_days,
           };
-        }
-        return { tracked: true, byVersion };
+        },
+        removeAllVersionGroups: async (packageName) => {
+          const artifacts = await listAllArtifactsForPackage(pool, packageName);
+          for (const a of artifacts) {
+            if (a.gcs_path) {
+              await storage.delete(a.gcs_path);
+            }
+          }
+          const { versionsDeleted, artifactsDeleted } = await deleteAllVersionsForPackage(
+            pool,
+            packageName,
+          );
+          return { versions: versionsDeleted, artifacts: artifactsDeleted };
+        },
+        removeVersionGroup: async (packageName, group) => {
+          const artifacts = await listArtifactsInGroup(pool, packageName, group);
+          for (const a of artifacts) {
+            if (a.gcs_path) {
+              await storage.delete(a.gcs_path);
+            }
+          }
+          const { versionsDeleted, artifactsDeleted } = await deleteVersionGroup(
+            pool,
+            packageName,
+            group,
+          );
+          return { versions: versionsDeleted, artifacts: artifactsDeleted };
+        },
+        coolingOffWaivers: {
+          list: (packageName) => listActiveCoolingOffWaivers(pool, packageName),
+          create: (input) => createAuditedCoolingOffWaiver(pool, input),
+          revoke: (input) => revokeAuditedCoolingOffWaiver(pool, input),
+        },
+        setPackageEnabled: async (packageName, enabled) => {
+          const config = configs.find((c) => c.name === packageName);
+          if (!config) return false;
+          // Ensure the DB row exists (package may not have synced yet)
+          await upsertPackage(pool, {
+            name: config.name,
+            display_name: config.display_name,
+            vendor: config.vendor,
+            description: config.description ?? null,
+            website: config.website ?? null,
+            config_hash: "",
+            enabled,
+          });
+          // upsertPackage no longer updates enabled on conflict, so set it explicitly
+          await setPackageEnabled(pool, packageName, enabled);
+          return true;
+        },
+        isPackageEnabled: async (packageName) => {
+          const pkg = await getPackage(pool, packageName);
+          return pkg?.enabled ?? null;
+        },
+        listAllPackages: () => listPackages(pool),
+        listVersionGroupNamesForPackage: (packageName) => listVersionGroups(pool, packageName),
+        listVersionsInGroup: (packageName, group) => listVersions(pool, packageName, { group }),
+        listArtifactsForVersionId: (versionId) => listArtifactsForVersion(pool, versionId),
+        getTomlSource: (name: string) => {
+          const entry = packageRegistry.configs.find((e) => e.config.name === name);
+          if (!entry) return null;
+          try {
+            return fs.readFileSync(entry.filePath, "utf-8");
+          } catch {
+            return null;
+          }
+        },
+        getPackageVulnBadges,
       },
-    }),
+      basePath,
+    ),
   );
 
-  app.use(
-    "/internal",
+  // View-only pages for non-operators (unauthenticated for now; a `package-viewers` role would
+  // wrap this one router). Read deps only -- no sync, delete, toggle, waiver or suppression.
+  publicRouter.use(
+    createCatalogRouter(
+      {
+        listConfiguredPackages: () => Array.from(syncServices.keys()),
+        listEnabledPackages: () => listPackages(pool, true),
+        getPackage: (name) => getPackage(pool, name),
+        listJobs: (opts) => listSyncJobs(pool, opts),
+        listVersionGroupNamesForPackage: (packageName) => listVersionGroups(pool, packageName),
+        listVersionsInGroup: (packageName, group) => listVersions(pool, packageName, { group }),
+        listArtifactsForVersionId: (versionId) => listArtifactsForVersion(pool, versionId),
+        getPackageVulnBadges,
+        queryVulns: (product, version) => queryVulns(vulnQueryDeps, { product, version }),
+        getDataFreshness: () => getDataFreshness(pool),
+        getSyncStatus: () => getVulnSyncStatus(pool),
+      },
+      basePath,
+    ),
+  );
+
+  const internalRouter = express.Router();
+  internalRouter.use(
+    options.internalAuth ??
+      ((_req, res) => res.status(503).json({ error: "Machine authentication unavailable" })),
+  );
+  internalRouter.use(
     createInternalRouter({
       runSync: (packageName, opts) => runSync(packageName, opts),
       runSyncAll: (opts) => runSyncAll(opts),
       vulnSync: vulnSyncImpls,
-      vulnHints: () => getVulnHints(pool),
-      startVulnBackfill,
-      getVulnBackfill: (id) => getVulnBackfillJob(pool, id),
+      vulnHints: () => getVulnHints(pool, { autoBackfillEnabled: config.VULN_AUTO_BACKFILL }),
+      // performed_by distinguishes these from the admin UI's rows: /internal is
+      // machine-triggered (Cloud Scheduler), so the trail can tell an unattended
+      // gate change from one an operator made.
+      logAdminAction: (details, subject) =>
+        insertAdminAction(pool, {
+          action_type: "vuln-sync",
+          performed_by: subject,
+          details,
+        }),
+      recordAvailability: (source) =>
+        recordAvailabilityTransitions(pool, { source, trigger: "internal" }),
+      autoBackfill: async () => {
+        if (!config.VULN_AUTO_BACKFILL) {
+          return { enabled: false, pending: 0, started: [], deferred: [], failed: [] };
+        }
+        const result = await autoBackfillPendingPackages(pool, { startVulnBackfill });
+        return { enabled: true, ...result };
+      },
     }),
   );
+
+  const securityTierMounts: SecurityTierMount[] = [
+    { ...SECURITY_TIER_MOUNTS[0], router: operatorRouter },
+    { ...SECURITY_TIER_MOUNTS[1], router: internalRouter },
+    { ...SECURITY_TIER_MOUNTS[2], router: publicRouter },
+  ];
+  app.locals.securityTierMounts = securityTierMounts;
+  app.locals.metrics = metrics;
+  const topRouter = express.Router();
+  for (const mount of securityTierMounts) topRouter.use(mount.prefix, mount.router);
+  app.use(basePath || "/", topRouter);
 
   app.use(
     (err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
@@ -487,30 +822,46 @@ export function createApp(): express.Express {
   return app;
 }
 
-const app = createApp();
+async function start(): Promise<void> {
+  // Fail-fast on a malformed rules file, same contract as loadConfig() (WAL-113 AC1): a bad
+  // WALRUS_EGRESS_RULES refuses to start the server rather than serving with rules ignored.
+  // path.resolve() matches how WALRUS_ADMINS_FILE is resolved in loadOperatorAuthRuntime below.
+  loadEgressConfig({
+    rulesFile: path.resolve(config.WALRUS_EGRESS_RULES),
+    mode: config.WALRUS_EGRESS_MODE,
+  });
+  // Same fail-fast contract: a WALRUS_LOGO / WALRUS_ADMIN_LOGO that points at nothing refuses to
+  // start, rather than serving every page with a broken image in the nav.
+  const logoFiles = {
+    public: resolveLogoFile("WALRUS_LOGO", config.WALRUS_LOGO),
+    admin: resolveLogoFile("WALRUS_ADMIN_LOGO", config.WALRUS_ADMIN_LOGO),
+  };
+  const authAudit = createAuthAuditSinks(pool);
+  const operatorAuth = await loadOperatorAuthRuntime(config, {
+    auditLogin: authAudit.auditLogin,
+    auditAction: authAudit.auditAction,
+  });
+  const internalAuth = loadMachineAuth(config, authAudit.auditMachine);
+  await runMigrations();
+  await repairDerivedSortKeys();
+  await recoverInterruptedState();
+  await reconcileAllPackageVulns(pool, configs);
+  const app = createApp({ operatorAuth, internalAuth, logoFiles });
+  log.info("Startup recovery complete");
+  // This process runs the scheduled /internal/vuln-sync/* walks, so it is the one that pays
+  // for a missing NVD key. Warned at boot rather than reported as a degradation -- see
+  // common/upstream-credentials.ts.
+  warnIfNvdKeyless();
+  app.listen(config.PORT, () => {
+    log.info({ port: config.PORT }, "Walrus started");
+  });
+}
 
 if (require.main === module) {
-  runMigrations()
-    .then(() => recoverInterruptedState())
-    .then(() => reconcileAllPackageVulns(pool, configs))
-    .then(() => reconcileAllWatchVulns(pool, watchConfigs))
-    .then(() => {
-      log.info("Startup recovery complete");
-      app.listen(config.PORT, () => {
-        log.info({ port: config.PORT }, "Walrus started");
-      });
-    })
-    .catch((err) => {
-      log.error({ err }, "Startup recovery failed");
-      process.exit(1);
-    });
+  void start().catch((err) => {
+    log.error({ err }, "Startup recovery failed");
+    process.exit(1);
+  });
 }
 
-export default app;
-
-function normalizeChecksumType(type: string | null): ChecksumAlgorithm | undefined {
-  if (type === "sha256" || type === "sha1") {
-    return type;
-  }
-  return undefined;
-}
+export default createApp;

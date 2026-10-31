@@ -1,0 +1,14 @@
+-- Distinguish "job row created" from "the container actually started working on it".
+--
+-- Admin-triggered syncs now launch a Cloud Run Job execution (see CloudRunSyncLauncher) rather
+-- than running in-process. `started_at` is stamped when SyncService.prepareJob creates the row,
+-- before that execution has even been requested — Cloud Run Jobs have no warm pool, so the gap
+-- between that and the container reaching SyncService._doSync can be tens of seconds. Without a
+-- second timestamp, the admin job page has no way to tell "queued, cold-starting" apart from
+-- "running" until rows start appearing, which reads as a hang for a fast-finishing package
+-- (WAL-119).
+--
+-- NULL while queued; set once, the moment _doSync begins, for every trigger type — not only the
+-- launched ones — so its meaning ("the sync code itself started") stays uniform regardless of
+-- how the job got here.
+ALTER TABLE sync_jobs ADD COLUMN IF NOT EXISTS container_started_at TIMESTAMPTZ;

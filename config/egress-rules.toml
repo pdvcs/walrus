@@ -1,0 +1,7 @@
+# Declarative egress rewrite rules (engineering/docs/enterprise.md). Empty by default — walrus
+# ships no opinion about any enterprise's proxy, so out of the box this changes nothing.
+#
+# [[rule]]
+# match   = "https://github.com/"
+# rewrite = "https://artifactory.corp/artifactory/github-remote/"
+# headers = { Authorization = "Bearer ${ARTIFACTORY_TOKEN}" }

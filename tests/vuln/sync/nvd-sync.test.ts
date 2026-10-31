@@ -8,6 +8,7 @@ import { runMigrations } from "../../../src/db/client.js";
 import { upsertPackage } from "../../../src/db/queries/packages.js";
 import { reconcilePackageVuln } from "../../../src/db/queries/package-aliases.js";
 import { getSyncCursor } from "../../../src/db/queries/vuln-sync-state.js";
+import { config } from "../../../src/config/index.js";
 import { NvdClient, type NvdCveItem } from "../../../src/vuln/sync/nvd-client.js";
 import {
   backfillNvd,
@@ -15,6 +16,8 @@ import {
   extractCvss,
   ingestCveItems,
   incrementalNvdSync,
+  MAX_NVD_DATE_WINDOW_MS,
+  NVD_LASTMOD_LAG_MARGIN_MS,
 } from "../../../src/vuln/sync/nvd-sync.js";
 
 const TEST_DB_URL =
@@ -64,6 +67,13 @@ describe("extractCvss", () => {
       baseSeverity,
     },
   ];
+  // v4 keeps baseSeverity inside cvssData, like v3.
+  const v4 = (baseScore: number, baseSeverity: string) => [
+    {
+      type: "Primary",
+      cvssData: { version: "4.0", vectorString: "CVSS:4.0/AV:N", baseScore, baseSeverity },
+    },
+  ];
 
   it("prefers v3.1 for severity while still recording v2 alongside it", () => {
     const r = extractCvss(
@@ -101,11 +111,42 @@ describe("extractCvss", () => {
     expect(extractCvss(withMetrics({ cvssMetricV2: metric })).severity).toBe("HIGH");
   });
 
+  it("reads a v4-only CVE — the gap that left Deferred-backlog scores invisible", () => {
+    const r = extractCvss(withMetrics({ cvssMetricV40: v4(9.5, "CRITICAL") }));
+    expect(r.severity).toBe("CRITICAL");
+    expect(r.severitySource).toBe("nvd-cvss-v4");
+    expect(r.v4Score).toBe(9.5);
+    expect(r.v4Vector).toBe("CVSS:4.0/AV:N");
+    // v3 columns stay null: a v4 score is NOT a v3 score.
+    expect(r.score).toBeNull();
+  });
+
+  it("prefers v3 severity over v4 but records both scores", () => {
+    const r = extractCvss(
+      withMetrics({ cvssMetricV31: v3(8.8, "HIGH"), cvssMetricV40: v4(9.3, "CRITICAL") }),
+    );
+    expect(r.severitySource).toBe("nvd-cvss-v3");
+    expect(r.severity).toBe("HIGH");
+    expect(r.score).toBe(8.8);
+    expect(r.v4Score).toBe(9.3);
+  });
+
+  it("prefers v4 severity over v2 (v4 shares v3's bands; v2 has no CRITICAL)", () => {
+    const r = extractCvss(
+      withMetrics({ cvssMetricV40: v4(9.1, "CRITICAL"), cvssMetricV2: v2(9.8, "HIGH") }),
+    );
+    expect(r.severitySource).toBe("nvd-cvss-v4");
+    expect(r.severity).toBe("CRITICAL");
+    expect(r.v2Score).toBe(9.8);
+  });
+
   it("returns all-null with no severity source when there are no metrics", () => {
     const r = extractCvss(withMetrics({}));
     expect(r).toEqual({
       score: null,
       vector: null,
+      v4Score: null,
+      v4Vector: null,
       v2Score: null,
       v2Vector: null,
       severity: null,
@@ -217,22 +258,44 @@ describe("nvd-sync ingestion", () => {
     expect(b).toBe(a);
   });
 
+  /**
+   * Stands in for `NvdClient.cvePages`, which `backfillNvd` consumes instead of the accumulating
+   * the accumulating `cvesForCpe` since WAL-97, which no longer exists. One call per (CPE pair, publication window), and the pair now travels
+   * inside the params object as `virtualMatchString` rather than as a separate first argument.
+   */
+  const pagesOf = (vulnerabilities: NvdCveItem[] = []) =>
+    vi.fn(async function* () {
+      yield {
+        resultsPerPage: vulnerabilities.length,
+        startIndex: 0,
+        totalResults: vulnerabilities.length,
+        vulnerabilities,
+      };
+    });
+
+  const matchStringsOf = (m: ReturnType<typeof pagesOf>) =>
+    m.mock.calls.map((c) => (c[0] as { virtualMatchString: string }).virtualMatchString);
+
   it("uses paired bounded publication windows for a dated backfill", async () => {
-    const cvesForCpe = vi.fn().mockResolvedValue([]);
-    const nvd = { cvesForCpe } as unknown as NvdClient;
+    const cvePages = pagesOf();
+    const nvd = { cvePages } as unknown as NvdClient;
 
     await backfillNvd(pool, nvd, {
       since: "2024-01-01",
       now: new Date("2024-07-01T12:00:00.000Z"),
     });
 
-    expect(cvesForCpe).toHaveBeenCalledTimes(2);
-    for (const [, params] of cvesForCpe.mock.calls) {
+    expect(cvePages).toHaveBeenCalledTimes(2);
+    for (const [params] of cvePages.mock.calls) {
       expect(params).toHaveProperty("pubStartDate");
       expect(params).toHaveProperty("pubEndDate");
     }
-    expect(cvesForCpe.mock.calls[0][1].pubStartDate).toBe("2024-01-01T00:00:00.000Z");
-    expect(cvesForCpe.mock.calls[1][1].pubEndDate).toBe("2024-07-01T12:00:00.000Z");
+    expect((cvePages.mock.calls[0][0] as Record<string, string>).pubStartDate).toBe(
+      "2024-01-01T00:00:00.000Z",
+    );
+    expect((cvePages.mock.calls[1][0] as Record<string, string>).pubEndDate).toBe(
+      "2024-07-01T12:00:00.000Z",
+    );
   });
 
   describe("targeted backfill (--package)", () => {
@@ -268,28 +331,28 @@ describe("nvd-sync ingestion", () => {
     });
 
     it("walks only the named package's CPE pairs", async () => {
-      const cvesForCpe = vi.fn().mockResolvedValue([]);
-      const nvd = { cvesForCpe } as unknown as NvdClient;
+      const cvePages = pagesOf();
+      const nvd = { cvePages } as unknown as NvdClient;
 
       await backfillNvd(pool, nvd, { packageName: SCOPED });
 
-      expect(cvesForCpe).toHaveBeenCalledTimes(1);
-      expect(cvesForCpe.mock.calls[0][0]).toBe("cpe:2.3:a:acme:widget");
+      expect(cvePages).toHaveBeenCalledTimes(1);
+      expect(matchStringsOf(cvePages)[0]).toBe("cpe:2.3:a:acme:widget");
     });
 
     it("walks every pair when no package is given", async () => {
-      const cvesForCpe = vi.fn().mockResolvedValue([]);
-      const nvd = { cvesForCpe } as unknown as NvdClient;
+      const cvePages = pagesOf();
+      const nvd = { cvePages } as unknown as NvdClient;
 
       await backfillNvd(pool, nvd, {});
 
-      const matchStrings = cvesForCpe.mock.calls.map((c) => c[0]);
+      const matchStrings = matchStringsOf(cvePages);
       expect(matchStrings).toContain("cpe:2.3:a:acme:widget");
       expect(matchStrings.length).toBeGreaterThan(1);
     });
 
     it("does NOT advance the nvd-cve cursor (a one-package walk proves nothing global)", async () => {
-      const nvd = { cvesForCpe: vi.fn().mockResolvedValue([]) } as unknown as NvdClient;
+      const nvd = { cvePages: pagesOf() } as unknown as NvdClient;
       const before = await getSyncCursor(pool, "nvd-cve");
 
       await backfillNvd(pool, nvd, { packageName: SCOPED });
@@ -298,7 +361,7 @@ describe("nvd-sync ingestion", () => {
     });
 
     it("still advances the cursor for a full backfill", async () => {
-      const nvd = { cvesForCpe: vi.fn().mockResolvedValue([]) } as unknown as NvdClient;
+      const nvd = { cvePages: pagesOf() } as unknown as NvdClient;
       const now = new Date("2025-06-01T00:00:00.000Z");
 
       await backfillNvd(pool, nvd, { now });
@@ -307,8 +370,13 @@ describe("nvd-sync ingestion", () => {
     });
 
     it("leaves the cursor untouched when a targeted backfill fails", async () => {
+      // First `next()` rejects — an upstream failure on the first page.
       const nvd = {
-        cvesForCpe: vi.fn().mockRejectedValue(new Error("upstream boom")),
+        cvePages: vi.fn(() => ({
+          [Symbol.asyncIterator]: () => ({
+            next: () => Promise.reject(new Error("upstream boom")),
+          }),
+        })),
       } as unknown as NvdClient;
       const before = await getSyncCursor(pool, "nvd-cve");
 
@@ -321,7 +389,7 @@ describe("nvd-sync ingestion", () => {
       // PKG2 shares PKG's pair. Backfilling PKG alone must still record PKG2's
       // rows — the CVE genuinely affects it.
       await seedPackage(pool, PKG2);
-      const nvd = { cvesForCpe: vi.fn().mockResolvedValue(items) } as unknown as NvdClient;
+      const nvd = { cvePages: pagesOf(items) } as unknown as NvdClient;
 
       await backfillNvd(pool, nvd, { packageName: PKG });
 
@@ -350,27 +418,159 @@ describe("nvd-sync ingestion", () => {
     beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
     afterAll(() => server.close());
 
-    it("advances the cursor on success", async () => {
+    /** Capture the lastMod window of each /cves request, deduped across pagination pages. */
+    function captureWindows(): Array<{ start: string; end: string }> {
+      const seen: Array<{ start: string; end: string }> = [];
+      server.events.on("request:start", ({ request }) => {
+        const url = new URL(request.url);
+        if (url.pathname !== "/rest/json/cves/2.0") return;
+        const s = url.searchParams.get("lastModStartDate");
+        const e = url.searchParams.get("lastModEndDate");
+        if (
+          s &&
+          e &&
+          (seen.length === 0 ||
+            seen[seen.length - 1].start !== s ||
+            seen[seen.length - 1].end !== e)
+        ) {
+          seen.push({ start: s, end: e });
+        }
+      });
+      return seen;
+    }
+
+    function mockPages(payload: unknown) {
       server.use(
         http.get("https://services.nvd.nist.gov/rest/json/cves/2.0", ({ request }) => {
-          const url = new URL(request.url);
           // Only the first page has content; second page (startIndex beyond total) empty.
-          if (Number(url.searchParams.get("startIndex")) > 0) {
+          if (Number(new URL(request.url).searchParams.get("startIndex")) > 0) {
             return HttpResponse.json({
               resultsPerPage: 0,
-              startIndex: Number(url.searchParams.get("startIndex")),
+              startIndex: Number(new URL(request.url).searchParams.get("startIndex")),
               totalResults: items.length,
               vulnerabilities: [],
             });
           }
-          return HttpResponse.json(notepadFixture);
+          return HttpResponse.json(payload);
         }),
       );
+    }
+
+    it("pages the fresh-DB bootstrap and the incremental walk differently", async () => {
+      // The two NVD workloads invert each other and so must their page sizes. The bootstrap's
+      // 119-day window is ~372k CVEs averaging ~2.1 KB: request count is the binding cost, and
+      // paging it at the incremental size puts the rate-limit floor alone (~2,482s) past Cloud
+      // Scheduler's 1800s deadline -- permanently, since the cursor is claimed only at the end.
+      // A recent window is the opposite: a few hundred CVEs at ~14.5 KB and up, where one big
+      // page is the 10-13 MB body that aborted mid-stream on 7, 9 and 10 Sep 2026.
+      const sizes: string[] = [];
+      server.use(
+        http.get("https://services.nvd.nist.gov/rest/json/cves/2.0", ({ request }) => {
+          const url = new URL(request.url);
+          sizes.push(url.searchParams.get("resultsPerPage") ?? "");
+          return HttpResponse.json({
+            resultsPerPage: 0,
+            startIndex: 0,
+            totalResults: 0,
+            vulnerabilities: [],
+          });
+        }),
+      );
+
+      const nvd = new NvdClient({ apiKey: "k", backoffBaseMs: 1 }, async () => {});
+
+      // No cursor yet -> bootstrap.
+      await incrementalNvdSync(pool, nvd, {});
+      expect(sizes[0]).toBe(String(config.VULN_NVD_BOOTSTRAP_PAGE_SIZE));
+
+      // Cursor now set by the run above -> steady-state paging.
+      expect(await getSyncCursor(pool, "nvd-cve")).not.toBeNull();
+      sizes.length = 0;
+      await incrementalNvdSync(pool, nvd, {});
+      expect(sizes[0]).toBe(String(config.VULN_NVD_PAGE_SIZE));
+      expect(config.VULN_NVD_BOOTSTRAP_PAGE_SIZE).toBeGreaterThan(config.VULN_NVD_PAGE_SIZE);
+    });
+
+    it("advances the cursor on success", async () => {
+      mockPages(notepadFixture);
       const nvd = new NvdClient({ apiKey: "k", backoffBaseMs: 1 }, async () => {});
       const counts = await incrementalNvdSync(pool, nvd, {});
       expect(counts.affects).toBeGreaterThan(0);
       const cursor = await getSyncCursor(pool, "nvd-cve");
       expect(cursor).not.toBeNull();
+    });
+
+    it("starts each window a lag margin before the cursor, and advances to the window end", async () => {
+      // WAL-47: NVD's lastMod index lags, so abutting windows permanently skip CVEs
+      // indexed just after a run. The next window must re-cover [cursor - margin].
+      const now = new Date("2026-08-26T21:00:00.000Z");
+      const cursorAt = new Date(now.getTime() - 3_600_000); // previous run 1h ago
+      await pool.query(
+        `INSERT INTO vuln_sync_state (source, cursor, last_run, last_ok)
+         VALUES ('nvd-cve', $1, now(), true)`,
+        [cursorAt.toISOString()],
+      );
+      mockPages(notepadFixture);
+      const windows = captureWindows();
+      const nvd = new NvdClient({ apiKey: "k", backoffBaseMs: 1 }, async () => {});
+
+      await incrementalNvdSync(pool, nvd, { now });
+      expect(windows[0].start).toBe(
+        new Date(cursorAt.getTime() - NVD_LASTMOD_LAG_MARGIN_MS).toISOString(),
+      );
+      expect(windows[0].end).toBe(now.toISOString());
+      const advancedTo = new Date((await getSyncCursor(pool, "nvd-cve"))!);
+
+      // The following run overlaps this one's tail instead of abutting it.
+      const next = new Date(advancedTo.getTime() + 2 * 3_600_000);
+      await pool.query(`DELETE FROM vuln_sync_state WHERE source = 'nvd-cve'`);
+      await pool.query(
+        `INSERT INTO vuln_sync_state (source, cursor, last_run, last_ok)
+         VALUES ('nvd-cve', $1, now(), true)`,
+        [advancedTo.toISOString()],
+      );
+      await incrementalNvdSync(pool, nvd, { now: next });
+      expect(windows[1].start).toBe(
+        new Date(advancedTo.getTime() - NVD_LASTMOD_LAG_MARGIN_MS).toISOString(),
+      );
+      expect(windows[1].end).toBe(next.toISOString());
+    });
+
+    it("keeps the full lookback on a fresh DB (no previous window to bridge)", async () => {
+      const now = new Date("2026-08-26T21:00:00.000Z");
+      mockPages(notepadFixture);
+      const windows = captureWindows();
+      const nvd = new NvdClient({ apiKey: "k", backoffBaseMs: 1 }, async () => {});
+
+      await incrementalNvdSync(pool, nvd, { now });
+      expect(windows[0].start).toBe(new Date(now.getTime() - MAX_NVD_DATE_WINDOW_MS).toISOString());
+      expect(windows[0].end).toBe(now.toISOString());
+    });
+
+    it("re-ingests the overlap without duplicating affects rows", async () => {
+      const cve = items.find((item) => item.cve.id === "CVE-2019-16294")!;
+      server.use(
+        http.get("https://services.nvd.nist.gov/rest/json/cves/2.0", ({ request }) => {
+          const startIndex = Number(new URL(request.url).searchParams.get("startIndex"));
+          // Same item on every query — both runs see identical data across the overlap.
+          return HttpResponse.json({
+            resultsPerPage: startIndex === 0 ? 1 : 0,
+            startIndex,
+            totalResults: 1,
+            vulnerabilities: startIndex === 0 ? [cve] : [],
+          });
+        }),
+      );
+
+      const nvd = new NvdClient({ apiKey: "k", backoffBaseMs: 1 }, async () => {});
+      const t0 = new Date("2026-08-26T20:00:00.000Z");
+      await incrementalNvdSync(pool, nvd, { now: t0 });
+      const first = await affectsCount(pool, PKG);
+      expect(first).toBeGreaterThan(0);
+
+      // Second run starts inside the first's coverage (cursor - margin < t0).
+      await incrementalNvdSync(pool, nvd, { now: new Date(t0.getTime() + 600_000) });
+      expect(await affectsCount(pool, PKG)).toBe(first);
     });
 
     it("removes obsolete affects for a known CVE that no longer matches a tracked CPE", async () => {
@@ -430,3 +630,74 @@ async function affectsCount(pool: Pool, pkg: string): Promise<number> {
   );
   return rows[0].n;
 }
+
+describe("CPE version NA vs ANY (WAL-69)", () => {
+  const LOOKUP = new Map([["microsoft:visual_studio_code", ["vscode"]]]);
+
+  /** Shaped after the real CVE-2024-43488 configuration: NA version, no range bounds. */
+  function itemWithVersion(criteriaVersion: string, extra: Record<string, unknown> = {}) {
+    return {
+      cve: {
+        id: "CVE-2024-43488",
+        configurations: [
+          {
+            nodes: [
+              {
+                operator: "OR",
+                negate: false,
+                cpeMatch: [
+                  {
+                    vulnerable: true,
+                    criteria: `cpe:2.3:a:microsoft:visual_studio_code:${criteriaVersion}:*:*:*:*:*:*:*`,
+                    ...extra,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    } as unknown as Parameters<typeof extractAffects>[0];
+  }
+
+  it("flags an NA version without dropping the row", () => {
+    // Nothing is skipped at ingest: the advisory stays on the record, it just stops
+    // claiming to describe every version.
+    const { rows, skippedCpes } = extractAffects(itemWithVersion("-"), LOOKUP);
+
+    expect(skippedCpes).toBe(0);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      package_name: "vscode",
+      version_na: true,
+      exact_version: null,
+      version_start: null,
+      version_end: null,
+      raw_cpe: "cpe:2.3:a:microsoft:visual_studio_code:-:*:*:*:*:*:*:*",
+    });
+  });
+
+  it("does not flag ANY, with or without bounds", () => {
+    expect(extractAffects(itemWithVersion("*"), LOOKUP).rows[0]).toMatchObject({
+      version_na: false,
+      exact_version: null,
+    });
+
+    const bounded = extractAffects(
+      itemWithVersion("*", { versionEndExcluding: "1.104.0" }),
+      LOOKUP,
+    );
+    expect(bounded.rows[0]).toMatchObject({
+      version_na: false,
+      version_end: "1.104.0",
+      fixed_in: "1.104.0",
+    });
+  });
+
+  it("does not flag a concrete version", () => {
+    expect(extractAffects(itemWithVersion("1.104.2"), LOOKUP).rows[0]).toMatchObject({
+      version_na: false,
+      exact_version: "1.104.2",
+    });
+  });
+});

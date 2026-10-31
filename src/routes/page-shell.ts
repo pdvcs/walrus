@@ -1,0 +1,206 @@
+import { withBase } from "../common/base-path.js";
+
+export type AdminNavItem = "packages" | "jobs" | "vuln-jobs" | "validate" | "vulns";
+
+export const BASE_PAGE_STYLES = `
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f5f5; color: #222; }
+  a { color: #1d4ed8; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .nav { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; background: #fff; border-bottom: 1px solid #e5e7eb; padding: 12px 24px; margin-bottom: 24px; }
+  .nav .brand { display: flex; align-items: center; font-weight: 800; font-size: 1.05rem; color: #111; }
+  .nav .brand-logo { display: block; height: 36px; width: auto; max-width: 240px; object-fit: contain; border-radius: 6px; }
+  .nav a { font-size: 0.9rem; color: #6b7280; text-decoration: none; }
+  .nav a:hover { color: #111; }
+  .nav a.active { color: #111; font-weight: 700; }
+  .nav-spacer { flex: 1 1 24px; }
+  .nav form { display: inline; margin: 0; }
+  .nav-link { appearance: none; border: 0; padding: 0; background: transparent; color: #6b7280; cursor: pointer; font: inherit; font-size: 0.9rem; }
+  .nav-link:hover { color: #111; text-decoration: underline; }
+  .nav-menu { position: relative; }
+  .nav-menu > summary { list-style: none; cursor: pointer; font-size: 0.9rem; color: #6b7280; }
+  .nav-menu > summary::-webkit-details-marker { display: none; }
+  .nav-menu > summary::after { content: " \\25BE"; margin-left: 2px; }
+  .nav-menu[open] > summary, .nav-menu > summary:hover, .nav-menu-active > summary { color: #111; }
+  .nav-menu-active > summary { font-weight: 700; }
+  .nav-menu-list { position: absolute; top: calc(100% + 10px); left: 0; min-width: 150px; display: flex; flex-direction: column; gap: 2px; padding: 6px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; box-shadow: 0 8px 24px rgb(15 23 42 / 0.12); z-index: 50; }
+  .nav-menu-list a { display: block; padding: 6px 10px; border-radius: 6px; font-size: 0.88rem; }
+  .nav-menu-list a:hover { background: #f3f4f6; text-decoration: none; }
+  .nav-menu-list a.active { background: #eff6ff; color: #1d4ed8; font-weight: 700; }
+  .nav-status { display: inline-flex; align-items: center; gap: 10px; }
+  .nav .nav-chip { display: inline-flex; align-items: center; padding: 2px 9px; border-radius: 999px; background: #c2410c; color: #fff; font-size: 0.78rem; font-weight: 700; }
+  .nav .nav-chip:hover { background: #9a3412; color: #fff; text-decoration: none; }
+  .nav .nav-chip[hidden] { display: none; }
+  .wrap { width: 100%; max-width: 1100px; margin: 0 auto; padding: 24px; }
+  h1 { margin: 0 0 16px; font-size: 1.4rem; }
+  h2 { margin: 0 0 8px; font-size: 1rem; }
+  p { line-height: 1.55; }
+  .panel { max-width: 520px; margin: 48px auto; padding: 28px; background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; box-shadow: 0 8px 28px rgb(15 23 42 / 0.06); }
+  .meta { color: #6b7280; font-size: 0.85rem; }
+  .field { display: grid; gap: 6px; margin-top: 16px; }
+  .field label { font-size: 0.82rem; font-weight: 700; color: #374151; }
+  input, textarea { width: 100%; border: 1px solid #d1d5db; border-radius: 6px; padding: 9px 10px; color: #222; background: #fff; font: inherit; }
+  input:focus, textarea:focus { border-color: #1d4ed8; outline: 3px solid #dbeafe; }
+  textarea { resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8rem; }
+  .actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 20px; }
+  .btn { display: inline-block; border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; font: inherit; font-size: 0.85rem; font-weight: 700; text-decoration: none; }
+  .btn:hover { text-decoration: none; }
+  .btn-primary { background: #1d4ed8; color: #fff; }
+  .btn-primary:hover { background: #1e40af; }
+  .btn-secondary { background: #e5e7eb; color: #374151; }
+  .btn-secondary:hover { background: #d1d5db; }
+  .alert { margin: 0 0 16px; padding: 10px 12px; border-radius: 6px; font-size: 0.85rem; }
+  .alert-error { background: #fee2e2; color: #991b1b; }
+  .alert-success { background: #dcfce7; color: #166534; }
+  .alert-info { background: #f3f4f6; color: #374151; }
+  .hero { padding: 56px 0 36px; }
+  .hero h1 { font-size: clamp(2.2rem, 7vw, 4rem); letter-spacing: -0.04em; margin-bottom: 8px; }
+  .version { display: inline-block; margin-bottom: 20px; padding: 3px 9px; border-radius: 999px; background: #e5e7eb; color: #4b5563; font: 600 0.78rem ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .hero-copy { max-width: 680px; color: #4b5563; font-size: 1.05rem; }
+  .link-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; margin-top: 28px; }
+  .link-card { display: block; padding: 18px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; color: #222; }
+  .link-card:hover { border-color: #93c5fd; text-decoration: none; }
+  .link-card strong { display: block; margin-bottom: 5px; }
+  .link-card span { color: #6b7280; font-size: 0.85rem; line-height: 1.4; }
+  @media (max-width: 640px) {
+    .nav { gap: 14px; padding: 12px 16px; }
+    .wrap { padding: 16px; }
+    .panel { margin: 20px auto; padding: 22px; }
+    .hero { padding-top: 32px; }
+  }
+`;
+
+/**
+ * The nav wordmark. The night scene is the logged-in operator's; the day scene is everyone
+ * else's. The pair is what tells an admin at a glance that they are on the admin UI, so the
+ * variant is chosen by which nav renders it, never by a flag a caller could get wrong.
+ * The default art is 512x127, shown at 36px tall (about 4x), so it stays sharp on high-DPI
+ * screens; a custom logo of any aspect works, capped at 240px wide.
+ */
+export function renderBrand(basePath: string, variant: "public" | "admin"): string {
+  // Stable URLs: which file sits behind them is WALRUS_LOGO / WALRUS_ADMIN_LOGO (see main.ts),
+  // so no page template needs to know about config.
+  const src = withBase(basePath, variant === "admin" ? "/brand/admin-logo" : "/brand/logo");
+  return `<a class="brand" href="${withBase(basePath, "/")}" aria-label="Walrus"><img class="brand-logo" src="${src}" alt="Walrus" width="145" height="36"></a>`;
+}
+
+export function renderAdminNav(basePath: string, active?: AdminNavItem): string {
+  return `<nav class="nav" aria-label="Admin navigation">
+    ${renderBrand(basePath, "admin")}
+    <a href="${withBase(basePath, "/admin/v1/")}"${active === "packages" ? ' class="active"' : ""}>Packages</a>
+    <details class="nav-menu${active === "jobs" || active === "vuln-jobs" ? " nav-menu-active" : ""}">
+      <summary class="nav-link nav-menu-trigger">Jobs</summary>
+      <div class="nav-menu-list">
+        <a href="${withBase(basePath, "/admin/v1/jobs")}"${active === "jobs" ? ' class="active"' : ""}>Sync Jobs</a>
+        <a href="${withBase(basePath, "/admin/v1/vuln-backfill")}"${active === "vuln-jobs" ? ' class="active"' : ""}>Vuln Jobs</a>
+      </div>
+    </details>
+    <a href="${withBase(basePath, "/admin/v1/validate")}"${active === "validate" ? ' class="active"' : ""}>Config</a>
+    <a href="${withBase(basePath, "/admin/v1/vulns")}"${active === "vulns" ? ' class="active"' : ""}>Vulnerabilities</a>
+    <a href="${withBase(basePath, "/api")}">API Docs</a>
+    <span class="nav-status">
+      <a href="${withBase(basePath, "/app/status")}">Status</a>
+      <a class="nav-chip" id="nav-suppressions" href="${withBase(basePath, "/admin/v1/vulns#active-suppressions")}" hidden></a>
+    </span>
+    <span class="nav-spacer"></span>
+    <form method="post" action="${withBase(basePath, "/admin/v1/tokens")}"><button class="nav-link" type="submit">API token</button></form>
+    <form method="post" action="${withBase(basePath, "/admin/v1/logout")}"><button class="nav-link" type="submit">Log out</button></form>
+  </nav>
+  <script>
+// nav-suppression-chip:start
+// An active suppression is an operator overriding the critical-CVE gate, so it stays
+// visible from every admin page rather than only from the explorer that created it.
+// Fetched client-side because the nav is rendered by pages that have no vuln deps;
+// hidden at zero, since "no exceptions in force" is the expected state, not news.
+(async () => {
+  const el = document.getElementById('nav-suppressions');
+  if (!el) return;
+  try {
+    const r = await fetch('${withBase(basePath, "/admin/v1/vuln-suppressions/active-count")}');
+    if (!r.ok) return;
+    const n = (await r.json()).active_count || 0;
+    if (n < 1) return;
+    el.textContent = '\u{1F515} ' + n;
+    el.title = n + ' active suppression' + (n === 1 ? '' : 's')
+      + (n === 1 ? ' — a CVE is' : ' — CVEs are')
+      + ' excluded from the critical-CVE gate by operator decision, so affected versions'
+      + ' download normally. Click to review or revoke.';
+    el.hidden = false;
+  } catch (e) { /* the chip must never break an admin page */ }
+})();
+// nav-suppression-chip:end
+  </script>`;
+}
+
+export type PublicNavItem = "packages" | "vulns" | "api";
+
+export function renderPublicNav(basePath: string, active?: PublicNavItem): string {
+  const returnTo = encodeURIComponent(withBase(basePath, "/admin/v1/"));
+  return `<nav class="nav" aria-label="Site navigation">
+    ${renderBrand(basePath, "public")}
+    <a href="${withBase(basePath, "/packages")}"${active === "packages" ? ' class="active"' : ""}>Packages</a>
+    <a href="${withBase(basePath, "/vulns")}"${active === "vulns" ? ' class="active"' : ""}>Vulnerabilities</a>
+    <span class="nav-spacer"></span>
+    <a href="${withBase(basePath, "/api")}"${active === "api" ? ' class="active"' : ""}>API Docs</a>
+    <a href="${withBase(basePath, "/app/status")}">Status</a>
+    <a href="${withBase(basePath, "/admin/v1/login")}?return_to=${returnTo}">Admin login</a>
+  </nav>`;
+}
+
+export function renderPage(options: {
+  title: string;
+  nav: string;
+  body: string;
+  extraStyles?: string;
+}): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(options.title)}</title>
+  <style>${BASE_PAGE_STYLES}${options.extraStyles ?? ""}</style>
+</head>
+<body>
+  ${options.nav}
+  <main class="wrap">${options.body}</main>
+</body>
+</html>`;
+}
+
+export function renderLandingPage(version: string, basePath: string, branding: string): string {
+  const safeVersion = escapeHtml(version);
+  const safeBranding = escapeHtml(branding);
+  const returnTo = encodeURIComponent(withBase(basePath, "/admin/v1/"));
+  return renderPage({
+    title: branding,
+    nav: renderPublicNav(basePath),
+    body: `<section class="hero">
+      <span class="version">v${safeVersion}</span>
+      <h1>${safeBranding}</h1>
+      <p class="hero-copy">A policy-aware package ingress service for discovering, verifying, retaining, and serving trusted software artifacts.</p>
+      <div class="actions">
+        <a class="btn btn-primary" href="${withBase(basePath, "/admin/v1/login")}?return_to=${returnTo}">Log in as admin</a>
+        <a class="btn btn-secondary" href="${withBase(basePath, "/api")}">Browse API documentation</a>
+      </div>
+      <div class="link-grid">
+        <a class="link-card" href="${withBase(basePath, "/packages")}"><strong>Browse packages</strong><span>Which versions are cached for which platforms, and which are held back.</span></a>
+        <a class="link-card" href="${withBase(basePath, "/vulns")}"><strong>Vulnerability lookup</strong><span>Known CVEs for a product and version, and whether they block a download.</span></a>
+        <a class="link-card" href="${withBase(basePath, "/health")}"><strong>Deployment health</strong><span>Minimal availability contract for the deployment platform.</span></a>
+        <a class="link-card" href="${withBase(basePath, "/app/status")}"><strong>Application status</strong><span>Operational details, dependency state, and degradations.</span></a>
+        <a class="link-card" href="${withBase(basePath, "/metrics")}"><strong>Prometheus metrics</strong><span>Request, runtime, catalogue, sync, and vulnerability time series.</span></a>
+        <a class="link-card" href="${withBase(basePath, "/openapi.json")}"><strong>OpenAPI specification</strong><span>Machine-readable public API contract.</span></a>
+      </div>
+    </section>`,
+  });
+}
+
+export function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}

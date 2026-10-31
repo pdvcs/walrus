@@ -1,8 +1,13 @@
 import { Router } from "express";
-import { SyncRunResult } from "../services/sync-service.js";
-import { isVulnSyncSource, runVulnSync, VulnSyncImpls } from "../vuln/sync/index.js";
-import { buildPublicationWindows } from "../vuln/sync/nvd-sync.js";
-import type { VulnBackfillJobRow } from "../db/queries/vuln-backfill-jobs.js";
+import { log } from "../common/log.js";
+import { SyncAlreadyRunningError, SyncRunResult } from "../services/sync-service.js";
+import {
+  isVulnSyncSource,
+  parseVulnSyncOptions,
+  runVulnSync,
+  VulnSyncImpls,
+} from "../vuln/sync/index.js";
+import { VulnSyncAlreadyRunningError } from "../vuln/sync/lock.js";
 
 export interface InternalRouteDeps {
   runSync: (
@@ -12,16 +17,63 @@ export interface InternalRouteDeps {
   runSyncAll: (opts: {
     dryRun: boolean;
     triggerType: "scheduled";
-  }) => Promise<Array<{ package: string; result: SyncRunResult }>>;
+  }) => Promise<Array<{ package: string; result?: SyncRunResult; skipped?: string }>>;
   /** Vuln sync implementations, injected from main.ts (real NVD/KEV/OSV) or tests (fakes). */
   vulnSync: VulnSyncImpls;
   /** Operator hints (e.g. "run vuln:backfill"); appended to the sync response when non-empty. */
   vulnHints?: () => Promise<string[]>;
-  startVulnBackfill?: (
-    since?: string,
-    packageName?: string,
-  ) => Promise<{ job?: VulnBackfillJobRow; alreadyRunning?: boolean }>;
-  getVulnBackfill?: (id: string) => Promise<VulnBackfillJobRow | null>;
+  /**
+   * Audit sink for vuln-sync triggers. These runs are machine-driven — `cvss` is on a
+   * schedule and can newly block downloads (ADR-002) — so the trail must record them the
+   * same way it records an operator clicking "Sync now", or an unattended gate change
+   * leaves no evidence of when it happened.
+   */
+  logAdminAction?: (details: Record<string, unknown>, subject?: string) => Promise<void>;
+  /**
+   * Re-evaluate the critical-CVE gate after ingestion and record what changed. Runs for
+   * every source, not just `cvss`: an `nvd` sync ingesting a fresh critical CVE blocks a
+   * version just as effectively.
+   */
+  recordAvailability?: (source: string) => Promise<{
+    newlyBlocked: Array<{ package_name: string; version: string; cve_id: string | null }>;
+    newlyAvailable: Array<{ package_name: string; version: string }>;
+  }>;
+  /**
+   * Sweep for packages whose CPE set has never been backfilled and start one. Scheduled, so
+   * a newly tracked package acquires its CVE history without anyone remembering to ask.
+   */
+  autoBackfill?: () => Promise<{
+    enabled: boolean;
+    pending: number;
+    started: string[];
+    deferred: string[];
+    failed: Array<{ package: string; error: string }>;
+  }>;
+}
+
+/**
+ * Write an audit row without letting its failure escape to the caller.
+ *
+ * The trail is recorded *after* the work it describes, so a rejection here means the sync or
+ * preview has already happened — letting it propagate reports completed work as failed. On
+ * 2026-09-11 that is exactly what happened: a Cloud SQL connection dropped mid-request, the kev
+ * sync itself succeeded, and the audit insert's `Connection terminated unexpectedly` became a
+ * 500. Cloud Scheduler recorded the invocation as failed and two ERROR alert policies fired,
+ * for a transient that had cost nothing.
+ *
+ * Logged rather than silently dropped: a missing audit row is worth seeing, just not worth
+ * failing a request over.
+ */
+async function recordAuditAction(
+  logAdminAction: InternalRouteDeps["logAdminAction"],
+  details: Record<string, unknown>,
+  subject?: string,
+): Promise<void> {
+  try {
+    await logAdminAction?.(details, subject);
+  } catch (err) {
+    log.error({ err, action: details.action }, "failed to record vuln-sync admin action");
+  }
 }
 
 export function createInternalRouter(deps: InternalRouteDeps): Router {
@@ -35,13 +87,27 @@ export function createInternalRouter(deps: InternalRouteDeps): Router {
       const dryRun = body.dry_run === true;
 
       if (packageName) {
-        const result = await deps.runSync(packageName, { dryRun, triggerType: "scheduled" });
-        res.status(202).json({ package: packageName, dry_run: dryRun, result });
+        let result;
+        try {
+          result = await deps.runSync(packageName, { dryRun, triggerType: "scheduled" });
+        } catch (error) {
+          // A trigger that overlaps a running sync is expected, not an error. 409 keeps it
+          // out of the 5xx bucket; Cloud Scheduler still sees a non-2xx and will retry.
+          if (error instanceof SyncAlreadyRunningError) {
+            res
+              .status(409)
+              .json({ code: "already_running", package: packageName, error: error.message });
+            return;
+          }
+          throw error;
+        }
+        // The work is complete by the time this returns, so 200 — not 202.
+        res.status(200).json({ package: packageName, dry_run: dryRun, result });
         return;
       }
 
       const results = await deps.runSyncAll({ dryRun, triggerType: "scheduled" });
-      res.status(202).json({ dry_run: dryRun, results });
+      res.status(200).json({ dry_run: dryRun, results });
     } catch (err) {
       next(err);
     }
@@ -56,11 +122,85 @@ export function createInternalRouter(deps: InternalRouteDeps): Router {
         res.status(400).json({ error: `Unknown vuln sync source: ${source}` });
         return;
       }
-      const outcomes = await runVulnSync(source, deps.vulnSync);
+      const parsed = parseVulnSyncOptions(source, req.body);
+      if (!parsed.ok) {
+        res.status(400).json({ error: parsed.error });
+        return;
+      }
+
+      if (parsed.opts.dryRun) {
+        const preview = deps.vulnSync.cvssPreview;
+        if (!preview) {
+          res.status(503).json({ error: "cvss preview is not available" });
+          return;
+        }
+        let result;
+        try {
+          result = await preview({ limit: parsed.opts.limit });
+        } catch (err) {
+          if (err instanceof VulnSyncAlreadyRunningError) {
+            res.status(409).json({ code: "already_running", error: err.message });
+            return;
+          }
+          throw err;
+        }
+        await recordAuditAction(
+          deps.logAdminAction,
+          {
+            action: "vuln-sync-preview",
+            source,
+            proposals: result.proposals.length,
+            newly_blocked: result.newly_blocked.reduce((n, d) => n + d.newly_blocked.length, 0),
+          },
+          req.machinePrincipal,
+        );
+        res.status(200).json({ source, dry_run: true, preview: result });
+        return;
+      }
+
+      const outcomes = await runVulnSync(source, deps.vulnSync, parsed.opts);
+
+      // After the write, not before: this records what actually changed rather than what a
+      // run was projected to change. Failing to record history must not fail the sync that
+      // already succeeded, so both this and the audit row below are swallowed — the audit
+      // failure via recordAuditAction, which logs it.
+      const availability = outcomes.some((o) => o.ok)
+        ? await deps.recordAvailability?.(source).catch(() => undefined)
+        : undefined;
+
+      await recordAuditAction(
+        deps.logAdminAction,
+        {
+          action: "vuln-sync",
+          source,
+          outcomes,
+          ...(availability
+            ? {
+                newly_blocked: availability.newlyBlocked.length,
+                newly_available: availability.newlyAvailable.length,
+              }
+            : {}),
+        },
+        req.machinePrincipal,
+      );
       const allOk = outcomes.every((o) => o.ok);
       const alreadyRunning = source !== "all" && outcomes[0]?.code === "already_running";
+      // WAL-108. `207 Multi-Status` is the right answer for `all`, where some sources may have
+      // succeeded and others failed and one status code cannot say so. For a single named source
+      // there is exactly one outcome, so answering 207 reports a total failure as partial success
+      // of a set of one — and Cloud Scheduler, which treats any 2xx as success, then records the
+      // attempt as fine and does not retry.
+      //
+      // That is not hypothetical: the 18:20Z nvd tick on 2026-09-01 failed on an upstream timeout,
+      // the scheduler logged a success, and WAL-106's retry — shipped an hour earlier for exactly
+      // this kind of lost run — could not fire. 502 rather than 500 because the failure is
+      // upstream's, not ours; the body is unchanged, so callers reading `outcomes` are unaffected.
+      //
+      // `already_running` stays 409 deliberately. Contention is not a failure and must not consume
+      // a retry, the same rule `autoBackfillPendingPackages` follows when it refunds an attempt.
+      const status = allOk ? 200 : alreadyRunning ? 409 : source === "all" ? 207 : 502;
       const hints = deps.vulnHints ? await deps.vulnHints() : [];
-      res.status(allOk ? 200 : alreadyRunning ? 409 : 207).json({
+      res.status(status).json({
         source,
         outcomes,
         ...(hints.length > 0 ? { hints } : {}),
@@ -70,68 +210,26 @@ export function createInternalRouter(deps: InternalRouteDeps): Router {
     }
   });
 
-  router.post("/vuln-backfill", async (req, res, next) => {
+  router.post("/vuln-backfill/auto", async (_req, res, next) => {
     try {
-      if (!deps.startVulnBackfill)
-        return void res.status(503).json({ error: "Backfill launcher unavailable" });
-      const body = (req.body ?? {}) as { since?: unknown; package?: unknown };
-      const since = typeof body.since === "string" ? body.since : undefined;
-      if (body.since !== undefined && !since)
-        return void res.status(400).json({ error: "since must be a YYYY-MM-DD string" });
-      const packageName = typeof body.package === "string" ? body.package : undefined;
-      if (body.package !== undefined && !packageName)
-        return void res.status(400).json({ error: "package must be a string" });
-      try {
-        if (since) buildPublicationWindows(since);
-      } catch (error) {
-        return void res
-          .status(400)
-          .json({ error: error instanceof Error ? error.message : String(error) });
+      if (!deps.autoBackfill) {
+        res.status(503).json({ error: "Autonomous backfill is not available" });
+        return;
       }
-      let result;
-      try {
-        result = await deps.startVulnBackfill(since, packageName);
-      } catch (error) {
-        // An unbackfillable package scope is a client error, not a 500.
-        const message = error instanceof Error ? error.message : String(error);
-        if (message.includes("No CPE pairs")) return void res.status(400).json({ error: message });
-        throw error;
+      const result = await deps.autoBackfill();
+      if (!result.enabled) {
+        // Disabled on purpose is a successful no-op, not a failure — a scheduler must not
+        // turn red because an operator switched the sweep off.
+        res.status(200).json({ enabled: false, message: "VULN_AUTO_BACKFILL is disabled" });
+        return;
       }
-      if (result.alreadyRunning)
-        return void res.status(409).json({
-          code: "already_running",
-          ...(result.job ? { job: serializeJob(result.job) } : {}),
-        });
-      if (!result.job) throw new Error("Backfill launcher did not return a job");
-      res.status(202).json({
-        job: serializeJob(result.job),
-        status_url: `/internal/vuln-backfill/${result.job.id}`,
-      });
-    } catch (err) {
-      next(err);
-    }
-  });
-
-  router.get("/vuln-backfill/:id", async (req, res, next) => {
-    try {
-      if (!deps.getVulnBackfill)
-        return void res.status(503).json({ error: "Backfill status unavailable" });
-      const job = await deps.getVulnBackfill(req.params.id);
-      if (!job) return void res.status(404).json({ error: "Backfill job not found" });
-      res.json({ job: serializeJob(job) });
+      // Nothing pending, work deferred to the next sweep, and work started are all 200:
+      // none of them is an error, and only a real failure should page anyone.
+      res.status(result.failed.length > 0 ? 207 : 200).json(result);
     } catch (err) {
       next(err);
     }
   });
 
   return router;
-}
-
-function serializeJob(job: VulnBackfillJobRow) {
-  return {
-    ...job,
-    started_at: job.started_at?.toISOString() ?? null,
-    finished_at: job.finished_at?.toISOString() ?? null,
-    created_at: job.created_at.toISOString(),
-  };
 }

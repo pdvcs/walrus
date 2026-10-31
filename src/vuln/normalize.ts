@@ -26,7 +26,7 @@ export function nameVariants(input: string): string[] {
     variants.add(base.replace(/\./g, " ").replace(/\s+/g, " ").trim());
   }
 
-  for (const v of [...variants]) {
+  for (const v of Array.from(variants)) {
     const squashed = v.replace(/[\s\-_.]+/g, "");
     if (squashed) variants.add(squashed);
   }

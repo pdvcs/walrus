@@ -99,6 +99,8 @@ Version discovery is implemented as a strategy pattern (`src/discovery/`). Each 
 
 **`directory-listing`** — Fetches a directory listing page and matches filenames by pattern. Used when no structured API exists but files are served from a browsable directory.
 
+**`rust-channel`** — Reads Rust's TOML channel manifests (`channel-rust-{version}.toml`), enumerated from the project's S3 list API. Needed because Rust publishes no binary GitHub release assets and no JSON manifest; the manifest is the only source of artifact URLs and inline SHA256 hashes.
+
 **`html-scrape`** — Regex extraction from HTML. Last resort only; HTML structure changes without notice and makes configs brittle. Not implemented in the initial phases.
 
 ### Why a Strategy Pattern?
@@ -178,15 +180,37 @@ hops. In the future, this will allow us to add identity-awareness (authn and aut
 
 ### Admin API (`/admin/v1/`) — operator tooling
 
+- Public `/` landing page with running version, health/status/docs links, and the operator-login entry point
+- Form login through the configured authentication provider; signed browser cookies and API bearer tokens
+- Authorization against the code-reviewed `config/admins.toml` roster on every request
+- Shared admin navigation for one-time bearer-token minting and browser logout
 - Force sync (with optional `?dry_run=true`)
 - Redownload a specific artifact
 - Remove a version's artifacts
 - Enable/disable a package
 - View sync job history
 
-### Internal API (`/internal/sync`) — called by Cloud Scheduler
+### Metrics API (`/metrics`) — Prometheus scraping
 
-Triggers the sync worker on a 6-hour schedule. Not exposed to the public network.
+The public Prometheus endpoint exports low-cardinality HTTP RED and payload-size metrics,
+download throughput, standard Node.js process metrics, PostgreSQL pool pressure, and durable
+catalogue/sync/vulnerability state. A private per-application registry prevents duplicate metric
+registration in tests. Scrapes render the last successful database snapshot without waiting for
+PostgreSQL, then trigger a stale refresh in the background. Snapshots are fresh for 60 seconds and
+concurrent refreshes coalesce; failed refreshes retain the last values and explicitly mark the
+database collector unhealthy. Snapshot age is exported so consumers can reject stale values.
+
+HTTP route labels use Express templates, never concrete URLs or query parameters. Package labels
+are added only after a request resolves to a package in the catalogue. Durable job metrics read
+PostgreSQL because package and vulnerability work may execute in separate Cloud Run Jobs that are
+not themselves scrape targets.
+
+### Internal API (`/internal/`) — called by Cloud Scheduler
+
+Machine routes verify the Google-signed OIDC bearer token, exact configured audience, expiry, and
+scheduler service-account email at the mount. The public Cloud Run invoker binding is therefore
+safe at the platform layer while application authorization remains path-aware. Package sync runs
+as a Cloud Run Job; retained HTTP hooks cover vulnerability ingestion and autonomous backfill.
 
 ---
 
@@ -202,7 +226,9 @@ JSONB, KEV flag), `cve_affects` (version ranges per package, `source` = `nvd` | 
 by a `UNIQUE NULLS NOT DISTINCT` constraint), `package_cpes` and `package_aliases`
 (reconciled from each package's optional `[vulnerabilities]` TOML section at boot),
 `vuln_sync_state` (per-source ingestion cursors), and `unresolved_queries` (alias-curation feed).
-`packages` gains `osv_ecosystem` / `osv_name`.
+`packages` gains `osv_ecosystem` / `osv_name`. Migration `0015_cve_suppressions.sql` adds
+operator assertions that exclude a CVE from the gate for one package or all packages without
+deleting the CVE or its affects rows.
 
 **Matching core** (`src/vuln/`, ported behaviour-for-behaviour, property-tested):
 
@@ -228,17 +254,31 @@ application CPE matches. Walrus does not represent or fully evaluate node/config
 inherited from VulnCheck, can over-report CVEs whose applicability depends on another product,
 operating system, or hardware condition.
 
+**Operator suppressions** are the escape hatch for a false positive that cannot be described by a
+general matching rule. Active, unexpired suppressions are joined onto affects rows on every read,
+so expiry restores gating without a sweep and re-ingestion cannot erase the assertion. The public
+vulnerability responses keep the CVE visible with its reason. Preview/create/revoke are admin HTTP
+APIs and the explorer is a client of them (ADR-007); both mutations are audited and re-evaluate
+availability history.
+
 **Query API** (`/api/v1/vulns`, `/api/v1/vulns/products/search`,
 `/api/v1/vulns/products/:name`, `/api/v1/cves/:id`,
 `/api/v1/packages/:name/vulns`) — Zod schemas in `src/routes/schemas.ts`, registered in
 `openapi.ts`, `Schema.parse()` before send. The `/packages/:name/vulns` endpoint is the
 headline walrus-native feature (join CVEs against cached `versions`); it powers the per-version
 CVE badges in the admin UI. Every response carries a standing disclaimer and `data_freshness`.
-`/health` gains nullable `vuln_data_freshness` (last successful runs) and per-source latest-attempt
-status. Golden tests ported from vulncheck prove behavioural parity.
+`/health` (also `/app/health`) is the deployment availability contract: package metadata,
+startup/current timestamps, a 300-second grace-period flag, and an `isAvailable` value backed by
+a PostgreSQL probe. Probe results are cached for 60 seconds and concurrent requests coalesce onto
+one in-flight check. `/app/status` adds nullable `vuln_data_freshness` (last successful runs),
+per-source latest-attempt status, and degradations. Golden tests ported from vulncheck prove
+behavioural parity.
 
-**Out of scope (v1):** authn/authz + rate limiting, tracking tools walrus doesn't serve,
-download-blocking of affected artifacts (v1 informs only).
+**Authentication boundary (ADR-009):** Walrus owns sessions, route guards, CSRF checks, audit, and
+the reviewed administrator roster. The adopter owns credential verification through one boot-time
+`AuthnProvider`; the built-in password provider is the development/strawman implementation. This
+keeps public API/download routes anonymous while protecting operator and machine tiers in one
+publicly invokable Cloud Run service.
 
 ---
 
@@ -261,6 +301,8 @@ The `version_group_extract` regex in each package's TOML defines how versions ar
 - Node.js: `"^(\\d+)"` → `"22"` (same as Java)
 
 `versions_per_group` then controls how many versions within each series to keep. When a new version is downloaded and the limit is exceeded, the oldest is removed from GCS and marked `removed` in the database (retained for audit).
+
+Retention is platform-aware: a version that is still among the `versions_per_group` newest _for some platform_ is kept even when newer versions exist. Upstreams publish platforms at different times (Temurin Windows trails Linux/macOS), and pruning by version count alone would delete the only servable build for the lagging platform. `/latest` resolves per platform, so it falls back to that older version until the newer build is published. The extra storage is bounded and disappears once the platform catches up.
 
 ---
 
@@ -330,7 +372,7 @@ src/
   config/              # Environment variable loading and validation
   routes/              # Express route handlers (packages, download, admin, internal)
   services/            # Business logic (sync, version queries, download, retention, admin)
-  discovery/           # Strategy implementations (github-releases, json-api, xml-api, directory-listing)
+  discovery/           # Strategy implementations (github-releases, json-api, xml-api, directory-listing, rust-channel)
   db/
     client.ts          # Postgres connection pool + migration runner
     migrations/        # SQL migration files (0001_initial.sql, ...)

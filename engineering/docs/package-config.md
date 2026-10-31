@@ -56,11 +56,11 @@ packages/
 ## Top-level metadata
 
 ```toml
-name = "uv"                                        # unique identifier, lowercase alphanumeric + hyphens
-display_name = "uv"                                # human-readable name shown in API responses
-vendor = "Astral"                                  # who makes it
-website = "https://github.com/astral-sh/uv"       # optional, informational
-description = "Fast Python package installer and resolver"  # optional, one sentence
+name = "uv" # unique identifier, lowercase alphanumeric + hyphens
+display_name = "uv" # human-readable name shown in API responses
+vendor = "Astral" # who makes it
+website = "https://github.com/astral-sh/uv" # optional, informational
+description = "Fast Python package installer and resolver" # optional, one sentence
 ```
 
 `name` is the primary key. It must be lowercase alphanumeric with hyphens (`^[a-z][a-z0-9-]*$`). It appears in every API URL and in the GCS path, so keep it short and stable.
@@ -75,6 +75,8 @@ Choose one `type`. The strategies in preference order:
 2. `json-api` — there is a structured JSON API
 3. `xml-api` — there is a Maven/XML metadata endpoint
 4. `directory-listing` — there is a browsable directory of files (rarely needed)
+5. `rust-channel` — the upstream publishes Rust-style TOML channel manifests (currently only Rust)
+6. `dotnet-releases` — the upstream publishes .NET channel JSON with inline hashes (currently only `dotnetsdk` / `asp-hosting`)
 
 ### `github-releases`
 
@@ -97,7 +99,7 @@ include_prereleases = false
 # tag_pattern captures the version string from the tag name.
 # The regex must have exactly one capture group.
 # Omit if tags are already clean version strings (or have only a leading "v").
-tag_pattern = "^(\\d+\\.\\d+\\.\\d+)$"  # excludes tags like "0.6.2-pre.1"
+tag_pattern = "^(\\d+\\.\\d+\\.\\d+)$" # excludes tags like "0.6.2-pre.1"
 ```
 
 `tag_pattern` serves two purposes: stripping prefixes (e.g. `v0.6.2` → `0.6.2`) and filtering out tags that aren't version releases. A tag that doesn't match is silently skipped. If the only prefix is a `v`, you can omit `tag_pattern` — the strategy strips `v` automatically.
@@ -132,9 +134,9 @@ GET https://api.adoptium.net/v3/assets/feature_releases/21/ga?architecture=x64&i
 [discovery]
 type = "json-api"
 url = "https://api.adoptium.net/v3/info/available_releases"
-versions_path = "$.available_releases"               # JSONPath → [21, 17, 11]
+versions_path = "$.available_releases" # JSONPath → [21, 17, 11]
 release_url_template = "https://api.adoptium.net/v3/assets/feature_releases/{major_version}/ga?architecture={arch}&image_type=jdk&os={os}&page=0&page_size={page_size}&sort_method=DEFAULT&sort_order=DESC"
-release_date_field = "timestamp"                     # optional: field on each release for cooling-off
+release_date_field = "timestamp" # optional: field on each release for cooling-off
 ```
 
 `{major_version}`, `{os}`, and `{arch}` in `release_url_template` are replaced with the version integer and each platform's `os_upstream`/`arch_upstream` values. `{page_size}` becomes the number of platforms configured.
@@ -146,10 +148,10 @@ For the Adoptium two-step case, checksum is extracted from the API response and 
 ```toml
 [discovery]
 type = "json-api"
-explicit_versions = [8, 11, 17, 21, 25]      # polled as major version numbers
+explicit_versions = [8, 11, 17, 21, 25] # polled as major version numbers
 release_url_template = "https://api.azul.com/metadata/v1/zulu/packages/?java_version={major_version}&os={os}&arch={arch}&..."
-release_download_url_field = "download_url"  # field in each result that holds the download URL
-release_filename_field = "name"              # field in each result that holds the filename
+release_download_url_field = "download_url" # field in each result that holds the download URL
+release_filename_field = "name" # field in each result that holds the filename
 ```
 
 ---
@@ -190,18 +192,18 @@ GET https://go.dev/dl/?mode=json&include=all
 type = "json-api"
 url = "https://go.dev/dl/?mode=json&include=all"
 
-releases_path = "$[?(@.stable==true)]"    # JSONPath filter — stable releases only
-release_version_field = "version"         # field on each release object
-tag_pattern = "^go(\\d+.*)"              # strip "go" prefix: "go1.24.1" → "1.24.1"
+releases_path = "$[?(@.stable==true)]" # JSONPath filter — stable releases only
+release_version_field = "version" # field on each release object
+tag_pattern = "^go(\\d+.*)" # strip "go" prefix: "go1.24.1" → "1.24.1"
 
-files_field = "files"                     # nested array field within each release
-file_os_field = "os"                      # matched against os_upstream in [[platforms]]
-file_arch_field = "arch"                  # matched against arch_upstream in [[platforms]]
-file_kind_field = "kind"                  # optional: field to filter artifact type
-file_kind_value = "archive"              # only files where kind == "archive"
-file_filename_field = "filename"          # filename to record
-file_url_base = "https://dl.google.com/go/"  # download URL = base + filename
-file_checksum_field = "sha256"           # inline checksum field (skips [checksum] section)
+files_field = "files" # nested array field within each release
+file_os_field = "os" # matched against os_upstream in [[platforms]]
+file_arch_field = "arch" # matched against arch_upstream in [[platforms]]
+file_kind_field = "kind" # optional: field to filter artifact type
+file_kind_value = "archive" # only files where kind == "archive"
+file_filename_field = "filename" # filename to record
+file_url_base = "https://dl.google.com/go/" # download URL = base + filename
+file_checksum_field = "sha256" # inline checksum field (skips [checksum] section)
 ```
 
 File matching in inline mode works differently from GitHub releases: instead of constructing a filename and searching for it, the strategy walks `files_field` and matches each file against the configured platform by comparing `file_os_field` with `os_upstream` and `file_arch_field` with `arch_upstream`. Make sure `os_upstream` and `arch_upstream` in your `[[platforms]]` blocks exactly match the values the API returns.
@@ -236,21 +238,21 @@ url = "https://nodejs.org/dist/index.json"
 # JS expression filter (jsonpath-plus syntax; =~ operator is not supported)
 releases_path = "$[?(/^v(20|22|24|25)\\./.test(@.version))]"
 release_version_field = "version"
-tag_pattern = "^v(\\d+.*)"          # strip "v" prefix: "v22.14.0" → "22.14.0"
-release_date_field = "date"          # ISO 8601 release date for cooling-off
-release_lts_field = "lts"           # "Jod", "Iron" = LTS; false = not LTS
-files_field = "files"               # string identifiers, not file objects
+tag_pattern = "^v(\\d+.*)" # strip "v" prefix: "v22.14.0" → "22.14.0"
+release_date_field = "date" # ISO 8601 release date for cooling-off
+release_lts_field = "lts" # "Jod", "Iron" = LTS; false = not LTS
+files_field = "files" # string identifiers, not file objects
 
 [versioning]
 type = "semver"
-version_group_extract = "^(\\d+)"   # group by major version
+version_group_extract = "^(\\d+)" # group by major version
 lts_support = true
-lts_source = "api"                  # release_lts_field drives this in inline mode
+lts_source = "api" # release_lts_field drives this in inline mode
 
 [[platforms]]
 os = "linux"
 arch = "x86-64"
-os_upstream = "linux-x64"           # string to look for in the files array
+os_upstream = "linux-x64" # string to look for in the files array
 url_template = "https://nodejs.org/dist/v{version}/node-v{version}-linux-x64.tar.xz"
 extension = "tar.xz"
 ```
@@ -264,10 +266,71 @@ When `files_field` contains strings, `os_upstream` is matched against the string
 ```toml
 releases_path = "$[?(@.snapshot==false && @.broken==false && @.rcFor=='' && @.milestoneFor=='')]"
 release_version_field = "version"
-release_download_url_field = "downloadUrl"    # URL is directly on the release object
-file_checksum_field = "checksum"              # also directly on the release object
-release_date_field = "buildTime"              # optional: for cooling-off calculation
+release_download_url_field = "downloadUrl" # URL is directly on the release object
+file_checksum_field = "checksum" # also directly on the release object
+release_date_field = "buildTime" # optional: for cooling-off calculation
 ```
+
+---
+
+**Version-list mode** — some endpoints return only a flat array of version strings, with no release objects at all (e.g. the VS Code update API). Omit `release_version_field`, `files_field` and `release_download_url_field`; each element of the array is taken as the version, and each `[[platforms]]` block builds its own URL from `url_template`:
+
+```
+GET https://update.code.visualstudio.com/api/releases/stable
+→ ["1.135.0", "1.134.0", "1.133.0", ...]
+```
+
+```toml
+[discovery]
+type = "json-api"
+url = "https://update.code.visualstudio.com/api/releases/stable"
+releases_path = "$[*]" # yields strings, not objects
+
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "linux-x64"
+arch_upstream = "x64"
+extension = "tar.gz"
+url_template = "https://update.code.visualstudio.com/{version}/{os}/stable"
+filename_template = "VSCode-{version}-{os}.{ext}" # URL tail is "stable", so name it explicitly
+```
+
+`filename_template` is optional and only matters when the last path segment of the URL is not a usable filename. There is no upstream date or checksum in this mode — pair it with `[checksum] type = "none"` unless a sidecar exists.
+
+---
+
+**Platform-map mode** — some APIs key their downloads by platform rather than listing them, so the discriminator is the object key and there is no field to match against (e.g. JetBrains). Declare the shape explicitly with `files_shape`:
+
+```
+GET https://data.services.jetbrains.com/products/releases?code=IIU
+→ { "IIU": [ { "version": "2026.2.1", "date": "2026-08-12",
+               "downloads": {
+                 "windowsZip": { "link": "https://.../idea-2026.2.1.win.zip",
+                                 "size": 1614981679,
+                                 "checksumLink": "https://.../idea-2026.2.1.win.zip.sha256" },
+                 "macM1": { ... }, "linux": { ... }, "windowsJBR8": { ... } } } ] }
+```
+
+```toml
+[discovery]
+files_field = "downloads"
+files_shape = "platform-map" # without this, files_field is read as an array
+file_url_field = "link" # required; the filename is this URL's tail
+file_checksum_url_field = "checksumLink" # optional .sha256 sidecar
+file_size_field = "size" # optional; verified against the bytes received
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "windowsZip" # the key in `downloads`, not a field inside it
+arch_upstream = "x86-64" # not consulted; the key encodes the whole platform
+extension = "zip"
+```
+
+Keys with no configured platform are ignored silently; a configured `os_upstream` with no key is logged and skipped. Filenames always come from the URL, never from a template — JetBrains renamed its artifact prefix mid-window (`idea-` vs `ideaIU-`), which no template spans.
+
+The array-shape fields (`file_os_field`, `file_arch_field`, `file_kind_field`, `file_kind_value`, `file_filename_field`, `file_url_base`) are rejected by the schema in this mode rather than ignored, and the three fields above are rejected without it.
 
 ---
 
@@ -286,25 +349,145 @@ release_date_field = "buildTime"              # optional: for cooling-off calcul
 [discovery]
 type = "xml-api"
 url = "https://repo.maven.apache.org/maven2/org/apache/maven/maven/maven-metadata.xml"
-versions_path = "$.metadata.versioning.versions.version"    # JSONPath into parsed XML
-version_filter = "^3\\.9\\.\\d+$"                          # keep only 3.9.x stable releases
+versions_path = "$.metadata.versioning.versions.version" # JSONPath into parsed XML
+version_filter = "^3\\.9\\.\\d+$" # keep only 3.9.x stable releases
 
 # Optional: per-version API call to get release date for cooling-off
 release_date_url_template = "https://search.maven.org/solrsearch/select?q=g:org.apache.maven+AND+a:apache-maven+AND+v:{version}&rows=1&wt=json"
-release_date_path = "$.response.docs[0].timestamp"         # JSONPath → Unix ms timestamp or ISO 8601
+release_date_path = "$.response.docs[0].timestamp" # JSONPath → Unix ms timestamp or ISO 8601
 ```
 
 ---
 
 ### `directory-listing`
 
-**When to use:** Files are served from a browsable HTTP directory and there is no structured API. Use this only when no API exists.
+**When to use:** Versions are listed in a browsable HTTP directory and there is no structured API. This is a last-resort strategy — use it only when `github-releases`, `json-api` and `xml-api` do not apply.
+
+The strategy is **version-list-only**: `pattern` is applied to the whole response body, and its one capture group yields the version string. The matched link is never used as the artifact URL, so every `[[platforms]]` block must supply `url_template` (the schema rejects the config otherwise). This is what lets the version-history host and the download host differ, as they do for PostgreSQL.
 
 ```toml
 [discovery]
 type = "directory-listing"
-url = "https://example.com/downloads/"
-pattern = "mytool-\\d+\\.\\d+\\.\\d+-linux-amd64\\.tar\\.gz"  # regex matching filenames to consider
+url = "https://ftp.postgresql.org/pub/source/"
+# One capture group. Applied to the raw body, not to individual hrefs.
+pattern = "href=\"v(\\d+\\.\\d+)/\""
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "windows-x64"
+arch_upstream = "x64"
+extension = "zip"
+url_template = "https://get.enterprisedb.com/postgresql/postgresql-{version}-1-{os}-binaries.{ext}"
+```
+
+`{version}` is the extracted version and `{os}`/`{arch}`/`{ext}` come from the platform's `os_upstream`/`arch_upstream`/`extension`, the same substitution as `json-api`. Generic `[versioning]` filtering (`min_version`, `version_group_extract`) applies normally. No release date is available, so `releasedAt` is undefined and cooling-off anchors to when walrus first saw the version.
+
+---
+
+### `rust-channel`
+
+**When to use:** The upstream publishes TOML channel manifests rather than a JSON API or GitHub
+release assets. This exists for **Rust**, whose `channel-rust-{version}.toml` manifests are the
+only machine-readable source of artifact URLs and hashes.
+
+**What to gather:**
+
+- The S3 `ListObjectsV2` URL that enumerates the archived manifests
+- The per-version manifest URL template
+- Which `[pkg.<name>]` table holds the artifacts (`rust` is the full toolchain: rustc, cargo, std)
+
+```toml
+[discovery]
+type = "rust-channel"
+listing_url = "https://static.rust-lang.org/?list-type=2&prefix=dist/channel-rust-"
+manifest_url_template = "https://static.rust-lang.org/dist/channel-rust-{version}.toml"
+max_versions = 10 # optional; only fetch the newest N manifests (default 10)
+package = "rust" # optional; the [pkg.<name>] table (default "rust")
+```
+
+For each `[[platforms]]` block the strategy reads the Rust target triple named by
+`{arch_upstream}-{os_upstream}` (arch first), e.g. `x86_64` + `unknown-linux-gnu` →
+`x86_64-unknown-linux-gnu`, and takes the artifact URL and inline SHA256 from that target's
+manifest entry. `extension` selects the format: `tar.gz` uses the `url`/`hash` fields, `tar.xz`
+uses `xz_url`/`xz_hash`. No `[checksum]` section and no `filename_template` are needed — the
+checksum is inline and the filename is the URL's tail.
+
+```toml
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "unknown-linux-gnu" # the OS half of the Rust target triple
+arch_upstream = "x86_64" # the arch half
+extension = "tar.gz" # "tar.gz" or "tar.xz"
+```
+
+---
+
+### `dotnet-releases`
+
+**When to use:** The upstream is .NET and publishes a channel document under
+`dotnet/core/release-notes/<channel>/releases.json` rather than GitHub release assets. The
+document covers the whole channel unpaginated and carries inline SHA-512 hashes, so it replaces
+the unusable GitHub Releases API (zero assets) and the `.sha512` sidecars .NET does not publish.
+
+**What to gather:**
+
+- The channel document URL(s), e.g.
+  `https://raw.githubusercontent.com/dotnet/core/main/release-notes/10.0/releases.json`
+- Which component to serve: `sdk`, `runtime`, or `aspnetcore-runtime`
+
+```toml
+[discovery]
+type = "dotnet-releases"
+url = "https://raw.githubusercontent.com/dotnet/core/main/release-notes/10.0/releases.json"
+component = "sdk" # "sdk" | "runtime" | "aspnetcore-runtime"
+```
+
+.NET publishes one document per channel, not one index, so `url` also accepts a list to track
+several channels in one package. The hosting bundle serves both the .NET 10 and .NET 8 LTS lines:
+
+```toml
+[discovery]
+type = "dotnet-releases"
+url = [
+  "https://raw.githubusercontent.com/dotnet/core/main/release-notes/10.0/releases.json",
+  "https://raw.githubusercontent.com/dotnet/core/main/release-notes/8.0/releases.json",
+]
+component = "aspnetcore-runtime"
+```
+
+Each document is fetched, their releases merged and sorted together, and `min_version` /
+`groups_to_keep` then decide which channels survive — set the latter high enough to cover every
+served channel (2 here, for 10.0 and 8.0).
+
+`component = "sdk"` walks each release's `sdks[]` and emits one version per SDK feature band
+(reading `version`, `files` and — as a per-version CVE mapping — `runtime-version`). The other
+components emit one version per release from that component object. Each `[[platforms]]` block
+selects a file by `rid === os_upstream`, extension and optional `name_must_contain`, and takes the
+inline SHA-512. No `[checksum]` section and no `filename_template` are needed — the checksum is
+inline and the filename is the URL's tail.
+
+```toml
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "win-x64" # matched against the file's rid
+arch_upstream = "x64"
+extension = "zip" # excludes dotnet-sdk-*-win-x64.exe
+```
+
+The hosting bundle is the special case: its file carries `rid: ""`, so `os_upstream = ""`, with
+`extension = "exe"` and `name_must_contain = "hosting"` to select it:
+
+```toml
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = ""
+arch_upstream = "x64"
+extension = "exe"
+name_must_contain = "hosting"
 ```
 
 ---
@@ -315,10 +498,10 @@ Controls how version strings are parsed, grouped, and compared.
 
 ```toml
 [versioning]
-type = "semver"               # "semver" | "major-minor" | "calver"
-version_group_extract = "^(\\d+\\.\\d+)"   # regex with one capture group
-min_version = "1.21"          # optional: ignore versions older than this
-lts_support = false           # whether this package has LTS releases
+type = "semver" # "semver" | "major-minor" | "calver"
+version_group_extract = "^(\\d+\\.\\d+)" # regex with one capture group
+min_version = "1.21" # optional: ignore versions older than this
+lts_support = false # whether this package has LTS releases
 ```
 
 ### `version_group_extract`
@@ -347,8 +530,27 @@ Set `lts_support = true` only if the project has a meaningful LTS concept. Then 
 | -------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `"none"`       | No LTS (default)                                              | —                                                                                                                                                                                                                  |
 | `"api"`        | The discovery API indicates which releases are LTS            | Two-step mode: `lts_api_path` — JSONPath into the version-list response. Inline mode: `release_lts_field` in `[discovery]` — field on each release object whose truthy string value (e.g. `"Jod"`) marks it as LTS |
-| `"even_major"` | LTS = even-numbered major versions (older Node.js convention) | `lts_min_group` — lowest qualifying major                                                                                                                                                                          |
+| `"even_major"` | LTS = even-numbered major versions (older Node.js convention) | `lts_min_group` — lowest qualifying major. **Not implemented for `github-releases`** — nothing configures it today                                                                                                 |
 | `"explicit"`   | Fixed list of LTS groups                                      | `lts_groups = ["21", "17", "11"]`                                                                                                                                                                                  |
+
+**`lts_api_shape`** (`"groups"` default, or `"tags"`) — what the values at `lts_api_path`
+actually are. `"groups"` means each value already _is_ a version group, which is how Adoptium's
+`$.available_lts_releases` behaves (`[8, 11, 17, 21, 25]` against openjdk's major-number
+groups). `"tags"` means they are release tags needing reduction to groups, which is how
+PowerShell's `$.LTSReleaseTag` behaves (`["v7.4.20", "v7.6.6"]` names the current patch of each
+LTS line, not the line). Under `"tags"` each value is put through the same `tag_pattern` and
+`version_group_extract` a discovered release goes through, so `"v7.6.6"` becomes `"7.6"` and
+matches the group its versions are filed under.
+
+The shape is named rather than sniffed per value, for the same reason `files_shape` is: a
+guess that went wrong would quietly mark the wrong versions LTS, and a silently incorrect
+`is_lts` is worse than a loud failure. A value that cannot be reduced is skipped with a
+warning rather than failing the sync, but a failed _fetch_ of the LTS document propagates —
+degrading to "nothing is LTS" would persist a wrong flag on the version row.
+
+Note `is_lts` is **metadata only**: it is stored on the version and filterable in queries, but
+nothing in discovery or retention selects on it. To serve only LTS releases, restrict
+`tag_pattern` — see `walrus-powershell.toml`, which admits only even minors.
 
 **Examples:**
 
@@ -367,6 +569,13 @@ lts_source = "api"
 lts_support = true
 lts_source = "explicit"
 lts_groups = ["8", "11", "17", "21"]
+
+# PowerShell (github-releases): a separate document lists the LTS *tags*
+lts_support = true
+lts_source = "api"
+lts_api_url = "https://raw.githubusercontent.com/PowerShell/PowerShell/master/tools/metadata.json"
+lts_api_path = "$.LTSReleaseTag"
+lts_api_shape = "tags"
 ```
 
 ---
@@ -377,9 +586,9 @@ Controls how many versions Walrus keeps in storage.
 
 ```toml
 [retention]
-versions_per_group = 3    # keep the N most recent versions within each version group
-groups_to_keep = 3        # optional: keep only the N most recent groups; prune older ones entirely
-cooling_off_days = 3      # optional: new artifacts wait this many days before being served
+versions_per_group = 3 # keep the N most recent versions within each version group
+groups_to_keep = 3 # optional: keep only the N most recent groups; prune older ones entirely
+cooling_off_days = 3 # optional: new artifacts wait this many days before being served
 ```
 
 **`versions_per_group`** — within each release series (as defined by `version_group_extract`), keep the most recent N versions. Older ones have their artifacts deleted from storage. For most packages, 2–3 is appropriate. For Go, 1 or 2 is enough (only patch releases within a series differ).
@@ -396,8 +605,8 @@ Declares how to obtain the checksum for each artifact. This section is optional 
 
 ```toml
 [checksum]
-type = "..."        # "github-asset" | "separate-file" | "inline-api" | "none"
-algorithm = "sha256"  # "sha256" | "sha1" | "sha512" — default: sha256
+type = "..." # "github-asset" | "separate-file" | "inline-api" | "none"
+algorithm = "sha256" # "sha256" | "sha1" | "sha512" | "md5" — default: sha256
 ```
 
 ### `github-asset`
@@ -408,7 +617,7 @@ The checksum is a separate file attached to the same GitHub Release, named `{fil
 [checksum]
 type = "github-asset"
 algorithm = "sha256"
-asset_suffix = ".sha256"   # e.g. "uv-aarch64-apple-darwin.tar.gz.sha256"
+asset_suffix = ".sha256" # e.g. "uv-aarch64-apple-darwin.tar.gz.sha256"
 ```
 
 Look at a GitHub Release page for the project. If there are `.sha256` files alongside the binary downloads, this is the right type.
@@ -425,11 +634,23 @@ url_template = "https://repo.maven.apache.org/maven2/org/apache/maven/apache-mav
 # parse_pattern is optional — omit if the file contains only the raw hash
 ```
 
-The `{version}` and `{ext}` placeholders are substituted per artifact. If the sidecar file contains only the raw hash (no filename), omit `parse_pattern`. If it's a `SHA256SUMS`-style file with `hash  filename` lines, provide a regex:
+The `{version}`, `{os}`, `{arch}` and `{ext}` placeholders are substituted per artifact. Sidecars work with `directory-listing` and with `json-api` template mode (platforms that build their own `url_template`).
+
+**Multi-file manifests need no `parse_pattern`.** When the sidecar lists several digests (Terraform's `terraform_{version}_SHA256SUMS` has one line per build), the download service takes the line whose filename equals the tail of the artifact's upstream URL, and fails the artifact if there is none rather than guessing. A sidecar with a single digest is used as-is. (`parse_pattern` is still accepted by the schema but nothing applies it.)
+
+**`format`** names how to read the document at `url_template`: `"text"` (default; a bare digest or `sha256sum`-style lines) or `"gcs-object-metadata"`, the JSON object-metadata document of a Google Cloud Storage object. GCS publishes only MD5 and CRC32C, base64-encoded, so this pairs with `algorithm = "md5"`; the download service converts to hex. `walrus-gcloud.toml` is the worked example. MD5 detects corruption and truncation, not tampering. The format is declared, never sniffed from the response.
+
+````toml
+[checksum]
+type = "separate-file"
+algorithm = "md5"
+format = "gcs-object-metadata"
+url_template = "https://storage.googleapis.com/storage/v1/b/cloud-sdk-release/o/google-cloud-cli-{version}-{os}-{arch}.{ext}?fields=md5Hash"
+``` If the sidecar file contains only the raw hash (no filename), omit `parse_pattern`. If it's a `SHA256SUMS`-style file with `hash  filename` lines, provide a regex:
 
 ```toml
 parse_pattern = "([a-f0-9]{64})\\s+apache-maven-{version}-bin\\.{ext}"
-```
+````
 
 ### `inline-api`
 
@@ -439,7 +660,7 @@ The checksum appears in the API response from the discovery call. Use a JSONPath
 [checksum]
 type = "inline-api"
 algorithm = "sha256"
-response_path = "$.checksum"    # JSONPath into the per-version API response
+response_path = "$.checksum" # JSONPath into the per-version API response
 ```
 
 This applies to `json-api` two-step mode where the per-version call returns a checksum field.
@@ -459,18 +680,17 @@ Use this only as a last resort. Note it in a comment explaining why.
 
 ## `[[platforms]]`
 
-One block per supported OS/arch combination. Use TOML's array-of-tables syntax (`[[platforms]]`).
-
-```toml
+One block per supported OS/arch combination. Use TOML's array-of-tables syntax (`[[platforms]]`).```toml
 [[platforms]]
-os = "linux"               # "linux" | "macos" | "windows" — Walrus's canonical name
-arch = "x86-64"            # "x86-64" | "arm64" — Walrus's canonical name
-os_upstream = "linux"      # the word the upstream uses for this OS
-arch_upstream = "amd64"    # the word the upstream uses for this arch
-extension = "tar.gz"       # file extension (without leading dot)
-filename_template = "..."  # how to construct the filename (see below)
-url_template = "..."       # alternative to filename_template: full URL
-```
+os = "linux" # "linux" | "macos" | "windows" — Walrus's canonical name
+arch = "x86-64" # "x86-64" | "arm64" — Walrus's canonical name
+os_upstream = "linux" # the word the upstream uses for this OS
+arch_upstream = "amd64" # the word the upstream uses for this arch
+extension = "tar.gz" # file extension (without leading dot)
+filename_template = "..." # how to construct the filename (see below)
+url_template = "..." # alternative to filename_template: full URL
+
+````
 
 `os` and `arch` are Walrus's fixed canonical names and must be one of the values above. `os_upstream` and `arch_upstream` are whatever strings the upstream project actually uses in filenames or API fields — look these up from the real download URLs or API responses.
 
@@ -492,7 +712,7 @@ Use `filename_template` when the download URL is `{base}/{filename}` and only th
 ```toml
 filename_template = "uv-{arch}-{os}.{ext}"
 # → "uv-aarch64-apple-darwin.tar.gz"
-```
+````
 
 **`url_template` example** (Maven style — version in path):
 
@@ -511,7 +731,7 @@ arch = "arm64"
 os_upstream = "macos"
 arch_upstream = "aarch64"
 extension = "tar.gz"
-name_must_contain = "macosx_aarch64.tar.gz"   # excludes musl or other variants
+name_must_contain = "macosx_aarch64.tar.gz" # excludes musl or other variants
 ```
 
 Use this when `os_upstream` and `arch_upstream` alone aren't selective enough to pick the right file from the API response.
@@ -540,6 +760,82 @@ url_template = "https://services.gradle.org/distributions/gradle-{version}-bin.{
 
 ---
 
+## `[platforms.transform]` — serving a different format than upstream publishes
+
+Some upstreams publish a format the consuming estate cannot use. The worked example is
+`packages/walrus-gitwindows.toml`: corporate managed laptops quarantine `.7z` payloads, and
+Git for Windows' portable build is a self-extracting `.7z.exe` — but upstream also publishes
+the identical tree as a streamable `.tar.bz2`. A transform block repackages that stream into
+a zip during sync:
+
+```
+upstream → sourceHash → bunzip2 → tar-parse → zip-write → outputHash → storage.upload
+```
+
+The pipeline stays streaming (no temp file; peak memory is bounded by the link-cache window
+below, never artifact size), and the output is deterministic: the same source bytes produce
+byte-identical output across re-syncs, so a changed digest means changed input, not a changed
+transformer.
+
+```toml
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+extension = "tar.bz2" # what upstream publishes
+filename_template = "Git-{version}-64-bit.tar.bz2" # asset matching still uses this
+
+[platforms.transform]
+type = "tar-bz2-to-zip"
+extension = "zip" # what walrus serves
+filename_template = "Git-{version}-{os}-{arch}.zip"
+require_paths = ["cmd/git.exe", "usr/bin/bash.exe"]
+min_entries = 3000
+link_cache_bytes = 536870912
+drop_symlinks = ["dev/fd", "dev/stdin", "dev/stdout", "dev/stderr", "etc/mtab"]
+```
+
+| Field               | Required? | Notes                                                                                                                                                                      |
+| ------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `type`              | Yes       | Which conversion to run. Only `tar-bz2-to-zip` exists today.                                                                                                               |
+| `extension`         | Yes       | The served file's extension.                                                                                                                                               |
+| `filename_template` | No        | Served filename; `{version}`/`{os}`/`{arch}` are walrus's canonical values, `{ext}` the transform's extension. Falls back to the upstream stem with the extension swapped. |
+| `require_paths`     | No        | Post-transform gate: each path must appear as a file in the output, or the artifact is marked `failed`.                                                                    |
+| `min_entries`       | No        | Post-transform gate: the output must hold at least this many file entries.                                                                                                 |
+| `link_cache_bytes`  | No        | Byte window of file content kept so hardlinks can be duplicated (default 64 MiB). Size to the measured target-to-link distance in the real archive.                        |
+| `drop_symlinks`     | No        | Symlink paths that may be dropped, listed explicitly. Anything not listed is a hard failure; drops are reported and logged, never silent.                                  |
+
+**Semantics that change with a transform:**
+
+- The platform's `extension` / `filename_template` keep meaning _what upstream publishes_ — asset matching is unchanged. The transform block describes _what walrus serves_: the artifact row's `filename`, its storage path, and the download URL all use the transformed name.
+- `[checksum]` still describes the **upstream source bytes** and is verified before the transform runs. The artifact's own `checksum` / `file_size` describe the **stored zip**. `source_checksum` / `source_file_size` carry the upstream side, and `transform` names the conversion (`tar-bz2-to-zip@1`); all three are exposed through the API for provenance (ADR-006). They are `null` for untransformed artifacts.
+- Inside the archive: directories become implicit zip paths; **hardlinks** are duplicated from the link cache (a hardlink whose target is out of window fails the artifact); **symlinks and device/fifo entries fail the artifact** unless listed in `drop_symlinks` — a zip that extracts and then misbehaves is the worst outcome, so nothing is skipped silently.
+
+**Sizing `link_cache_bytes`:** a hardlink's target must still be in the cache when the link streams past. The window is a property of the real archive — measure it, do not guess (the gitwindows comments record the method: 92 hardlinks, farthest distance 321 MiB on x86-64, 463 MiB on arm64, in v2.55.0.windows.5). If upstream outgrows the window, sync fails naming the gap; re-measure and bump, then re-check the container's memory pin (WAL-61).
+
+### Verifying a transform before onboarding
+
+`npm run validate` skips the transform by default (it is minutes of CPU and hundreds of MB of
+transfer). Pass `--transform` to run it for real against upstream — nothing is persisted; the
+pipeline drains into a no-op sink:
+
+```bash
+npm run validate -- --transform packages/walrus-gitwindows.toml
+```
+
+```
+  ○ Transform exercise (2.55.0.5 windows/x86-64): fetching Git-2.55.0.5-64-bit.tar.bz2...
+    ✓ Entries: 9590
+    ✓ Output: 162.4 MB, sha256 fe8f4db92813924c9928df505358e6239ffdc569a168aa12afb353df41cba60a
+    ✓ require_paths: cmd/git.exe
+    ✓ require_paths: usr/bin/bash.exe
+    ! dropped symlink (per drop_symlinks): dev/fd
+```
+
+A failing gate (a `require_paths` miss, a `min_entries` shortfall, an unsupported entry type)
+is reported with the cause and the command exits non-zero.
+
+---
+
 ## Checking schema compliance
 
 Before running against real upstream APIs, verify the file parses and passes Zod schema validation:
@@ -556,12 +852,27 @@ If the schema check fails, the first output line will be:
 
 Common schema errors and what they mean:
 
-| Error                                                    | Fix                                                                          |
-| -------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `name: Name must be lowercase alphanumeric with hyphens` | Rename — no uppercase, no underscores                                        |
-| `discovery.type: Invalid discriminator value`            | Must be one of `github-releases`, `json-api`, `xml-api`, `directory-listing` |
-| `platforms: Array must contain at least 1 element(s)`    | Need at least one `[[platforms]]` block                                      |
-| `versioning.type: Invalid enum value`                    | Must be `semver`, `major-minor`, or `calver`                                 |
+| Error                                                    | Fix                                                                                                             |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `name: Name must be lowercase alphanumeric with hyphens` | Rename — no uppercase, no underscores                                                                           |
+| `discovery.type: Invalid discriminator value`            | Must be one of `github-releases`, `json-api`, `xml-api`, `directory-listing`, `rust-channel`, `dotnet-releases` |
+| `platforms: Array must contain at least 1 element(s)`    | Need at least one `[[platforms]]` block                                                                         |
+| `versioning.type: Invalid enum value`                    | Must be `semver`, `major-minor`, or `calver`                                                                    |
+
+### Verifying CPE pairs against NVD
+
+A syntactically valid pair can still name the wrong product, which silently matches zero
+CVEs. With `--online`, each CPE pair is probed against the NVD CPE dictionary:
+
+```bash
+npm run validate -- --online packages/walrus-mytool.toml
+```
+
+A zero-hit pair prints a warning, not an error — products NVD has never had to name (small
+utilities) legitimately have no dictionary entry, so absence of evidence cannot distinguish
+a typo from an obscure but correct pair. Double-check the spelling either way. The admin UI's
+validate page runs the same probe automatically for any TOML with CPE pairs, so production
+operators get identical feedback without shell access.
 
 ---
 
@@ -606,28 +917,29 @@ Validating packages/walrus-mytool.toml...
 
 ## Quick reference: which fields are required vs optional
 
-| Field                                | Required?   | Notes                                                                                   |
-| ------------------------------------ | ----------- | --------------------------------------------------------------------------------------- |
-| `name`                               | Yes         |                                                                                         |
-| `display_name`                       | Yes         |                                                                                         |
-| `vendor`                             | Yes         |                                                                                         |
-| `website`                            | No          |                                                                                         |
-| `description`                        | No          |                                                                                         |
-| `[discovery]`                        | Yes         | All sub-fields depend on `type`                                                         |
-| `[versioning].type`                  | Yes         |                                                                                         |
-| `[versioning].version_group_extract` | Yes         |                                                                                         |
-| `[versioning].min_version`           | No          | Recommended for packages with many EOL releases                                         |
-| `[versioning].lts_support`           | No          | Default: `false`                                                                        |
-| `[retention].versions_per_group`     | No          | Default: `3`                                                                            |
-| `[retention].groups_to_keep`         | No          | Default: unlimited                                                                      |
-| `[retention].cooling_off_days`       | No          | Default: no cooling-off period                                                          |
-| `[checksum]`                         | No          | Omit only when `file_checksum_field` provides the checksum inline                       |
-| `[[platforms]]`                      | Yes         | At least one block required                                                             |
-| `[[platforms]].filename_template`    | Conditional | Required if not using `url_template` or inline json-api                                 |
-| `[[platforms]].url_template`         | Conditional | Required in string-list files inline mode; alternative to `filename_template` elsewhere |
-| `[[platforms]].name_must_contain`    | No          | Extra filter when OS/arch matching isn't selective enough                               |
-| `[discovery].release_date_field`     | No          | Field on each release object holding the upstream release date (cooling-off anchor)     |
-| `[discovery].release_lts_field`      | No          | Inline json-api only: field on each release whose truthy string value marks it as LTS   |
+| Field                                | Required?   | Notes                                                                                                             |
+| ------------------------------------ | ----------- | ----------------------------------------------------------------------------------------------------------------- |
+| `name`                               | Yes         |                                                                                                                   |
+| `display_name`                       | Yes         |                                                                                                                   |
+| `vendor`                             | Yes         |                                                                                                                   |
+| `website`                            | No          |                                                                                                                   |
+| `description`                        | No          |                                                                                                                   |
+| `[discovery]`                        | Yes         | All sub-fields depend on `type`                                                                                   |
+| `[versioning].type`                  | Yes         |                                                                                                                   |
+| `[versioning].version_group_extract` | Yes         |                                                                                                                   |
+| `[versioning].min_version`           | No          | Recommended for packages with many EOL releases                                                                   |
+| `[versioning].lts_support`           | No          | Default: `false`                                                                                                  |
+| `[retention].versions_per_group`     | No          | Default: `3`                                                                                                      |
+| `[retention].groups_to_keep`         | No          | Default: unlimited                                                                                                |
+| `[retention].cooling_off_days`       | No          | Default: no cooling-off period                                                                                    |
+| `[checksum]`                         | No          | Omit only when `file_checksum_field` provides the checksum inline                                                 |
+| `[[platforms]]`                      | Yes         | At least one block required                                                                                       |
+| `[[platforms]].filename_template`    | Conditional | Required if not using `url_template` or inline json-api                                                           |
+| `[[platforms]].url_template`         | Conditional | Required with `directory-listing` and string-list files inline mode; alternative to `filename_template` elsewhere |
+| `[[platforms]].name_must_contain`    | No          | Extra filter when OS/arch matching isn't selective enough                                                         |
+| `[[platforms]].transform`            | No          | Serve a converted archive — see `[platforms.transform]` above; `gitwindows` is the worked example                 |
+| `[discovery].release_date_field`     | No          | Field on each release object holding the upstream release date (cooling-off anchor)                               |
+| `[discovery].release_lts_field`      | No          | Inline json-api only: field on each release whose truthy string value marks it as LTS                             |
 
 ---
 
@@ -650,13 +962,56 @@ osv = { ecosystem = "Bitnami", name = "node" }
 # (lowercased, whitespace collapsed). The package's own name and display_name
 # are always added automatically, so you only list extra synonyms here.
 aliases = ["openjdk", "open jdk", "jdk", "java"]
+# Only where the served version EMBEDS an upstream version rather than being one.
+# The first capture group is what CVE ranges are evaluated against (ADR-008).
+# cve_version_extract = "^(\\d+\\.\\d+\\.\\d+)"
 ```
 
-| Field     | Required? | Notes                                                                               |
-| --------- | --------- | ----------------------------------------------------------------------------------- |
-| `cpes`    | No        | Array of `vendor:product`; first = primary. Omit for OSV-only packages (e.g. `uv`). |
-| `osv`     | No        | `{ ecosystem, name }`. Enables the weekly OSV cross-check for this package.         |
-| `aliases` | No        | Extra human synonyms. Name + display_name are auto-included.                        |
+| Field                 | Required? | Notes                                                                               |
+| --------------------- | --------- | ----------------------------------------------------------------------------------- |
+| `cpes`                | No        | Array of `vendor:product`; first = primary. Omit for OSV-only packages (e.g. `uv`). |
+| `osv`                 | No        | `{ ecosystem, name }`. Enables the weekly OSV cross-check for this package.         |
+| `aliases`             | No        | Extra human synonyms. Name + display_name are auto-included.                        |
+| `cve_version_extract` | No        | Regex whose first capture is the version CVE ranges compare against. See below.     |
+
+**`cve_version_extract` — when the served version is not the version CVEs name
+(ADR-008).** Most packages serve the same version NVD names, and must not set
+this. Set it only where the served version _contains_ an upstream version:
+`gitwindows` serves `2.55.0.5` — Git 2.55.0, Windows rebuild 5 — while the CVE
+ranges on its CPE pairs name three-component upstream Git, because NVD has no
+CPE for the downstream distribution.
+
+Without it, matching under-gates. `< 2.56.0` matches `2.55.0.5` correctly, but a
+CVE naming `2.55.0` exactly — or bounding inclusively at it — does not, even
+though the served build contains that Git. With
+`cve_version_extract = "^(\\d+\\.\\d+\\.\\d+)"` the gate compares `2.55.0`
+and all four shapes match.
+
+The accepted cost is **over-blocking**: under `<= 2.55.0` every `2.55.0.x`
+blocks, including a rebuild that fixed the issue. That is deliberate — safety
+over availability — and the operator suppression list (WAL-70) is the way out
+for a specific block that proves wrong.
+
+**Known limitation, the mirror image:** a CVE naming a downstream-specific
+revision exactly (`2.55.0.3`) is compared against the normalised `2.55.0` and
+misses. For `gitwindows` this is low risk, since such a CVE would need a
+`git_for_windows` CPE and NVD has none.
+
+**When the mapping is not a fixed regex, use a per-version CVE version.** Some
+packages change which upstream version each served version embeds from release
+to release, so no single regex can express it. The .NET SDK is the example: NVD
+files .NET CVEs against the bundled runtime under `microsoft:.net` (there is no
+`microsoft:.net_sdk` product), and SDK `10.0.401` bundles runtime `10.0.12`
+while `10.0.400` bundles `10.0.11`. A discovery strategy can carry that mapping
+out as `DiscoveredVersion.cveVersion` (the `dotnet-releases` strategy reads it
+from `runtime-version`); sync stores it in `versions.cve_version`, and range
+evaluation prefers it over `cve_version_extract`. Nothing in the TOML configures
+it — it is upstream release data. When a block is caused by this mapping, the
+match reason names both versions (`10.0.400 evaluated as 10.0.11`).
+
+Only range evaluation sees the normalised form. The served version,
+`version_sort`, retention and the download path all keep using the full version,
+so nothing about what walrus catalogues or serves changes.
 
 **Authoring discipline (WAL-3 MANUAL_TEST):** CPE `vendor:product` pairs must be
 verified against the live NVD CPE dictionary

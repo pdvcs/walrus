@@ -53,7 +53,7 @@ export function loadAllPackages(packagesDir: string = PACKAGES_DIR): RegistryLoa
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       errors.push({ filePath, error });
-      log.warn({ filePath, error }, "Failed to load package config");
+      log.warn({ filePath, reason: error }, "Failed to load package config");
     }
   }
 

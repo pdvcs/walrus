@@ -87,7 +87,7 @@ npm run test:integration
 
 Integration tests under `tests/db/` (and the DB-backed route tests) perform destructive
 writes and **global** cleanups, so they run against a **separate throwaway database**, never
-the dev/prod `walrus` DB. `vitest.config.ts` forces `DATABASE_URL` to
+the dev/prod `walrus` DB. `vitest.config.mts` forces `DATABASE_URL` to
 `postgresql://walrus:walrus@localhost:5432/walrus_test` (override with `TEST_DATABASE_URL`),
 and `tests/setup.ts` **hard-fails the whole run** if the target database name does not end in
 `_test` — the safety net that prevents `npm test` from ever wiping real data. Migrations run
@@ -136,9 +136,39 @@ makes the backfill tolerable:
 ```bash
 # .env.secrets
 WALRUS_DEV_DB_PASSWORD=…
+WALRUS_ADMIN_PASSWORD=<at-least-16-byte-local-password>
 NVD_API_KEY=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx   # request one at https://nvd.nist.gov/developers/request-an-api-key
 ```
 
+Operator routes are always authenticated. For local curl examples, obtain a bearer token from
+JSON login and retain it only in the current shell:
+
+```bash
+read -rsp 'Walrus admin password: ' WALRUS_LOGIN_PASSWORD; echo
+export WALRUS_ADMIN_TOKEN="$(curl -fsS "$WALRUS_URL/admin/v1/login" \
+  -H 'Content-Type: application/json' \
+  --data-binary "$(jq -nc --arg password "$WALRUS_LOGIN_PASSWORD" \
+    '{username:"admin", password:$password}')" | jq -r .token)"
+unset WALRUS_LOGIN_PASSWORD
+```
+
+Production injects `WALRUS_ADMIN_PASSWORD`, `WALRUS_SESSION_SECRET`, and the previous rotation key
+from Secret Manager. The reviewed `config/admins.toml` is the authorization source. Never put
+passwords or session keys in Terraform variables/state; `infra/scripts/deploy.sh` adds secret
+versions before applying the Cloud Run references.
+
+On GCP the NVD key follows the same route, no hand-editing of deployed config (WAL-92): export
+`NVD_API_KEY` before running `infra/scripts/deploy.sh`, which writes a version of the
+`walrus-nvd-api-key` secret and mounts it on the `walrus-api` service and both Cloud Run Jobs.
+
+```bash
+export NVD_API_KEY="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+bash infra/scripts/deploy.sh
+```
+
+The key is **optional**: deploy without it and the script says so, skips the secret version, and
+Terraform leaves the mount off entirely — a fresh project bootstraps keyless rather than failing
+to deploy. Rotating it is a re-run of the deploy with the new value; the mount reads `latest`.
 Keyless operation works but is ~10× slower; the backfill will still complete.
 
 ### 2. One-time backfill
@@ -147,8 +177,8 @@ Populate historical CVEs for every configured CPE pair. Run once after first dep
 adding new packages/CPEs):
 
 ```bash
-curl -X POST "$WALRUS_URL/internal/vuln-backfill" -H 'Content-Type: application/json' -d '{}'
-curl -X POST "$WALRUS_URL/internal/vuln-backfill" -H 'Content-Type: application/json' -d '{"since":"2015-01-01"}'
+curl -X POST "$WALRUS_URL/admin/v1/vuln-backfill" -H "Authorization: Bearer $WALRUS_ADMIN_TOKEN" -H 'Content-Type: application/json' -d '{}'
+curl -X POST "$WALRUS_URL/admin/v1/vuln-backfill" -H "Authorization: Bearer $WALRUS_ADMIN_TOKEN" -H 'Content-Type: application/json' -d '{"since":"2015-01-01"}'
 ```
 
 The dated form sends paired `pubStartDate`/`pubEndDate` parameters in adjacent windows no longer
@@ -165,9 +195,9 @@ that URL for `queued`, `running`, `succeeded`, or `failed`; progress is reported
 `cpe_pairs_done` / `cpe_pairs_total`. A concurrent NVD backfill returns `409 already_running`.
 The API launches the dedicated `walrus-vuln-backfill` Cloud Run Job, whose 24-hour task timeout
 avoids the serving service's 3,600-second request deadline. The keyless NVD limit makes a full
-history run potentially take hours; configure `NVD_API_KEY` in production. The local
-`npm run vuln:backfill` command remains available for development only and shares the ingestion
-implementation with the job runner.
+history run potentially take hours; set `NVD_API_KEY` in the deploy environment (§1) so the job
+runs at 50 req/30s. The local `npm run vuln:backfill` command remains available for development
+only and shares the ingestion implementation with the job runner.
 
 The job pages the NVD `virtualMatchString` API per CPE pair, writes `cves` + `cve_affects`, and
 advances the `nvd-cve` cursor. Verify:
@@ -178,8 +208,81 @@ SELECT count(*) FROM cve_affects ca JOIN packages p ON p.name = ca.package_name 
 
 ### 3. Cron cadence (incremental)
 
-Point your scheduler (Cloud Scheduler, k8s CronJob, …) at the `/internal` triggers. Suggested
-cadence — NVD changes often, KEV daily, OSV is a weekly cross-check:
+On GCP these are provisioned by Terraform (`infra/terraform/scheduler.tf`) as one Cloud Scheduler
+job per source, authenticating with the same service account as the package sync. Cadence —
+NVD changes often, KEV daily, OSV is a weekly cross-check — is set by variable, so overriding one
+source does not touch the others:
+
+| Job                     | Variable                  | Default        |
+| ----------------------- | ------------------------- | -------------- |
+| `walrus-vuln-sync-nvd`  | `vuln_sync_nvd_schedule`  | `20 */2 * * *` |
+| `walrus-vuln-sync-kev`  | `vuln_sync_kev_schedule`  | `40 7 * * *`   |
+| `walrus-vuln-sync-osv`  | `vuln_sync_osv_schedule`  | `10 8 * * 1`   |
+| `walrus-vuln-sync-cvss` | `vuln_sync_cvss_schedule` | `10 9 * * *`   |
+
+Minutes are offset from the package sync (minute 0) and from each other, since `nvd` and `cvss`
+share one advisory lock and a contended run is wasted work.
+
+Note the package sync is not one of these: it runs as the `walrus-sync` **Cloud Run Job**,
+executed directly by Cloud Scheduler rather than triggered over HTTP. Artifact downloads run
+to hundreds of MB and outlast any request deadline, so the work belongs in its own container
+(ADR-004). Each package also takes a per-package advisory lock, so an overlapping trigger
+skips that package rather than racing it — visible as `skipped: "already_running"` in the
+response from `/internal/sync`, or `409` when a single package is requested.
+
+`cvss` **is** scheduled, by PO decision — see ADR-002. Enrichment can newly satisfy the
+
+> = 9.0 download gate, turning versions that serve today into 403s; here that is the intended
+> behaviour rather than a hazard to gate behind a human. Safety outweighs availability, and
+> "we err on the side of denial once a CVE scores above the limit" is a policy that can be stated
+> to compliance. It stays excluded from `/vuln-sync/all` so routine ingestion stays fast — the job
+> triggers the source directly.
+
+One consequence to hold in mind: a consumer's download can start failing on walrus's schedule
+rather than on any change they made. `/api/v1/packages/:name/vulns` shows which CVE is
+responsible, and `/admin/v1/vulns` → CVSS enrichment (or `dry_run` on the API) previews what a
+run would block before it runs.
+
+**The scheduled run is bounded** (WAL-48). Cloud Scheduler POSTs `{"limit": N}`, where `N` is
+`TF_VAR_vuln_sync_cvss_limit` (default 150). Enrichment makes one NVD request per candidate, so an
+unbounded run is cut off mid-walk on a large backlog; the default is sized for the keyless NVD
+rate (4 req/30s over the job's 1800s deadline is roughly 240 requests) because `NVD_API_KEY` is
+optional. An environment with a key can raise it an order of magnitude. `/vuln-sync/all` and the
+admin trigger are unaffected — this bounds the scheduled job only.
+
+So the backlog drains at up to `N` CVEs per run rather than all at once, and **a successful run no
+longer means the backlog is empty**. Judge it by the trend, not the run status:
+
+```sql
+-- The enrichment candidate set, matching listCveIdsMissingSeverity exactly.
+SELECT count(*) FROM cves WHERE severity IS NULL AND severity_source IS NULL;
+```
+
+Use that predicate, not "has no CVSS score": `severity_source IS NULL` is what excludes CVEs
+already checked and found to have no usable CVSS upstream. Counting score columns instead would
+include every Rejected or permanently-unscored CVE and show a backlog that never drains.
+
+Falling by roughly `N` per scheduled run means it is draining; flat or rising across several runs
+means the limit is too low for the rate CVEs arrive, or the walk is failing before it writes.
+
+Every `/internal/vuln-sync/:source` invocation is written to `admin_actions` with the verified
+scheduler service-account subject, so an unattended gate change is distinguishable from an
+operator's click, which records the authenticated operator subject:
+
+```sql
+SELECT created_at, performed_by AS by, details
+FROM admin_actions WHERE action_type = 'vuln-sync' ORDER BY id DESC LIMIT 20;
+```
+
+The row carries the per-source outcome counts, not the identity of the versions that crossed the
+gate — see ADR-002 for that limitation.
+
+Cloud Scheduler's default attempt deadline is 180 seconds, short enough to abandon an incremental
+NVD walk mid-flight; the jobs set it explicitly (1,800s is Scheduler's maximum, below the Cloud Run
+service's 3,600s, so Scheduler is the binding limit). The NVD job does not retry: its cursor only
+advances on success, so the next scheduled run repeats the same window anyway.
+
+Off GCP, point your own scheduler (k8s CronJob, …) at the same `/internal` triggers:
 
 | Source | Endpoint                       | Cadence                                                            |
 | ------ | ------------------------------ | ------------------------------------------------------------------ |
@@ -208,14 +311,269 @@ pair at the keyless 4–5 requests/30-second rate, multiplied by pagination and 
 windows, can exceed an hour. Full backfills therefore always use the asynchronous Cloud Run Job;
 the job's 24-hour timeout is the overall watchdog and its database advisory lock prevents overlap.
 
-Freshness timestamps represent the **last successful** source run. `/health` and the admin panel
-also expose the latest attempt outcome and failure time, so a failed refresh cannot make stale data
-appear current.
+Freshness timestamps represent the **last successful** source run. `/app/status` and the admin
+panel also expose the latest attempt outcome and failure time, so a failed refresh cannot make
+stale data appear current.
+
+The download gate blocks a version on **any** CVSS base score — v3, v4, or v2 — at or above 9.0,
+or a score-less CRITICAL severity (`meetsCriticalGate`, ADR-005). KEV (exploited in the wild) is
+flagged everywhere but does not block on its own — PO decision, may be revisited.
+
+**Degradation reporting.** `/app/status` carries a `degradations` array: per-source staleness
+(NVD success older than 12h, KEV 48h, OSV 8 days), sources that are currently failing or have
+never succeeded, and stuck or disabled autonomous backfills. These do not change `isAvailable`,
+which is reserved for failures that make the application wholly unavailable. External operational
+monitors should watch `degradations` length. The same list renders as a warning banner across the
+admin UI, and email alerting sits on top of it — see the next section.
+
+### 3a. Alerting (WAL-43)
+
+`infra/terraform/monitoring.tf` declares one notification channel and five alert policies. They
+are applied by `deploy.sh` with everything else; there is no separate step.
+
+**Setting the destination.** The address comes from `TF_VAR_alert_notification_email`. If it is
+unset, `deploy.sh` reads the project's sole user owner and uses that — and **fails the deploy** if
+the project has none or more than one, rather than guessing. A shared project must set the
+variable explicitly. The address is never committed: the repo holds the variable, not the value.
+
+| Policy                                   | Fires on                                          | Severity | What to do                                                                                                                                                                                                                |
+| ---------------------------------------- | ------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Walrus Cloud Run error                   | Any `ERROR` log from the service or either Job    | ERROR    | Read the log; the message names the failing package or sync                                                                                                                                                               |
+| Walrus scheduler job failed              | A Cloud Scheduler invocation fails                | ERROR    | The workload may be fine — check the target URL and the OIDC binding, since a revoked `run.invoker` looks like a failed attempt, not a deploy error                                                                       |
+| Walrus vulnerability sync degraded       | One source fails **more than once** in four hours | WARNING  | Check `/app/status` for how far behind the source is; upstream rate limiting and an upstream outage want different responses                                                                                              |
+| Walrus automatic CVE backfill exhausted  | A package gives up on automatic backfill          | WARNING  | The package is outside self-healing until an operator intervenes                                                                                                                                                          |
+| Walrus blocked a version (informational) | A sync newly blocked one or more versions         | WARNING  | **No action needed** — this is the gate working. The notification names the package, version, and CVE directly; for a past fire, `GET /admin/v1/transitions?since=<timestamp>` finds it without knowing the package first |
+
+Two design points worth knowing before changing them:
+
+- **A single failed sync does not alert.** Each source runs on a fixed cadence, so a second
+  failure means the retry the first was entitled to has also failed. One transient upstream
+  timeout is normal and is visible on `/app/status`; paging on it teaches people to ignore the
+  channel.
+- **The scheduler policy filters on the resource type, not on job names.** A seventh scheduler
+  job is covered the moment it exists. Do not replace this with a list.
+
+Every policy carries a `documentation` block naming the action, which Cloud Monitoring includes
+in the notification.
+
+**Verifying it.** `./infra/scripts/verify-deployment.sh` asserts the policies exist and are
+enabled. Delivery itself cannot be asserted from inside the deployment — that is a manual step,
+and its evidence is a received email recorded on WAL-43.
+
+### 3b. Where to look when something fails (WAL-119)
+
+Alerting is one tier of three, and it is the narrowest on purpose. Most of what you want when
+something has gone wrong is not in your inbox.
+
+| Tier          | Surface                                                       | Holds                                  | Reach it by                                                         |
+| ------------- | ------------------------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------- |
+| 1 — Page      | the five policies in §3a                                      | the few things needing a human **now** | email                                                               |
+| 2 — Triage    | **Cloud Error Reporting** + the _Walrus operations_ dashboard | every grouped error; counts and trend  | Console → Observability → Error Reporting / Monitoring → Dashboards |
+| 3 — Forensics | Logs Explorer, Log Analytics                                  | everything                             | Console → Logging                                                   |
+
+**Start at tier 2.** Tier 1 tells you something broke; tier 2 tells you what, how often, since
+when, and whether it is new.
+
+#### Cloud Error Reporting
+
+Nothing configures it and nothing in this repo enables it — it reads Cloud Logging directly and
+has grouped walrus's errors since the first deployment. It is the single most useful surface
+here and the least known.
+
+**It groups by stack trace, not by severity.** This is the fact to carry: an entry's `severity`
+is irrelevant to whether Error Reporting sees it, and walrus's application logs are all
+`DEFAULT` severity (see WAL-117). What matters is that a stack reaches the log — which is why
+exceptions must be logged under the **`err`** key. pino serializes `err` and no other key; an
+`Error` under any other name is written as `{}`, and a record with no stack enters no group and
+appears in no count. A lint rule enforces this (WAL-120); do not suppress it.
+
+**Coverage is complete, and was measured rather than assumed:** of 65 stack-carrying log entries
+across `cloud_run_revision` and `cloud_run_job` in the first ten days of deployment, 0 were
+ungrouped. It also groups **platform** errors walrus never logs — Cloud Run's _"no available
+instance"_ (WAL-105) appears as its own group — so do not think of it as "walrus's errors".
+
+Each group carries a count, first- and last-seen, the affected revisions, and a resolution
+status:
+
+| Status         | Means                | Use it when                                                                                                |
+| -------------- | -------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `OPEN`         | untriaged            | the default                                                                                                |
+| `ACKNOWLEDGED` | **seen, not acting** | you have looked and decided it can wait — this is the one that fixes inbox fatigue without hiding anything |
+| `RESOLVED`     | believed fixed       | a recurrence re-opens it automatically, so this is a claim the system will check                           |
+
+Acknowledging suppresses your attention, not ingestion. A routine, expected fault can sit
+`ACKNOWLEDGED` or `RESOLVED` indefinitely without muting anything real — `cvss` colliding with a
+running `nvd` walk files as its own `VulnSyncAlreadyRunningError` group, separate from genuine
+NVD failures, precisely so it can be dismissed on its own.
+
+#### The _Walrus operations_ dashboard
+
+Four charts, declared in `infra/terraform/monitoring.tf` and applied by `deploy.sh` with
+everything else:
+
+| Chart                                      | Answers                                                          |
+| ------------------------------------------ | ---------------------------------------------------------------- |
+| Vulnerability sync failures by source      | is one source failing, or all of them?                           |
+| Cloud Scheduler invocation failures by job | did the trigger fire, or is the workload the problem?            |
+| walrus-api requests by response class      | is walrus serving?                                               |
+| Cloud Run Job executions by result         | are sync and backfill still succeeding, or merely still running? |
+
+**It is Terraform, not a console artefact — do not hand-edit it.** A dragged widget is drift
+that no plan will show you, and it is absent from any freshly deployed project.
+
+One implementation note worth knowing before extending it: **Cloud Scheduler publishes no metric
+to Cloud Monitoring.** The scheduler chart is fed by a log-based metric,
+`walrus/scheduler_job_failed`, over the same filter as the scheduler alert policy. If you add a
+chart for anything scheduler-shaped, it will need the same treatment.
+
+#### Which surface answers which question
+
+- _"Has this happened before, and how often?"_ → Error Reporting. It is the only surface that
+  groups, and the group's first-seen date is usually the answer.
+- _"Is it happening now, and to what?"_ → the dashboard.
+- _"What exactly happened in this one request?"_ → Logs Explorer, by `insertId` or trace.
+- _"Do I need to act right now?"_ → tier 1 already told you, or it did not.
+
+### 4. After setup: what runs itself, and what does not
+
+Once the one-time backfill in §2 has been done, vulnerability ingestion is autonomous — no
+routine operator action is required, including when a package is added.
+
+| Event                                  | Handled by                                   | Autonomous? |
+| -------------------------------------- | -------------------------------------------- | ----------- |
+| New CVEs published / rescored          | `nvd` incremental, 2-hourly                  | Yes         |
+| CVE added to CISA KEV                  | `kev`, daily                                 | Yes         |
+| OSV advisory added or changed          | `osv`, weekly (re-queries every pkg)         | Yes         |
+| CVE arrives with no severity           | `cvss`, daily                                | Yes         |
+| Version passes its cooling-off period  | Next package sync (`walrus-sync` Job)        | Yes         |
+| **New package, or new CPE pair added** | **`walrus-vuln-backfill-auto` sweep, daily** | **Yes**     |
+
+That last row is the one that needed building. Incremental NVD sync is cursor-based
+(`lastModStartDate`), so it only sees recently-modified CVEs — a newly tracked package's
+_historical_ CVEs are structurally unreachable by it, and only a targeted backfill gets them.
+The other sources need no equivalent: OSV re-queries every tracked package in full each run,
+KEV flags rows in the global `cves` table, and `cvss` walks every severity-less CVE.
+
+The sweep (`POST /internal/vuln-backfill/auto`) compares each package's current CPE set
+against the set its last backfill covered, and starts a targeted backfill where they differ.
+Comparing the _set_, not a timestamp, is what makes a CPE pair added to an already-covered
+package trigger a fresh backfill.
+
+- One at a time: only one backfill may be active, so the rest are reported `deferred` and
+  picked up by the next sweep.
+- Bounded retries: after three failed attempts a package stops being retried and is named in
+  the operator hints instead.
+- Contention is not a failure and does not consume the retry budget.
+- `VULN_AUTO_BACKFILL=false` disables the sweep without touching scheduled ingestion. While
+  disabled, uncovered packages are named in the hints, since nothing else will cover them.
+
+To force one package immediately rather than waiting for the sweep:
+
+```bash
+curl -X POST "$WALRUS_URL/admin/v1/vuln-backfill" \
+  -H "Authorization: Bearer $WALRUS_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"package":"<name>"}'
+```
+
+#### Recovering a package that has stopped being retried (WAL-100)
+
+After three failed attempts a package stops being retried and is named in the operator hints:
+
+```
+2 package(s) have exhausted 3 automatic CVE backfill attempts and are no longer being retried:
+azuljdk (Cloud Run Job launch failed (403): ...)
+```
+
+Until it is cleared, **that package's versions are served without complete CVE data** and nothing
+will fix it on its own — the counter is cleared by a successful backfill, which is exactly what
+cannot start. The `Walrus automatic CVE backfill exhausted` alert (§3a) fires on this.
+
+**Read the error before clearing it.** The budget did its job: three launches genuinely failed,
+and the reason is in the hint. Resetting without fixing the cause just burns three more attempts.
+The two seen in practice were a malformed job-launch payload and a missing IAM permission
+(WAL-98, WAL-99) — both infrastructure faults, neither visible from the package itself.
+
+Once the cause is fixed:
+
+```bash
+# One package
+curl -X POST "$WALRUS_URL/admin/v1/vuln-backfill/reset-attempts" \
+  -H "Authorization: Bearer $WALRUS_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"package":"<name>"}'
+
+# Every package that has exhausted its budget
+curl -X POST "$WALRUS_URL/admin/v1/vuln-backfill/reset-attempts" \
+  -H "Authorization: Bearer $WALRUS_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' -d '{}'
+```
+
+It returns what it changed — `{"reset_count": 1, "packages": ["azuljdk"]}` — and is audited like
+any other operator action, which matters more here than elsewhere: the next sweep starts a Cloud
+Run Job that nobody watched a human trigger, and the audit row is the only thing tying that job to
+a person. Resetting when nothing was exhausted is a `200` with an empty list, not an error, so it
+is safe to re-run.
+
+It clears **only** the attempt counter and the last error. It does not touch
+`vuln_backfill_cpe_hash` or `vuln_backfill_completed_at` — those are the sweep's record of what it
+has already covered, and rewriting them would make it re-backfill a package that is fine.
+
+A per-package `POST /admin/v1/vuln-backfill` also clears the counter as a side effect of
+succeeding, and remains useful when you want the work to happen _now_ rather than at the next
+sweep. Prefer `reset-attempts` when you only want to restore eligibility.
+
+**Why the counter does not decay.** Three consecutive failures and three failures spread over a
+month are different signals, and this counter cannot tell them apart — a real limitation, and a
+deliberate one. Ageing attempts out would restore the unbounded retry the budget exists to
+prevent: a permanently broken package would be re-selected forever, and because only one backfill
+runs at a time it would hold the sweep's single slot on every round, starving packages that could
+actually be fixed. That is the WAL-101 failure mode, reached by a different route. The problem
+worth solving was never "the budget is too strict" but "an exhausted package was invisible and
+unrecoverable" — and an alert plus a one-call reset solves that without blunting the signal.
+Revisit only if exhaustion starts happening from genuinely unrelated transients, which would be
+evidence the retry count is too low rather than that it should decay.
+
+### Operator CVE suppressions
+
+When upstream has attributed a CVE to the right CPE shape but the wrong product in fact, use the
+admin vulnerability explorer to preview and apply a package-scoped suppression. There is no
+production shell or supported manual-SQL path (ADR-004/ADR-007). Complete six-eyes review and formal
+approval before applying the change; walrus records the executing operator, reason, scope, expiry,
+and suppression ID in `admin_actions`. Revocation is a separate audited action.
+
+Suppression never deletes vulnerability evidence. The CVE remains in public responses marked
+suppressed with its reason, while only the download gate ignores it. An optional expiry restores
+gating automatically. Active suppressions are counted in `/app/status.degradations` and the explorer
+status strip so the list is regularly revisited.
+
+```bash
+# Latest create/revoke audit entries (50 by default, maximum 100)
+curl -sS "$WALRUS_URL/admin/v1/vuln-suppressions/audit" | jq .
+
+# One CVE only; use next_before_id from the response for the next page
+curl -sS "$WALRUS_URL/admin/v1/vuln-suppressions/audit?cve_id=CVE-2099-0001&limit=20" | jq .
+```
 
 ### Data-source attribution
 
 - **NVD** — This product uses data from the NVD API but is not endorsed or certified by the NVD.
 - **CISA KEV** — Known Exploited Vulnerabilities Catalog, CISA (public domain).
 - **OSV** — osv.dev, Google (Apache-2.0).
+
+---
+
+### Removing a package (WAL-53)
+
+Delete its TOML; the next boot reconciliation tombstones it automatically. The row is marked
+with `removed_at` and disabled — serving stops (including direct `/download` URLs), syncs stop,
+and its vuln config (aliases, CPE pairs, OSV mapping) and derived `cve_affects` rows are
+cleared so no ingestion traffic still targets it.
+
+The row, cached versions, artifacts and history are deliberately **kept**: hard delete requires
+an explicit admin decision because DB rows own storage objects a stray `git rm` must never
+destroy. Re-adding the same TOML revives the package (`removed_at` cleared, enabled again);
+its historical NVD associations then need the usual targeted backfill.
+
+A watch-only or operator-disabled package is unaffected: the marker distinguishes an actual
+removal from either.
 
 ---

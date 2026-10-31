@@ -2,9 +2,12 @@ import { OpenAPIRegistry, OpenApiGeneratorV31 } from "@asteasolutions/zod-to-ope
 import { z } from "zod";
 import { Router } from "express";
 import {
+  AvailabilityHistoryResponseSchema,
+  BlockedVersionErrorSchema,
   CoolingOffErrorSchema,
   ErrorSchema,
   HealthResponseSchema,
+  StatusResponseSchema,
   LatestArtifactResponseSchema,
   ListGroupsResponseSchema,
   ListPackagesResponseSchema,
@@ -15,6 +18,8 @@ import {
   VulnProductResponseSchema,
   CveDetailResponseSchema,
   PackageVulnsResponseSchema,
+  LandingPageResponseSchema,
+  MetricsResponseSchema,
 } from "./schemas.js";
 
 const registry = new OpenAPIRegistry();
@@ -40,6 +45,20 @@ const platformQueryParams = z.object({
 
 registry.registerPath({
   method: "get",
+  path: "/",
+  summary: "Walrus landing page",
+  operationId: "landingPage",
+  tags: ["Utility"],
+  responses: {
+    200: {
+      description: "Public landing page with version and service entry points",
+      content: { "text/html": { schema: LandingPageResponseSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/v1/packages/",
   summary: "List enabled packages",
   operationId: "listPackages",
@@ -62,7 +81,7 @@ registry.registerPath({
   responses: {
     200: {
       description:
-        "Version groups, optionally filtered to those with available artifacts for the given platform",
+        "Every version group for the package, newest first. A group with nothing currently servable — all versions embargoed or CVE-blocked — is still listed, with `latest_available: null`. A platform filter narrows which artifacts count as servable, not which groups appear.",
       content: { "application/json": { schema: ListGroupsResponseSchema } },
     },
     404: {
@@ -86,7 +105,8 @@ registry.registerPath({
   },
   responses: {
     200: {
-      description: "Versions with platform availability",
+      description:
+        "Versions with platform availability. Both the version and each platform report `cooling_off` with an `available_at` while inside the release embargo.",
       content: { "application/json": { schema: ListVersionsResponseSchema } },
     },
     404: {
@@ -128,6 +148,17 @@ registry.registerPath({
       description: "Package, group, or artifact not found",
       content: { "application/json": { schema: ErrorSchema } },
     },
+    423: {
+      description:
+        "Nothing in the group is servable yet because the candidates are within their cooling-off period. Distinct from 202 (not synced yet) and 404 (nothing safe exists).",
+      headers: {
+        "Retry-After": {
+          description: "Seconds until the earliest artifact in the group is released",
+          schema: { type: "integer" },
+        },
+      },
+      content: { "application/json": { schema: CoolingOffErrorSchema } },
+    },
   },
 });
 
@@ -162,6 +193,10 @@ registry.registerPath({
           description: "SHA-1 checksum (if available)",
           schema: { type: "string" },
         },
+        "X-Checksum-Sha512": {
+          description: "SHA-512 checksum (if available)",
+          schema: { type: "string" },
+        },
       },
       content: { "application/octet-stream": { schema: { type: "string", format: "binary" } } },
     },
@@ -170,8 +205,10 @@ registry.registerPath({
       content: { "application/json": { schema: ErrorSchema } },
     },
     403: {
-      description: "Version is blocked due to a known critical vulnerability",
-      content: { "application/json": { schema: ErrorSchema } },
+      description:
+        "Version is blocked by the critical-CVE gate. The body names the advisory, the version " +
+        "comparison that matched it, and the fixed version to move to when the advisory names one.",
+      content: { "application/json": { schema: BlockedVersionErrorSchema } },
     },
     423: {
       description: "Artifact is within the cooling-off period and not yet released",
@@ -282,6 +319,33 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/v1/packages/{name}/availability",
+  summary: "Recorded download-availability transitions for a package's versions",
+  operationId: "getAvailabilityHistory",
+  tags: ["Vulnerabilities"],
+  request: {
+    params: z.object({ name: z.string().openapi({ description: "Package name" }) }),
+    query: z.object({
+      version: z.string().optional().openapi({
+        description: "Limit to one version's history. Omit for the package's recent changes.",
+      }),
+    }),
+  },
+  responses: {
+    200: {
+      description:
+        "Gate transitions, newest first. Rows are written only when a version's status actually changes, and record which ingestion caused it. This is history, not a re-derivation of the current CVE rows — it answers when a version became blocked and why.",
+      content: { "application/json": { schema: AvailabilityHistoryResponseSchema } },
+    },
+    404: {
+      description: "Unknown package",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/v1/packages/{name}/vulns",
   summary: "CVEs affecting a package's cached versions",
   operationId: "getPackageVulns",
@@ -311,13 +375,68 @@ registry.registerPath({
 registry.registerPath({
   method: "get",
   path: "/health",
-  summary: "Health check",
+  summary: "Deployment availability check",
   operationId: "health",
   tags: ["Utility"],
   responses: {
     200: {
-      description: "Service is healthy",
+      description: "Application is available, including during its startup grace period",
       content: { "application/json": { schema: HealthResponseSchema } },
+    },
+    503: {
+      description: "Application is wholly unavailable after its startup grace period",
+      content: { "application/json": { schema: HealthResponseSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/app/health",
+  summary: "Deployment availability check alias",
+  operationId: "appHealth",
+  tags: ["Utility"],
+  responses: {
+    200: {
+      description: "Application is available, including during its startup grace period",
+      content: { "application/json": { schema: HealthResponseSchema } },
+    },
+    503: {
+      description: "Application is wholly unavailable after its startup grace period",
+      content: { "application/json": { schema: HealthResponseSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/app/status",
+  summary: "Detailed application status",
+  operationId: "appStatus",
+  tags: ["Utility"],
+  responses: {
+    200: {
+      description: "Availability plus operational degradation details",
+      content: { "application/json": { schema: StatusResponseSchema } },
+    },
+    503: {
+      description: "Application is wholly unavailable after its startup grace period",
+      content: { "application/json": { schema: StatusResponseSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/metrics",
+  summary: "Prometheus metrics",
+  operationId: "metrics",
+  tags: ["Utility"],
+  responses: {
+    200: {
+      description:
+        "Prometheus text exposition with immediate access to the last background-refreshed database snapshot",
+      content: { "text/plain": { schema: MetricsResponseSchema } },
     },
   },
 });
@@ -355,23 +474,30 @@ registry.registerPath({
 
 // ── Generate & serve ──────────────────────────────────────────────────────────
 
-const generator = new OpenApiGeneratorV31(registry.definitions);
+// Registered paths above are relative ("/api/v1/packages", not the base-path-prefixed form) by
+// design: `servers[].url` is OpenAPI's own mechanism for expressing a deployment's mount point,
+// so a generated client resolves every relative path against it rather than needing each path
+// string edited per deployment.
+export function buildOpenApiSpec(basePath: string) {
+  const generator = new OpenApiGeneratorV31(registry.definitions);
+  return generator.generateDocument({
+    openapi: "3.1.0",
+    info: {
+      title: "Walrus API",
+      version: "1.0.0",
+      description:
+        "Walrus is a policy- and identity-aware ingress engine for software packages. " +
+        "It discovers, caches, and serves package binaries based on policy expressed in configuration files.",
+    },
+    servers: [{ url: basePath || "/" }],
+  });
+}
 
-export const openApiSpec = generator.generateDocument({
-  openapi: "3.1.0",
-  info: {
-    title: "Walrus API",
-    version: "1.0.0",
-    description:
-      "Walrus is a policy- and identity-aware ingress engine for software packages. " +
-      "It discovers, caches, and serves package binaries based on policy expressed in configuration files.",
-  },
-});
-
-export function createOpenApiRouter(): Router {
+export function createOpenApiRouter(basePath: string): Router {
   const router = Router();
+  const spec = buildOpenApiSpec(basePath);
   router.get("/", (_req, res) => {
-    res.json(openApiSpec);
+    res.json(spec);
   });
   return router;
 }

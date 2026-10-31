@@ -84,6 +84,24 @@ describe("kev-sync", () => {
     expect(cve!.kev_added_at).toBeNull();
   });
 
+  // WAL-52: CISA has never published a zero-entry catalog, so an empty-but-parseable
+  // payload is upstream breakage (JSON error body, truncated feed). Mass-clearing every
+  // flag on it would hide confirmed-exploited CVEs from badges and counts for a week.
+  it("refuses to apply an empty catalog instead of clearing every flag", async () => {
+    await seedCve(pool, TRACKED);
+    await applyKev(pool, catalog); // establish a flagged state first
+    expect((await getCveById(pool, TRACKED))!.is_kev).toBe(true);
+
+    const empty: KevCatalog = {
+      catalogVersion: "2026.08.27",
+      vulnerabilities: [],
+    };
+    await expect(applyKev(pool, empty)).rejects.toThrow("no vulnerabilities");
+
+    // The previously flagged CVE keeps its flag — nothing was written.
+    expect((await getCveById(pool, TRACKED))!.is_kev).toBe(true);
+  });
+
   describe("kevSync (msw download)", () => {
     const server = setupServer();
     beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
@@ -100,6 +118,30 @@ describe("kev-sync", () => {
       const res = await kevSync(pool);
       expect(res.flagged).toBe(1);
       expect(await getSyncCursor(pool, "kev")).toBe(catalog.catalogVersion);
+    });
+
+    it("fails the sync (and marks last_ok=false) when the download yields an empty catalog", async () => {
+      await seedCve(pool, TRACKED);
+      server.use(
+        http.get(
+          "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
+          () => HttpResponse.json({ catalogVersion: "x", vulnerabilities: [] }),
+        ),
+      );
+      await expect(kevSync(pool)).rejects.toThrow("no vulnerabilities");
+      const { rows } = await pool.query(`SELECT last_ok FROM vuln_sync_state WHERE source = 'kev'`);
+      expect(rows[0].last_ok).toBe(false);
+      expect(await getSyncCursor(pool, "kev")).toBeNull();
+    });
+
+    it("rejects a download whose body is not a recognizable catalog", async () => {
+      server.use(
+        http.get(
+          "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
+          () => HttpResponse.json({ error: "rate limited" }),
+        ),
+      );
+      await expect(kevSync(pool)).rejects.toThrow("not a recognizable catalog");
     });
 
     it("applies an abort timeout to the KEV request", async () => {

@@ -4,19 +4,26 @@
  * path — no duplicated resolution/matching logic.
  */
 import { Resolution } from "../vuln/resolver.js";
-import { AffectsWithCveRow } from "../db/queries/cves.js";
+import { AffectsWithCveRow, VULN_SUMMARY_MAX_CHARS } from "../db/queries/cves.js";
 import { VULN_DISCLAIMER } from "../routes/schemas.js";
 import {
-  describeRange,
+  describeAffectedRange,
   evaluateRange,
   isComparable,
+  VERSION_NA,
   VersionRange,
 } from "../vuln/version-ranges.js";
+import {
+  deriveCveVersion,
+  describeNormalisation,
+  patternFromAffects,
+} from "../vuln/cve-version.js";
 
 export interface DataFreshness {
   nvd_last_sync: string | null;
   kev_last_sync: string | null;
   osv_last_sync: string | null;
+  cvss_last_sync: string | null;
 }
 
 export interface VulnQueryDeps {
@@ -24,6 +31,12 @@ export interface VulnQueryDeps {
   listAffectsForPackage: (packageName: string) => Promise<AffectsWithCveRow[]>;
   getDataFreshness: () => Promise<DataFreshness>;
   logUnresolved: (query: string, top?: { slug: string; score: number }) => Promise<void>;
+  /**
+   * The per-version CVE version override (ADR-008 generalised) for a cached version, if the
+   * queried version is known. This endpoint accepts arbitrary versions, so the override is
+   * simply absent for anything not in the catalogue — the package regex still applies.
+   */
+  getStoredCveVersion?: (packageName: string, version: string) => Promise<string | null>;
 }
 
 export interface VulnItem {
@@ -31,6 +44,7 @@ export interface VulnItem {
   severity: string | null;
   severity_source: string | null;
   cvss_v3_score: number | null;
+  cvss_v4_score: number | null;
   cvss_v2_score: number | null;
   summary: string | null;
   affected: { range: string; matched_because: string | null };
@@ -38,6 +52,13 @@ export interface VulnItem {
   is_kev: boolean;
   sources: string[];
   references: string[];
+  suppression: {
+    id: number;
+    reason: string;
+    created_by: string;
+    package_name: string | null;
+    expires_at: string | null;
+  } | null;
 }
 
 export interface VulnCounts {
@@ -101,6 +122,16 @@ export async function queryVulns(
       ? `version "${version}" could not be parsed; range checks are inconclusive and matching CVEs are included flagged as range-uncomparable`
       : undefined;
 
+  // ADR-008: the package's normalisation rule travels on the rows it governs; a per-version
+  // override, when the queried version is cached, takes precedence.
+  const storedCveVersion =
+    versionGiven && deps.getStoredCveVersion
+      ? await deps.getStoredCveVersion(match.slug, version!)
+      : null;
+  const cveVersion = versionGiven
+    ? deriveCveVersion(version!, patternFromAffects(rows), storedCveVersion)
+    : { value: version ?? "", normalisedFrom: null };
+
   const byCve = new Map<
     string,
     { rows: AffectsWithCveRow[]; matchedRow: AffectsWithCveRow | null; reason: string | null }
@@ -120,11 +151,22 @@ export async function queryVulns(
       }
       continue;
     }
-    if (!entry.matchedRow || entry.reason === "range-uncomparable") {
-      const result = evaluateRange(version!, toRange(row));
+    // An NA row names no version, so there is nothing to evaluate against. It stays listed —
+    // "walrus knows about this advisory" — under its own reason, which keeps it separable from
+    // "this advisory applies to your version" (WAL-69). A concrete match on the same CVE
+    // supersedes it below.
+    if (row.version_na) {
+      if (!entry.matchedRow) {
+        entry.matchedRow = row;
+        entry.reason = VERSION_NA;
+      }
+      continue;
+    }
+    if (!entry.matchedRow || entry.reason === "range-uncomparable" || entry.reason === VERSION_NA) {
+      const result = evaluateRange(cveVersion.value, toRange(row));
       if (result.matched) {
         entry.matchedRow = row;
-        entry.reason = result.reason;
+        entry.reason = describeNormalisation(result.reason, cveVersion);
       }
     }
   }
@@ -139,13 +181,27 @@ export async function queryVulns(
       severity: row.severity,
       severity_source: row.severity_source,
       cvss_v3_score: row.cvss_v3_score !== null ? Number(row.cvss_v3_score) : null,
+      cvss_v4_score: row.cvss_v4_score == null ? null : Number(row.cvss_v4_score),
       cvss_v2_score: row.cvss_v2_score == null ? null : Number(row.cvss_v2_score),
-      summary: truncate(row.description, 300),
-      affected: { range: describeRange(toRange(row)), matched_because: entry.reason },
+      summary: truncate(row.description, VULN_SUMMARY_MAX_CHARS),
+      affected: {
+        range: describeAffectedRange(toRange(row), row.version_na),
+        matched_because: entry.reason,
+      },
       fixed_in: row.fixed_in,
       is_kev: row.is_kev,
       sources,
       references: buildReferences(cveId, row),
+      suppression:
+        row.suppressed && row.suppression_id != null && row.suppression_reason
+          ? {
+              id: row.suppression_id,
+              reason: row.suppression_reason,
+              created_by: row.suppression_created_by ?? "unknown",
+              package_name: row.suppression_package_name ?? null,
+              expires_at: row.suppression_expires_at?.toISOString() ?? null,
+            }
+          : null,
     };
     if (entry.matchedRow) vulns.push(item);
     else if (includeUnmatched)

@@ -4,8 +4,16 @@ import { Pool } from "pg";
 import { updateArtifactStatus } from "../db/queries/artifacts.js";
 import { ArtifactRow } from "../types/db.js";
 import { StorageBackend } from "../storage/types.js";
+import { config } from "../config/index.js";
+import { TransformConfig } from "../types/package-config.js";
+import { getTransform, checkGate } from "../transform/index.js";
+import { TransformResultMeta } from "../transform/types.js";
+import { Semaphore } from "../common/semaphore.js";
+import { log } from "../common/log.js";
+import { createEgressFetch } from "../common/http.js";
 
-export type ChecksumAlgorithm = "sha256" | "sha1";
+export type ChecksumAlgorithm = "sha256" | "sha1" | "sha512" | "md5";
+export type ChecksumFormat = "text" | "gcs-object-metadata";
 
 export interface DownloadRequest {
   artifactId: number;
@@ -14,6 +22,20 @@ export interface DownloadRequest {
   expectedChecksum?: string;
   checksumUrl?: string; // URL to fetch the expected checksum from (e.g. .sha256 sidecar)
   checksumType?: ChecksumAlgorithm;
+  checksumFormat?: ChecksumFormat; // how to read checksumUrl; absent = "text"
+  /**
+   * Byte count the upstream API advertises for this artifact, where it publishes one. Takes
+   * precedence over the response's own `Content-Length`, being the independent number — but
+   * like it, is not compared against a content-coded response (see `advertisedSourceSize`).
+   */
+  expectedSize?: number;
+  /**
+   * Repackage the upstream stream before it reaches storage (WAL-57). The upstream digest
+   * and advertised size describe the *source* bytes; the artifact's own checksum and size
+   * come out of the pipeline's other end. Absent = store upstream bytes verbatim, exactly
+   * as before the transform stage existed.
+   */
+  transform?: TransformConfig;
 }
 
 export interface ArtifactStatusRepo {
@@ -22,8 +44,31 @@ export interface ArtifactStatusRepo {
 
 export interface DownloadServiceOptions {
   fetchImpl?: typeof fetch;
+  /** Retries *after* the first attempt. Defaults to `DOWNLOAD_MAX_ATTEMPTS - 1`. */
   maxRetries?: number;
   statusRepo?: ArtifactStatusRepo;
+  /**
+   * Bounds how many transformed artifacts are in flight at once, shared across every
+   * DownloadService in the process (WAL-61 AC2). Defaults to a module-level semaphore sized
+   * by TRANSFORM_CONCURRENCY; plain downloads never take a permit.
+   */
+  transformSemaphore?: Semaphore;
+}
+
+/**
+ * What a dry-run transform exercise (WAL-59) observed. The full pipeline ran for real —
+ * fetch, hash, transform, gate — against the injected no-op storage, so nothing persisted
+ * and this is the whole report.
+ */
+export interface TransformReport {
+  transform: string;
+  entryCount: number;
+  outputSize: number;
+  outputChecksum: string;
+  requirePathsPresent: string[];
+  requirePathsMissing: string[];
+  /** Symlinks the config explicitly allowed dropping; a drop is recorded, never silent. */
+  droppedSymlinks: string[];
 }
 
 export interface DownloadResult {
@@ -32,110 +77,91 @@ export interface DownloadResult {
   storagePath?: string;
   fileSize?: number;
   checksum?: string;
+  /** Provenance of the source bytes (WAL-58); present only when a transform ran. */
+  sourceChecksum?: string;
+  sourceFileSize?: number;
+  transform?: string;
+  transformReport?: TransformReport;
   error?: string;
 }
 
+/** Shared process-wide bound on concurrent transforms (WAL-61 AC2). */
+const sharedTransformSemaphore = new Semaphore(config.TRANSFORM_CONCURRENCY);
+
 export class DownloadService {
   private readonly fetchImpl: typeof fetch;
+  /**
+   * Egress rules (WAL-113) can restrict by `purpose`, and artifact bytes and checksum
+   * sidecars are different rows in the plan's egress table — so each gets its own default
+   * `createEgressFetch()` instance. A test-injected `opts.fetchImpl` still overrides both with
+   * the same mock, exactly as before this split (WAL-112).
+   */
+  private readonly checksumFetchImpl: typeof fetch;
   private readonly maxRetries: number;
   private readonly statusRepo: ArtifactStatusRepo;
+  private readonly transformSemaphore: Semaphore;
 
   constructor(
     private readonly pool: Pool,
     private readonly storage: StorageBackend,
     opts: DownloadServiceOptions = {},
   ) {
-    this.fetchImpl = opts.fetchImpl ?? fetch;
-    this.maxRetries = opts.maxRetries ?? 2;
+    this.fetchImpl = opts.fetchImpl ?? createEgressFetch({ purpose: "artifact" });
+    this.checksumFetchImpl = opts.fetchImpl ?? createEgressFetch({ purpose: "checksum" });
+    this.maxRetries = opts.maxRetries ?? config.DOWNLOAD_MAX_ATTEMPTS - 1;
     this.statusRepo = opts.statusRepo ?? { updateArtifactStatus };
+    this.transformSemaphore = opts.transformSemaphore ?? sharedTransformSemaphore;
   }
 
   async downloadArtifact(req: DownloadRequest, dryRun = false): Promise<DownloadResult> {
-    if (dryRun) {
+    // Dry-run keeps its old shape for every download walrus would skip storing; only a
+    // transform makes it worth fetching upstream bytes to a null sink (WAL-59) — validate is
+    // the caller that wants that, and it injects the no-op storage itself.
+    if (dryRun && !req.transform) {
       return { status: "skipped", attempts: 0 };
     }
 
-    await this.statusRepo.updateArtifactStatus(this.pool, req.artifactId, {
-      status: "downloading",
-      download_started_at: new Date(),
-      error_message: null,
-    });
+    if (!dryRun) {
+      await this.statusRepo.updateArtifactStatus(this.pool, req.artifactId, {
+        status: "downloading",
+        download_started_at: new Date(),
+        error_message: null,
+      });
+    }
 
     const algorithm = req.checksumType ?? "sha256";
     const maxAttempts = this.maxRetries + 1;
     let lastError: Error | null = null;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      // A transform is CPU-bound with live decompression and deflate state per artifact, so
+      // it holds one permit for the whole pipeline (WAL-61 AC2). Plain downloads never ask.
+      const releaseTransform =
+        req.transform !== undefined ? await this.transformSemaphore.acquire() : () => {};
       try {
-        const response = await this.fetchImpl(req.upstreamUrl);
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status} from ${req.upstreamUrl}`);
-        }
-
-        if (!response.body) {
-          throw new Error(`Empty response body from ${req.upstreamUrl}`);
-        }
-
-        const hash = crypto.createHash(algorithm);
-        let fileSize = 0;
-
-        const hashTransform = new Transform({
-          transform(chunk: Buffer, _enc, cb) {
-            hash.update(chunk);
-            fileSize += chunk.length;
-            cb(null, chunk);
-          },
-        });
-
-        const nodeStream = Readable.fromWeb(response.body);
-        nodeStream.on("error", (err) => hashTransform.destroy(err));
-        nodeStream.pipe(hashTransform);
-
-        await this.storage.upload(req.storagePath, hashTransform);
-
-        const actualChecksum = hash.digest("hex");
-
-        const expectedChecksum =
-          req.expectedChecksum ??
-          (req.checksumUrl
-            ? await fetchChecksumFromUrl(req.checksumUrl, this.fetchImpl, algorithm)
-            : undefined);
-
-        if (expectedChecksum && expectedChecksum !== actualChecksum) {
-          await this.storage.delete(req.storagePath);
-          throw new Error(`Checksum mismatch: expected ${expectedChecksum}, got ${actualChecksum}`);
-        }
-
-        await this.statusRepo.updateArtifactStatus(this.pool, req.artifactId, {
-          status: "available",
-          gcs_path: req.storagePath,
-          file_size: fileSize,
-          checksum: actualChecksum,
-          checksum_type: algorithm,
-          error_message: null,
-          download_completed_at: new Date(),
-        });
-
-        return {
-          status: "available",
-          attempts: attempt,
-          storagePath: req.storagePath,
-          fileSize,
-          checksum: actualChecksum,
-        };
+        const result = await this.attemptDownload(req, dryRun, algorithm, attempt);
+        return result;
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
+        // The delete on the failure path is unconditional, not mismatch-only: a transform
+        // can die mid-stream after a partial upload has begun, and the retry overwrites the
+        // same key while `status` stays failed, so nothing half-written is ever served.
+        await Promise.resolve(this.storage.delete(req.storagePath)).catch(() => {});
         if (attempt < maxAttempts) {
           continue;
         }
+      } finally {
+        releaseTransform();
       }
     }
 
-    await this.statusRepo.updateArtifactStatus(this.pool, req.artifactId, {
-      status: "failed",
-      error_message: lastError?.message ?? "download failed",
-      download_completed_at: new Date(),
-    });
+    if (!dryRun) {
+      await this.statusRepo.updateArtifactStatus(this.pool, req.artifactId, {
+        status: "failed",
+        error_message: lastError?.message ?? "download failed",
+        download_completed_at: new Date(),
+      });
+    }
 
     return {
       status: "failed",
@@ -143,6 +169,222 @@ export class DownloadService {
       error: lastError?.message ?? "download failed",
     };
   }
+
+  private async attemptDownload(
+    req: DownloadRequest,
+    dryRun: boolean,
+    algorithm: ChecksumAlgorithm,
+    attempt: number,
+  ): Promise<DownloadResult> {
+    const transformer = req.transform ? getTransform(req.transform.type) : null;
+
+    // Guards against silence, not slowness (see DOWNLOAD_STALL_TIMEOUT_MS): rearmed on the
+    // response arriving and on every chunk, so it only fires when nothing is happening at all.
+    const controller = new AbortController();
+    let idleTimer: NodeJS.Timeout | undefined;
+    const armIdleTimer = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        controller.abort(
+          new Error(
+            `No data received from ${req.upstreamUrl} for ${config.DOWNLOAD_STALL_TIMEOUT_MS}ms`,
+          ),
+        );
+      }, config.DOWNLOAD_STALL_TIMEOUT_MS);
+    };
+    armIdleTimer();
+
+    let response: Response;
+    try {
+      response = await this.fetchImpl(req.upstreamUrl, {
+        signal: controller.signal,
+      });
+      armIdleTimer();
+    } catch (err) {
+      clearTimeout(idleTimer);
+      throw err;
+    }
+    if (!response.ok) {
+      clearTimeout(idleTimer);
+      throw new Error(`HTTP ${response.status} from ${req.upstreamUrl}`);
+    }
+
+    if (!response.body) {
+      clearTimeout(idleTimer);
+      throw new Error(`Empty response body from ${req.upstreamUrl}`);
+    }
+    const responseBody = response.body;
+
+    try {
+      // Hash of the SOURCE bytes — what upstream published, and what its digest describes.
+      const sourceHash = crypto.createHash(algorithm);
+      let sourceSize = 0;
+      const sourceHashTransform = new Transform({
+        transform(chunk: Buffer, _enc, cb) {
+          sourceHash.update(chunk);
+          sourceSize += chunk.length;
+          cb(null, chunk);
+        },
+      });
+
+      let sink: Readable = sourceHashTransform;
+      let outputHash: crypto.Hash | null = null;
+      let outputSize = 0;
+      let transformMeta: Promise<TransformResultMeta> | null = null;
+
+      if (transformer && req.transform) {
+        const transformed = transformer.apply(sourceHashTransform, req.transform);
+        transformMeta = transformed.meta;
+        outputHash = crypto.createHash(algorithm);
+        const outputHashTransform = new Transform({
+          transform(chunk: Buffer, _enc, cb) {
+            outputHash!.update(chunk);
+            outputSize += chunk.length;
+            cb(null, chunk);
+          },
+        });
+        transformed.output.on("error", (err) => outputHashTransform.destroy(err));
+        transformed.output.pipe(outputHashTransform);
+        sink = outputHashTransform;
+      }
+
+      const nodeStream = Readable.fromWeb(responseBody);
+      nodeStream.on("data", armIdleTimer);
+      nodeStream.on("error", (err) => sourceHashTransform.destroy(err));
+      nodeStream.pipe(sourceHashTransform);
+
+      await this.storage.upload(req.storagePath, sink);
+
+      // A transfer that ends early produces a short object with a perfectly consistent
+      // checksum of the bytes that did arrive, so without this a truncated 1.6 GB artifact
+      // reaches `available` and is served. Compare against whatever size upstream committed
+      // to before the body was read — and note the number describes the SOURCE bytes: it is
+      // what upstream sent, not what the transform produced.
+      const advertisedSize = advertisedSourceSize(req.expectedSize, response);
+      if (advertisedSize !== undefined && advertisedSize !== sourceSize) {
+        throw new Error(
+          `Size mismatch: upstream advertised ${advertisedSize} bytes, received ${sourceSize}`,
+        );
+      }
+
+      const sourceChecksum = sourceHash.digest("hex");
+
+      const expectedChecksum =
+        req.expectedChecksum ??
+        (req.checksumUrl
+          ? await fetchChecksumFromUrl(req.checksumUrl, this.checksumFetchImpl, algorithm, {
+              filename: req.upstreamUrl.split("?")[0].split("/").at(-1),
+              format: req.checksumFormat,
+            })
+          : undefined);
+
+      // The upstream digest is verified against the source bytes, always. What is recorded on
+      // the artifact is the digest of the stored bytes (WAL-57 AC3) — the same number as the
+      // source when no transform ran, permanently different when one did.
+      if (expectedChecksum && expectedChecksum !== sourceChecksum) {
+        throw new Error(`Checksum mismatch: expected ${expectedChecksum}, got ${sourceChecksum}`);
+      }
+
+      let meta: TransformResultMeta | null = null;
+      if (transformer && req.transform && transformMeta) {
+        meta = await transformMeta;
+        const problems = checkGate(meta, req.transform);
+        if (problems.length > 0) {
+          throw new Error(problems.join("; "));
+        }
+      }
+
+      const actualChecksum = outputHash ? outputHash.digest("hex") : sourceChecksum;
+      const actualFileSize = outputHash ? outputSize : sourceSize;
+
+      if (dryRun) {
+        return {
+          status: "skipped",
+          attempts: attempt,
+          transformReport: {
+            transform: transformer ? transformer.id : "(none)",
+            entryCount: meta?.entryCount ?? 0,
+            outputSize: actualFileSize,
+            outputChecksum: actualChecksum,
+            requirePathsPresent: meta?.pathsPresent ?? [],
+            requirePathsMissing: meta?.pathsMissing ?? [],
+            droppedSymlinks: meta?.droppedSymlinks ?? [],
+          },
+        };
+      }
+
+      await this.statusRepo.updateArtifactStatus(this.pool, req.artifactId, {
+        status: "available",
+        gcs_path: req.storagePath,
+        file_size: actualFileSize,
+        checksum: actualChecksum,
+        checksum_type: algorithm,
+        // Provenance (WAL-58): only a repackaged artifact carries the source side of the
+        // split; an untransformed one keeps the pre-transform shape, NULLs and all.
+        ...(transformer
+          ? {
+              source_checksum: sourceChecksum,
+              source_file_size: sourceSize,
+              transform: transformer.id,
+            }
+          : {}),
+        error_message: null,
+        download_completed_at: new Date(),
+      });
+
+      if (meta && meta.droppedSymlinks.length > 0) {
+        // A drop is config-approved, but it must be visible where syncs are audited.
+        log.info(
+          { artifactId: req.artifactId, droppedSymlinks: meta.droppedSymlinks },
+          "Transform dropped configured symlink entries",
+        );
+      }
+
+      return {
+        status: "available",
+        attempts: attempt,
+        storagePath: req.storagePath,
+        fileSize: actualFileSize,
+        checksum: actualChecksum,
+        ...(transformer
+          ? {
+              sourceChecksum,
+              sourceFileSize: sourceSize,
+              transform: transformer.id,
+            }
+          : {}),
+      };
+    } finally {
+      clearTimeout(idleTimer);
+    }
+  }
+}
+
+/**
+ * The byte count this transfer is expected to deliver, where one can be trusted: the upstream
+ * API's published size if the caller has one, otherwise the response's own `Content-Length`.
+ *
+ * Neither survives a content-coded response. `fetch` decodes the body before we count it, so
+ * the header describes the encoded bytes; and an API-published size describes the file as the
+ * publisher stores it, which a coding hop is under no obligation to round-trip. Comparing
+ * either against the decoded count risks failing a transfer that arrived intact, so a
+ * content-coded response skips the check whichever number the caller supplied — the guard is a
+ * property of the response, not of where the number came from (WAL-73 finding 5).
+ */
+function advertisedSourceSize(
+  expectedSize: number | undefined,
+  response: Response,
+): number | undefined {
+  const encoding = response.headers.get("content-encoding");
+  if (encoding && encoding.toLowerCase() !== "identity") return undefined;
+
+  if (expectedSize !== undefined) return expectedSize;
+
+  const header = response.headers.get("content-length");
+  if (header === null) return undefined;
+
+  const size = Number(header);
+  return Number.isSafeInteger(size) && size >= 0 ? size : undefined;
 }
 
 /** Fetch a checksum sidecar file and extract the first digest-like token from its content. */
@@ -150,6 +392,7 @@ async function fetchChecksumFromUrl(
   url: string,
   fetchImpl: typeof fetch,
   algorithm: ChecksumAlgorithm,
+  opts: { filename?: string; format?: ChecksumFormat } = {},
 ): Promise<string> {
   const response = await fetchImpl(url);
   if (!response.ok) {
@@ -162,13 +405,69 @@ async function fetchChecksumFromUrl(
     throw new Error(`Empty checksum file at ${url}`);
   }
 
-  const digestLength = algorithm === "sha1" ? 40 : 64;
-  const digestRegex = new RegExp(`[a-fA-F0-9]{${digestLength}}`);
-  const match = text.match(digestRegex);
-
-  if (!match) {
-    throw new Error(`No ${algorithm} digest found in checksum file at ${url}`);
+  if (opts.format === "gcs-object-metadata") {
+    return md5FromGcsMetadata(text, url, algorithm);
   }
 
-  return match[0].toLowerCase();
+  const digestLength = DIGEST_HEX_LENGTH[algorithm];
+  const digestRegex = new RegExp(`[a-fA-F0-9]{${digestLength}}`);
+  const candidates = text
+    .split(/\r?\n/)
+    .map((line) => ({ line, match: line.match(digestRegex) }))
+    .filter((c): c is { line: string; match: RegExpMatchArray } => c.match !== null);
+
+  if (candidates.length === 0) {
+    throw new Error(`No ${algorithm} digest found in checksum file at ${url}`);
+  }
+  if (candidates.length === 1 || !opts.filename) {
+    return candidates[0].match[0].toLowerCase();
+  }
+
+  // A manifest covering many files (Terraform's SHA256SUMS, one line per build): the first
+  // digest is whichever artifact sorts first, not necessarily ours. Pick our own line, and fail
+  // rather than guess when it is absent — verifying against another file's digest would reject
+  // a good download or, worse, bless a bad one.
+  const own = candidates.find((c) => {
+    const name = c.line
+      .slice((c.match.index ?? 0) + digestLength)
+      .trim()
+      .replace(/^\*/, "")
+      .split("/")
+      .at(-1);
+    return name === opts.filename;
+  });
+  if (!own) {
+    throw new Error(
+      `Checksum file at ${url} lists ${candidates.length} digests, none for ${opts.filename}`,
+    );
+  }
+  return own.match[0].toLowerCase();
+}
+
+const DIGEST_HEX_LENGTH: Record<ChecksumAlgorithm, number> = {
+  md5: 32,
+  sha1: 40,
+  sha256: 64,
+  sha512: 128,
+};
+
+/** GCS object metadata carries MD5 as base64; the rest of the pipeline compares lowercase hex. */
+function md5FromGcsMetadata(text: string, url: string, algorithm: ChecksumAlgorithm): string {
+  if (algorithm !== "md5") {
+    throw new Error(`gcs-object-metadata checksums are MD5; configured algorithm is ${algorithm}`);
+  }
+  let md5Hash: unknown;
+  try {
+    md5Hash = (JSON.parse(text) as { md5Hash?: unknown }).md5Hash;
+  } catch {
+    throw new Error(`Checksum document at ${url} is not JSON`);
+  }
+  if (typeof md5Hash !== "string") {
+    throw new Error(`No md5Hash in object metadata at ${url}`);
+  }
+  const hex = Buffer.from(md5Hash, "base64").toString("hex");
+  if (hex.length !== DIGEST_HEX_LENGTH.md5) {
+    throw new Error(`Malformed md5Hash in object metadata at ${url}`);
+  }
+  return hex;
 }

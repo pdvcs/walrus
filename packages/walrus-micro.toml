@@ -1,0 +1,85 @@
+name = "micro"
+display_name = "micro"
+vendor = "micro-editor"
+website = "https://github.com/micro-editor/micro"
+description = "Modern and intuitive terminal-based text editor"
+
+# GitHub Releases API capabilities:
+#   Release date: "published_at" field on each release (ISO 8601) — captured automatically
+#   Checksum:     separate asset file with suffix ".sha" — configured below
+#
+# NB the repo has MOVED. github.com/zyedidia/micro 301-redirects here; the canonical name is
+# micro-editor/micro, confirmed by the redirect target and by go.mod ("module
+# github.com/micro-editor/micro/v2"). The old path matters because the un-redirected releases
+# endpoint returns a bare {"message": "Moved Permanently"} body, which discovery would see as
+# a malformed response rather than a redirect.
+
+[discovery]
+type = "github-releases"
+repo = "micro-editor/micro"
+include_prereleases = false
+# Stricter than it looks necessary. micro keeps a PERMANENT rolling "nightly" prerelease tag
+# and also ships v2.0.15-rc1 style prereleases; requiring exactly three numeric components
+# rejects both even if GitHub's own prerelease flag is ever wrong.
+tag_pattern = "^v(\\d+\\.\\d+\\.\\d+)$"
+
+[versioning]
+type = "semver"
+version_group_extract = "^(\\d+\\.\\d+)"
+min_version = "2.0.14"
+lts_support = false
+
+[retention]
+versions_per_group = 2
+groups_to_keep = 1
+cooling_off_days = 21
+
+[checksum]
+# Sidecars, NOT the per-asset digest: GitHub digests appear only from v2.0.15 — the newest
+# release — whereas the .sha sidecars go back through v2.0.14 and earlier, so this is what
+# lets the second version in the retention window be verified at all. Content is
+# "hash␠␠filename", which fetchChecksumFromUrl handles.
+type = "github-asset"
+algorithm = "sha256"
+asset_suffix = ".sha"
+
+# Asset names fold the architecture into the OS token and are not uniform across platforms
+# (win64, linux64, macos-arm64), so each platform carries the whole discriminator in
+# os_upstream and no template consumes {arch}. arch_upstream is still required by the schema
+# and is set honestly even though it is unused here.
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "win64"
+arch_upstream = "x86_64"
+extension = "zip"
+filename_template = "micro-{version}-{os}.{ext}"
+
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "linux64"
+arch_upstream = "x86_64"
+extension = "tar.gz"
+filename_template = "micro-{version}-{os}.{ext}"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "macos-arm64"
+arch_upstream = "arm64"
+extension = "tar.gz"
+filename_template = "micro-{version}-{os}.{ext}"
+
+[vulnerabilities]
+# No NVD CPE presence for micro (verified absent 2026-09-12: "zyedidia:micro",
+# "micro_project:micro" and "micro-editor:micro" all return zero dictionary entries, and a
+# keyword search for "micro-editor" returns nothing) — OSV-only tracking.
+#
+# micro is Go, so the OSV mapping is the module path from go.mod. No advisories today; the
+# path is verified current, so a future Go advisory lands here without a config change.
+# Do NOT "correct" this to crates.io "micro": that crate is JodusMelodus/micro, an unrelated
+# macro playground.
+osv = { ecosystem = "Go", name = "github.com/micro-editor/micro/v2" }
+aliases = ["micro", "micro editor"]

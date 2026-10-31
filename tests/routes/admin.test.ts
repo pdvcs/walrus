@@ -1,12 +1,18 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
-import { createAdminRouter, AdminRouteDeps } from "../../src/routes/admin.js";
+import {
+  buildRedownloadRequest,
+  createAdminRouter,
+  AdminRouteDeps,
+} from "../../src/routes/admin.js";
+import { PackageConfig } from "../../src/types/package-config.js";
+import { CoolingOffWaiverRejectedError } from "../../src/services/cooling-off-waiver-service.js";
 
 function createTestApp(deps: Parameters<typeof createAdminRouter>[0]): express.Express {
   const app = express();
   app.use(express.json());
-  app.use("/admin/v1", createAdminRouter(deps));
+  app.use("/admin/v1", createAdminRouter(deps, ""));
   return app;
 }
 
@@ -90,6 +96,44 @@ function badges(overrides: Partial<Record<string, unknown>> = {}) {
 }
 
 describe("admin routes", () => {
+  it("exposes API-token and logout controls in the shared admin navigation", async () => {
+    const response = await request(createTestApp(baseDeps())).get("/admin/v1/").expect(200);
+    expect(response.text).toContain(
+      '<form method="post" action="/admin/v1/tokens"><button class="nav-link" type="submit">API token</button></form>',
+    );
+    expect(response.text).toContain(
+      '<form method="post" action="/admin/v1/logout"><button class="nav-link" type="submit">Log out</button></form>',
+    );
+    // Logged-in operators get the night-scene logo; the public pages get the day scene.
+    expect(response.text).toContain('src="/brand/admin-logo"');
+    expect(response.text).not.toContain('src="/brand/logo"');
+  });
+
+  it("does not carry the public-view styling, so the two UIs stay distinguishable", async () => {
+    const response = await request(createTestApp(baseDeps())).get("/admin/v1/").expect(200);
+    expect(response.text).not.toContain("border-top: 4px solid #0d9488");
+  });
+
+  it("offers a first-letter filter for only the initials present in the package list", async () => {
+    const deps = baseDeps();
+    deps.listConfiguredPackages = vi
+      .fn()
+      .mockReturnValue(["azure-cli", "bat", "curl", "3proxy", "zoxide"]);
+    const response = await request(createTestApp(deps)).get("/admin/v1/").expect(200);
+
+    // One button per present initial, plus "#" for names that do not begin with a letter.
+    expect(response.text).toContain('data-filter="A"');
+    expect(response.text).toContain('data-filter="B"');
+    expect(response.text).toContain('data-filter="C"');
+    expect(response.text).toContain('data-filter="Z"');
+    expect(response.text).toContain('data-filter="#"');
+    expect(response.text).not.toContain('data-filter="D"');
+
+    // Rows carry the initial used by the client-side filter.
+    expect(response.text).toContain('data-initial="A"');
+    expect(response.text).toContain('data-initial="#"');
+  });
+
   it("starts a targeted historical backfill", async () => {
     const deps = baseDeps();
     deps.listConfiguredPackages = vi.fn().mockReturnValue(["python"]);
@@ -192,6 +236,143 @@ describe("admin routes", () => {
 
     expect(response.status).toBe(202);
     expect(body.artifact_id).toBe(77);
+  });
+
+  describe("redownload request construction (WAL-73 finding 4)", () => {
+    // `buildRedownloadRequest` is the piece the earlier test mocks away wholesale, so it runs
+    // here for real behind the route.
+    function transformedArtifact(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 91,
+        version_id: 1,
+        os: "windows",
+        arch: "x86-64",
+        filename: "Git-2.55.0.5-64-bit.zip",
+        gcs_path: "gitwindows/2.55.0.5/windows/x86-64/Git-2.55.0.5-64-bit.zip",
+        file_size: 170_000_000,
+        checksum: "aa".repeat(32),
+        checksum_type: "sha256",
+        source_checksum: "bb".repeat(32),
+        source_file_size: 70_000_000,
+        transform: "tar-bz2-to-zip@1",
+        upstream_url: "https://example.test/Git-2.55.0.5-64-bit.tar.bz2",
+        status: "available",
+        error_message: null,
+        download_started_at: null,
+        download_completed_at: null,
+        removed_at: null,
+        created_at: new Date(),
+        cooling_off_until: null,
+        ...overrides,
+      };
+    }
+
+    const windowsPlatform = {
+      os: "windows",
+      arch: "x86-64",
+      os_upstream: "windows",
+      arch_upstream: "x64",
+      extension: "tar.bz2",
+      transform: { type: "tar-bz2-to-zip", extension: "zip" },
+    };
+
+    function configWith(platforms: unknown[]) {
+      return { name: "gitwindows", platforms } as unknown as PackageConfig;
+    }
+
+    /** Wires the route's dep to the real builder, the way main.ts does. */
+    function appFor(
+      art: ReturnType<typeof transformedArtifact>,
+      config: PackageConfig | undefined,
+    ) {
+      const deps = baseDeps();
+      deps.listConfiguredPackages = vi.fn().mockReturnValue(["gitwindows"]);
+      deps.getArtifactByPackageVersionPlatform = vi
+        .fn()
+        .mockResolvedValue({ version: "2.55.0.5", artifact: art });
+      const downloadArtifact = vi.fn().mockResolvedValue({ status: "available", attempts: 1 });
+      deps.redownloadArtifact = async (artifact, packageName, version) =>
+        downloadArtifact(
+          buildRedownloadRequest(packageName, version, artifact as never, config),
+        ) as never;
+      return { app: createTestApp(deps), downloadArtifact };
+    }
+
+    it("rebuilds a transformed artifact through its transform, against the source digest", async () => {
+      const { app, downloadArtifact } = appFor(
+        transformedArtifact(),
+        configWith([windowsPlatform]),
+      );
+
+      const response = await request(app).post(
+        "/admin/v1/redownload/gitwindows/2.55.0.5/windows/x86-64",
+      );
+
+      expect(response.status).toBe(202);
+      expect(downloadArtifact).toHaveBeenCalledWith({
+        artifactId: 91,
+        upstreamUrl: "https://example.test/Git-2.55.0.5-64-bit.tar.bz2",
+        storagePath: "gitwindows/2.55.0.5/windows/x86-64/Git-2.55.0.5-64-bit.zip",
+        // the SOURCE digest — the stored checksum describes the zip, not what upstream sends
+        expectedChecksum: "bb".repeat(32),
+        checksumType: "sha256",
+        transform: windowsPlatform.transform,
+      });
+    });
+
+    it("refuses when the config no longer declares the transform the row was stored by", async () => {
+      // Without this the raw tar.bz2 lands under the .zip name and passes every check:
+      // expectedChecksum falls back to source_checksum, which is its own digest.
+      const { app, downloadArtifact } = appFor(
+        transformedArtifact(),
+        configWith([{ ...windowsPlatform, transform: undefined }]),
+      );
+
+      const response = await request(app).post(
+        "/admin/v1/redownload/gitwindows/2.55.0.5/windows/x86-64",
+      );
+      const body = response.body as { error: string };
+
+      expect(response.status).toBe(409);
+      expect(body.error).toMatch(/stored by transform 'tar-bz2-to-zip@1'/);
+      expect(body.error).toMatch(/declares no transform/);
+      expect(downloadArtifact).not.toHaveBeenCalled();
+    });
+
+    it("refuses when the platform itself no longer resolves", async () => {
+      const { app, downloadArtifact } = appFor(
+        transformedArtifact(),
+        configWith([{ ...windowsPlatform, arch: "arm64" }]),
+      );
+
+      const response = await request(app).post(
+        "/admin/v1/redownload/gitwindows/2.55.0.5/windows/x86-64",
+      );
+
+      expect(response.status).toBe(409);
+      expect(downloadArtifact).not.toHaveBeenCalled();
+    });
+
+    it("still redownloads an untransformed artifact when the config has no transform", async () => {
+      const { app, downloadArtifact } = appFor(
+        transformedArtifact({
+          filename: "uv.tar.gz",
+          source_checksum: null,
+          source_file_size: null,
+          transform: null,
+        }),
+        configWith([{ ...windowsPlatform, transform: undefined }]),
+      );
+
+      const response = await request(app).post(
+        "/admin/v1/redownload/gitwindows/2.55.0.5/windows/x86-64",
+      );
+
+      expect(response.status).toBe(202);
+      expect(downloadArtifact).toHaveBeenCalledWith(
+        expect.objectContaining({ transform: undefined, expectedChecksum: "aa".repeat(32) }),
+      );
+    });
   });
 
   it("removes artifacts for a version", async () => {
@@ -363,9 +544,11 @@ describe("admin routes", () => {
         .set("Accept", "text/html");
 
       expect(res.status).toBe(200);
-      expect(res.text).toContain('<a href="/admin/v1/jobs" class="active">Jobs</a>');
+      expect(res.text).toContain('class="nav-menu nav-menu-active"');
+      expect(res.text).toContain('<a href="/admin/v1/jobs" class="active">Sync Jobs</a>');
+      expect(res.text).toContain('<a href="/admin/v1/vuln-backfill">Vuln Jobs</a>');
       expect(res.text).toContain('<a href="/admin/v1/">Packages</a>');
-      expect(res.text).toContain('<a href="/admin/v1/validate">Validate TOML</a>');
+      expect(res.text).toContain('<a href="/admin/v1/validate">Config</a>');
     });
 
     it("returns cooling_off_until = null when no embargo was recorded", async () => {
@@ -437,6 +620,54 @@ describe("admin routes", () => {
         true,
         true,
       ]);
+    });
+  });
+
+  describe("GET /admin/v1/jobs/:id — cold-start visibility (WAL-119)", () => {
+    function runningJobDetail(container_started_at: Date | null) {
+      return {
+        job: {
+          id: 700,
+          package_name: "rust",
+          trigger_type: "admin",
+          status: "running",
+          versions_found: 0,
+          artifacts_queued: 0,
+          artifacts_downloaded: 0,
+          artifacts_failed: 0,
+          error_message: null,
+          started_at: new Date(),
+          container_started_at,
+          completed_at: null,
+        },
+        artifacts: [],
+        elapsed_ms: 45_000,
+      };
+    }
+
+    it("passes container_started_at through to the JSON response", async () => {
+      const deps = baseDeps();
+      deps.getJob = vi.fn().mockResolvedValue(runningJobDetail(null));
+      const res = await request(createTestApp(deps))
+        .get("/admin/v1/jobs/700")
+        .set("Accept", "application/json");
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe("running");
+      expect(res.body.container_started_at).toBeNull();
+    });
+
+    it("embeds container_started_at in the HTML page's initial data, for the client to render", async () => {
+      const deps = baseDeps();
+      deps.getJob = vi.fn().mockResolvedValue(runningJobDetail(null));
+      const res = await request(createTestApp(deps))
+        .get("/admin/v1/jobs/700")
+        .set("Accept", "text/html");
+
+      expect(res.status).toBe(200);
+      expect(res.text).toContain('"container_started_at":null');
+      // The client-side logic that turns that into a "queued" badge lives in the same template.
+      expect(res.text).toContain("waiting for the sync container to start");
     });
   });
 
@@ -584,5 +815,269 @@ describe("admin routes", () => {
     const patchBody = patchResponse.body as { enabled: boolean };
     expect(patchResponse.status).toBe(200);
     expect(patchBody.enabled).toBe(false);
+  });
+
+  it("shows 'queued' for a running job with no heartbeat yet, and the transfer time once it has one", async () => {
+    const deps = baseDeps();
+    deps.listJobs = vi.fn().mockResolvedValue([
+      {
+        id: 740,
+        package_name: "ms-edit",
+        trigger_type: "admin",
+        status: "running",
+        versions_found: 0,
+        artifacts_queued: 0,
+        artifacts_downloaded: 0,
+        artifacts_failed: 0,
+        error_message: null,
+        started_at: new Date(Date.now() - 60_000),
+        container_started_at: null,
+        completed_at: null,
+      },
+      {
+        id: 738,
+        package_name: "powershell",
+        trigger_type: "admin",
+        status: "completed",
+        versions_found: 3,
+        artifacts_queued: 0,
+        artifacts_downloaded: 0,
+        artifacts_failed: 0,
+        error_message: null,
+        started_at: new Date(Date.now() - 120_000),
+        container_started_at: new Date(Date.now() - 5_000),
+        completed_at: new Date(),
+      },
+    ]);
+
+    const res = await request(createTestApp(deps)).get("/admin/v1/jobs").set("Accept", "text/html");
+
+    expect(res.status).toBe(200);
+    // Cold-starting: not yet a duration to report, and not the 60s since the row was created.
+    expect(res.text).toMatch(/#740[\s\S]*?<td[^>]*>queued<\/td>/);
+    // Finished: the ~5s transfer time, not the ~120s since the row was created.
+    expect(res.text).toMatch(/#738[\s\S]*?<td[^>]*>5\.0s<\/td>/);
+  });
+
+  it("pages the HTML jobs list at 100/page with filter-preserving prev/next links", async () => {
+    const deps = baseDeps();
+    const seen: Array<{ limit?: number; offset?: number }> = [];
+    deps.listJobs = vi.fn().mockImplementation(async (opts) => {
+      seen.push(opts);
+      // Full page on page 1, 3 rows on page 2 — drives the Next/Previous rendering.
+      return (opts.offset ?? 0) === 0 ? fullPage() : shortPage();
+    });
+    const app = createTestApp(deps);
+
+    const p1 = await request(app)
+      .get("/admin/v1/jobs?package=uv&status=failed&page=1")
+      .set("Accept", "text/html");
+    expect(p1.status).toBe(200);
+    // Page 1 → offset 0, fixed limit 100, filters passed through.
+    expect(seen[0]).toMatchObject({ limit: 100, offset: 0, packageName: "uv", status: "failed" });
+    // A full page offers Next, and its href preserves the filters with page 2.
+    expect(p1.text).toMatch(
+      /href="\/admin\/v1\/jobs\?page=2&amp;package=uv&amp;status=failed"|href="\/admin\/v1\/jobs\?page=2&package=uv&status=failed"/,
+    );
+
+    const p2 = await request(app).get("/admin/v1/jobs?page=2").set("Accept", "text/html");
+    expect(seen[1]).toMatchObject({ offset: 100 });
+    // A short page hides Next and shows Previous pointing back one page.
+    expect(p2.text).not.toMatch(/href="\/admin\/v1\/jobs\?page=3/);
+    expect(p2.text).toMatch(/href="\/admin\/v1\/jobs\?page=1"/);
+    expect(p2.text).toMatch(/Page 2/);
+
+    function fullPage() {
+      return Array.from({ length: 100 }, (_, i) => job(i + 1));
+    }
+    function shortPage() {
+      return [job(201), job(202), job(203)];
+    }
+    function job(id: number) {
+      return {
+        id,
+        package_name: "uv",
+        trigger_type: "admin",
+        status: "failed",
+        versions_found: 1,
+        artifacts_queued: 1,
+        error_message: null,
+        started_at: new Date(),
+        completed_at: new Date(),
+      };
+    }
+  });
+});
+
+describe("cooling-off waiver routes", () => {
+  const waiver = {
+    id: 5,
+    package_name: "python",
+    version: "3.13.15",
+    reason: "urgent fix",
+    created_by: "ops",
+    created_at: new Date(),
+    revoked_at: null,
+  };
+  const body = { package: "python", version: "3.13.15", reason: "urgent fix", created_by: "ops" };
+
+  function waiverDeps() {
+    const deps = baseDeps();
+    deps.listConfiguredPackages = vi.fn().mockReturnValue(["python"]);
+    deps.coolingOffWaivers = {
+      list: vi.fn().mockResolvedValue([waiver]),
+      create: vi.fn().mockResolvedValue({ waiver, artifacts_released: 2 }),
+      revoke: vi.fn().mockResolvedValue({ ...waiver, revoked_at: new Date() }),
+    };
+    return deps;
+  }
+
+  it("creates a waiver and starts a sync to fetch the released artifacts", async () => {
+    const deps = waiverDeps();
+    const res = await request(createTestApp(deps)).post("/admin/v1/cooling-off-waivers").send(body);
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ artifacts_released: 2, sync_job_id: 1 });
+    expect(deps.coolingOffWaivers!.create).toHaveBeenCalledWith({
+      package_name: "python",
+      version: "3.13.15",
+      reason: "urgent fix",
+      created_by: "ops",
+    });
+    expect(deps.startSyncAsync).toHaveBeenCalledWith("python", { triggerType: "admin" });
+  });
+
+  it("keeps the waiver when the follow-up sync cannot start", async () => {
+    const deps = waiverDeps();
+    deps.startSyncAsync = vi.fn().mockRejectedValue(new Error("busy"));
+    const res = await request(createTestApp(deps)).post("/admin/v1/cooling-off-waivers").send(body);
+
+    expect(res.status).toBe(201);
+    expect(res.body.sync_job_id).toBeNull();
+  });
+
+  it("requires a reason", async () => {
+    const deps = waiverDeps();
+    const res = await request(createTestApp(deps))
+      .post("/admin/v1/cooling-off-waivers")
+      .send({ ...body, reason: "  " });
+
+    expect(res.status).toBe(400);
+    expect(deps.coolingOffWaivers!.create).not.toHaveBeenCalled();
+  });
+
+  it("404s an unconfigured package", async () => {
+    const res = await request(createTestApp(waiverDeps()))
+      .post("/admin/v1/cooling-off-waivers")
+      .send({ ...body, package: "nope" });
+
+    expect(res.status).toBe(404);
+  });
+
+  it.each([
+    ["version-not-found", 404],
+    ["not-embargoed", 409],
+  ] as const)("maps %s to %i", async (code, status) => {
+    const deps = waiverDeps();
+    deps.coolingOffWaivers!.create = vi
+      .fn()
+      .mockRejectedValue(new CoolingOffWaiverRejectedError(code, "nope"));
+    const res = await request(createTestApp(deps)).post("/admin/v1/cooling-off-waivers").send(body);
+
+    expect(res.status).toBe(status);
+    expect(deps.startSyncAsync).not.toHaveBeenCalled();
+  });
+
+  it("409s a duplicate active waiver", async () => {
+    const deps = waiverDeps();
+    deps.coolingOffWaivers!.create = vi.fn().mockRejectedValue({ code: "23505" });
+    const res = await request(createTestApp(deps)).post("/admin/v1/cooling-off-waivers").send(body);
+
+    expect(res.status).toBe(409);
+  });
+
+  it("revokes a waiver, and 404s one that is gone", async () => {
+    const deps = waiverDeps();
+    const ok = await request(createTestApp(deps))
+      .post("/admin/v1/cooling-off-waivers/5/revoke")
+      .send({ reason: "mistake", revoked_by: "ops" });
+    expect(ok.status).toBe(200);
+
+    deps.coolingOffWaivers!.revoke = vi.fn().mockResolvedValue(null);
+    const gone = await request(createTestApp(deps))
+      .post("/admin/v1/cooling-off-waivers/5/revoke")
+      .send({ reason: "mistake", revoked_by: "ops" });
+    expect(gone.status).toBe(404);
+  });
+
+  describe("package page", () => {
+    const embargoed = artifact({ cooling_off_until: new Date(Date.now() + 2 * 86_400_000) });
+
+    function pageDeps(artifacts: ReturnType<typeof artifact>[], waivers = [waiver]) {
+      const deps = depsFor(artifacts);
+      deps.coolingOffWaivers = {
+        list: vi.fn().mockResolvedValue(waivers),
+        create: vi.fn(),
+        revoke: vi.fn(),
+      };
+      return deps;
+    }
+    const page = (deps: AdminRouteDeps) =>
+      request(createTestApp(deps)).get("/admin/v1/packages/python").set("Accept", "text/html");
+
+    it("offers Release now on a version that is cooling off", async () => {
+      const res = await page(pageDeps([embargoed], []));
+
+      expect(res.status).toBe(200);
+      expect(res.text).toContain("releaseNow('python','3.13.15')");
+    });
+
+    it("offers no Release now on a version that is not cooling off", async () => {
+      const res = await page(pageDeps([artifact()], []));
+
+      expect(res.text).not.toContain("releaseNow('python'");
+    });
+
+    it("offers no Release now when waivers are not wired", async () => {
+      const res = await page(depsFor([embargoed]));
+
+      expect(res.status).toBe(200);
+      expect(res.text).not.toContain("releaseNow('python'");
+      expect(res.text).not.toContain("Cooling-off waivers");
+    });
+
+    it("lists active waivers with a revoke button, scoped to the package", async () => {
+      const deps = pageDeps([artifact()]);
+      const res = await page(deps);
+
+      expect(deps.coolingOffWaivers!.list).toHaveBeenCalledWith("python");
+      expect(res.text).toContain("Cooling-off waivers");
+      expect(res.text).toContain("urgent fix");
+      expect(res.text).toContain("revokeWaiver(5,'3.13.15')");
+    });
+
+    it("omits the waivers panel when there are none", async () => {
+      const res = await page(pageDeps([artifact()], []));
+
+      expect(res.text).not.toContain("Cooling-off waivers");
+    });
+
+    it("escapes a reason that contains markup", async () => {
+      const res = await page(
+        pageDeps([artifact()], [{ ...waiver, reason: "<script>alert(1)</script>" }]),
+      );
+
+      expect(res.text).not.toContain("<script>alert(1)</script>");
+      expect(res.text).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    });
+  });
+
+  it("lists waivers, and answers 501 when the feature is not wired", async () => {
+    const listed = await request(createTestApp(waiverDeps())).get("/admin/v1/cooling-off-waivers");
+    expect(listed.status).toBe(200);
+    expect(listed.body.waivers).toHaveLength(1);
+
+    const off = await request(createTestApp(baseDeps())).get("/admin/v1/cooling-off-waivers");
+    expect(off.status).toBe(501);
   });
 });

@@ -9,10 +9,12 @@ export interface CveRow {
   modified_at: Date | null;
   cvss_v3_score: string | null; // NUMERIC comes back as string from pg
   cvss_v3_vector: string | null;
+  cvss_v4_score: string | null; // NUMERIC comes back as string from pg
+  cvss_v4_vector: string | null;
   cvss_v2_score: string | null; // NUMERIC comes back as string from pg
   cvss_v2_vector: string | null;
   severity: string | null;
-  /** Which CVSS version produced `severity`: 'nvd-cvss-v3' | 'nvd-cvss-v2'. */
+  /** Which CVSS version produced `severity`: 'nvd-cvss-v3' | 'nvd-cvss-v4' | 'nvd-cvss-v2'. */
   severity_source: string | null;
   description: string | null;
   is_kev: boolean;
@@ -27,6 +29,8 @@ export interface CveUpsert {
   modified_at: string | null;
   cvss_v3_score: number | null;
   cvss_v3_vector: string | null;
+  cvss_v4_score?: number | null;
+  cvss_v4_vector?: string | null;
   cvss_v2_score: number | null;
   cvss_v2_vector: string | null;
   severity: string | null;
@@ -54,6 +58,11 @@ export interface AffectsInsert {
   fixed_in: string | null;
   source: "nvd" | "osv";
   raw_cpe: string | null;
+  /**
+   * The CPE carried NA (`-`) in its version component: the version attribute does not apply to
+   * this entry. Distinct from ANY (`*`), which does mean every version. See WAL-69.
+   */
+  version_na?: boolean;
 }
 
 /** Join of a cve_affects row with its parent CVE's denormalized fields. */
@@ -66,13 +75,32 @@ export interface AffectsWithCveRow {
   exact_version: string | null;
   fixed_in: string | null;
   source: string;
+  /** CPE version component was NA (`-`), so this row names no version to match against. */
+  version_na: boolean;
   severity: string | null;
   severity_source: string | null;
   cvss_v3_score: string | null;
+  cvss_v4_score: string | null;
   cvss_v2_score: string | null;
   description: string | null;
   is_kev: boolean;
   raw: { cve?: { references?: Array<{ url: string }> } } | null;
+  /** Active operator assertion excluding this CVE from the download gate (WAL-70). */
+  suppressed?: boolean;
+  suppression_id?: number | null;
+  suppression_reason?: string | null;
+  suppression_created_by?: string | null;
+  suppression_package_name?: string | null;
+  suppression_expires_at?: Date | null;
+  /**
+   * The owning package's `cve_version_extract` (ADR-008), joined on so the rule travels with
+   * the rows it governs. There is exactly one affects loader and it is always package-scoped,
+   * so carrying the rule here means every evaluator has it without threading a parameter
+   * through nine call sites — one of which would eventually be missed, and a missed one
+   * under-gates silently. Optional so existing row literals in tests keep compiling; absent
+   * behaves exactly as before this column existed.
+   */
+  cve_version_extract?: string | null;
 }
 
 export interface AffectedPackageRow {
@@ -85,6 +113,7 @@ export interface AffectedPackageRow {
   exact_version: string | null;
   fixed_in: string | null;
   source: string;
+  version_na: boolean;
 }
 
 // ── Upserts ─────────────────────────────────────────────────────────────────
@@ -93,13 +122,16 @@ export interface AffectedPackageRow {
 export async function upsertCveFull(q: Queryable, cve: CveUpsert): Promise<void> {
   await q.query(
     `INSERT INTO cves (id, published_at, modified_at, cvss_v3_score, cvss_v3_vector,
+                       cvss_v4_score, cvss_v4_vector,
                        cvss_v2_score, cvss_v2_vector, severity, severity_source, description, raw, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now())
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now())
      ON CONFLICT (id) DO UPDATE SET
        published_at    = EXCLUDED.published_at,
        modified_at     = EXCLUDED.modified_at,
        cvss_v3_score   = EXCLUDED.cvss_v3_score,
        cvss_v3_vector  = EXCLUDED.cvss_v3_vector,
+       cvss_v4_score   = EXCLUDED.cvss_v4_score,
+       cvss_v4_vector  = EXCLUDED.cvss_v4_vector,
        cvss_v2_score   = EXCLUDED.cvss_v2_score,
        cvss_v2_vector  = EXCLUDED.cvss_v2_vector,
        severity        = EXCLUDED.severity,
@@ -113,6 +145,8 @@ export async function upsertCveFull(q: Queryable, cve: CveUpsert): Promise<void>
       cve.modified_at,
       cve.cvss_v3_score,
       cve.cvss_v3_vector,
+      cve.cvss_v4_score ?? null,
+      cve.cvss_v4_vector ?? null,
       cve.cvss_v2_score,
       cve.cvss_v2_vector,
       cve.severity,
@@ -165,8 +199,8 @@ export async function deleteAffectsForPackageAndSource(
 export async function insertAffects(q: Queryable, row: AffectsInsert): Promise<number> {
   const res = await q.query(
     `INSERT INTO cve_affects
-       (cve_id, package_name, version_start, version_start_excl, version_end, version_end_excl, exact_version, fixed_in, source, raw_cpe)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       (cve_id, package_name, version_start, version_start_excl, version_end, version_end_excl, exact_version, fixed_in, source, raw_cpe, version_na)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      ON CONFLICT ON CONSTRAINT cve_affects_dedupe DO NOTHING`,
     [
       row.cve_id,
@@ -179,6 +213,7 @@ export async function insertAffects(q: Queryable, row: AffectsInsert): Promise<n
       row.fixed_in,
       row.source,
       row.raw_cpe,
+      row.version_na ?? false,
     ],
   );
   return res.rowCount ?? 0;
@@ -217,6 +252,7 @@ export async function clearKevExcept(q: Queryable, ids: string[]): Promise<numbe
 export async function getCveById(pool: Pool, id: string): Promise<CveRow | null> {
   const { rows } = await pool.query<CveRow>(
     `SELECT id, published_at, modified_at, cvss_v3_score, cvss_v3_vector,
+            cvss_v4_score, cvss_v4_vector,
             cvss_v2_score, cvss_v2_vector, severity, severity_source,
             description, is_kev, kev_added_at, raw, updated_at
      FROM cves WHERE id = $1`,
@@ -225,20 +261,78 @@ export async function getCveById(pool: Pool, id: string): Promise<CveRow | null>
   return rows[0] ?? null;
 }
 
-/** All affects rows (joined to CVE metadata) for one package — powers /vulns and cross-ref. */
+/**
+ * All affects rows (joined to CVE metadata) for one package — powers /vulns and cross-ref.
+ *
+ * **Never select `c.raw` whole here (WAL-104).** It holds the entire NVD or OSV advisory, and this
+ * loader is package-scoped and unbounded: every row of a package's corpus lands in the process at
+ * once. Seven call sites reach it, `download.ts` among them, so serving one JDK artifact meant
+ * parsing that package's whole advisory history into a 384 MiB heap before a byte went out.
+ * Sixteen heap aborts on `pdutta-demos` between 2026-08-31 and 2026-09-01 came from exactly that.
+ *
+ * The single reader of this field wants at most five reference URLs (`buildReferences` in
+ * `vuln-query.ts`), which is why `AffectsWithCveRow.raw` is already typed as nothing but
+ * `{ cve?: { references?: ... } }`. Rebuilding that shape in SQL honours the declared type instead
+ * of over-delivering against it, and costs the callers that never touch `raw` — the gate, the
+ * catalog routes, the availability sweep — nothing at all.
+ *
+ * `description` is capped for the same reason (WAL-104 AC3). Its only consumer on this row is
+ * `vuln-query.ts`, which truncates to `VULN_SUMMARY_MAX_CHARS` before rendering — so the rest of a
+ * multi-kilobyte NVD description was fetched, parsed and discarded, once per row, on every request
+ * including a download. The cap is passed as a parameter rather than written into the SQL so the
+ * number has one home; `+ 1` so the consumer can still tell a truncated description from an exact
+ * fit and keep its ellipsis.
+ *
+ * The `jsonb_typeof` guard, not `IS NULL`: the column is `JSONB NOT NULL`, so an absent advisory
+ * is stored as the JSON value `null` and `c.raw IS NULL` is never true. Without the guard a CVE
+ * with no advisory read back as `{"cve":{"references":null}}` where it used to read back as
+ * `null` — a caller doing `row.raw?.cve` would have started seeing an object. Caught by the
+ * regression test below, which is the only reason it is not still in here.
+ */
+/**
+ * How much of a CVE description reaches a caller. Defined here, beside the query that applies it,
+ * so the loader and the one consumer that renders it cannot disagree about the number — the
+ * mistake WAL-101 was.
+ */
+export const VULN_SUMMARY_MAX_CHARS = 300;
+
 export async function listAffectsWithCveForPackage(
   pool: Pool,
   packageName: string,
+  opts: { excludeSuppressionId?: number } = {},
 ): Promise<AffectsWithCveRow[]> {
   const { rows } = await pool.query<AffectsWithCveRow>(
     `SELECT ca.cve_id, ca.version_start, ca.version_start_excl, ca.version_end,
-            ca.version_end_excl, ca.exact_version, ca.fixed_in, ca.source,
-            c.severity, c.severity_source, c.cvss_v3_score, c.cvss_v2_score,
-            c.description, c.is_kev, c.raw
-     FROM cve_affects ca JOIN cves c ON c.id = ca.cve_id
+            ca.version_end_excl, ca.exact_version, ca.fixed_in, ca.source, ca.version_na,
+            c.severity, c.severity_source, c.cvss_v3_score, c.cvss_v4_score, c.cvss_v2_score,
+            left(c.description, $3) AS description, c.is_kev, p.cve_version_extract,
+            CASE WHEN jsonb_typeof(c.raw) = 'null' THEN NULL
+                 ELSE jsonb_build_object('cve',
+                        jsonb_build_object('references', c.raw->'cve'->'references'))
+            END AS raw,
+            (s.id IS NOT NULL) AS suppressed,
+            s.id AS suppression_id,
+            s.reason AS suppression_reason,
+            s.created_by AS suppression_created_by,
+            s.package_name AS suppression_package_name,
+            s.expires_at AS suppression_expires_at
+     FROM cve_affects ca
+     JOIN cves c ON c.id = ca.cve_id
+     JOIN packages p ON p.name = ca.package_name
+     LEFT JOIN LATERAL (
+       SELECT cs.id, cs.reason, cs.created_by, cs.package_name, cs.expires_at
+         FROM cve_suppressions cs
+        WHERE cs.cve_id = ca.cve_id
+          AND (cs.package_name IS NULL OR cs.package_name = ca.package_name)
+          AND cs.revoked_at IS NULL
+          AND (cs.expires_at IS NULL OR cs.expires_at > now())
+          AND ($2::integer IS NULL OR cs.id <> $2)
+        ORDER BY (cs.package_name IS NOT NULL) DESC, cs.created_at DESC
+        LIMIT 1
+     ) s ON true
      WHERE ca.package_name = $1
      ORDER BY ca.cve_id DESC`,
-    [packageName],
+    [packageName, opts.excludeSuppressionId ?? null, VULN_SUMMARY_MAX_CHARS + 1],
   );
   return rows;
 }
@@ -257,6 +351,8 @@ export async function updateCveCvss(
     id: string;
     cvss_v3_score: number | null;
     cvss_v3_vector: string | null;
+    cvss_v4_score: number | null;
+    cvss_v4_vector: string | null;
     cvss_v2_score: number | null;
     cvss_v2_vector: string | null;
     severity: string | null;
@@ -267,16 +363,20 @@ export async function updateCveCvss(
     `UPDATE cves SET
        cvss_v3_score   = $2,
        cvss_v3_vector  = $3,
-       cvss_v2_score   = $4,
-       cvss_v2_vector  = $5,
-       severity        = $6,
-       severity_source = $7,
+       cvss_v4_score   = $4,
+       cvss_v4_vector  = $5,
+       cvss_v2_score   = $6,
+       cvss_v2_vector  = $7,
+       severity        = $8,
+       severity_source = $9,
        updated_at      = now()
      WHERE id = $1`,
     [
       cve.id,
       cve.cvss_v3_score,
       cve.cvss_v3_vector,
+      cve.cvss_v4_score,
+      cve.cvss_v4_vector,
       cve.cvss_v2_score,
       cve.cvss_v2_vector,
       cve.severity,
@@ -328,7 +428,8 @@ export async function listAffectedPackagesForCve(
 ): Promise<AffectedPackageRow[]> {
   const { rows } = await pool.query<AffectedPackageRow>(
     `SELECT ca.package_name, p.display_name, ca.version_start, ca.version_start_excl,
-            ca.version_end, ca.version_end_excl, ca.exact_version, ca.fixed_in, ca.source
+            ca.version_end, ca.version_end_excl, ca.exact_version, ca.fixed_in, ca.source,
+            ca.version_na
      FROM cve_affects ca JOIN packages p ON p.name = ca.package_name
      WHERE ca.cve_id = $1 ORDER BY ca.package_name`,
     [cveId],

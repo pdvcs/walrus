@@ -20,11 +20,11 @@ describe("vulnerability sync state", () => {
   });
 
   beforeEach(async () => {
-    await pool.query(`DELETE FROM vuln_sync_state WHERE source = 'nvd-cve'`);
+    await pool.query(`DELETE FROM vuln_sync_state WHERE source IN ('nvd-cve', 'cvss')`);
   });
 
   afterAll(async () => {
-    await pool.query(`DELETE FROM vuln_sync_state WHERE source = 'nvd-cve'`);
+    await pool.query(`DELETE FROM vuln_sync_state WHERE source IN ('nvd-cve', 'cvss')`);
     await pool.end();
   });
 
@@ -45,5 +45,35 @@ describe("vulnerability sync state", () => {
     expect(Date.parse(status.nvd.last_attempt!)).toBeGreaterThanOrEqual(
       Date.parse(successfulFreshness!),
     );
+  });
+
+  it("records a cvss attempt as in flight without disturbing prior success/failure history", async () => {
+    // Success, then failure, then a fresh start marker: the marker must refresh
+    // last_attempt and clear last_ok while preserving both timestamps.
+    await setSyncState(pool, "cvss", null, true);
+    const okAt = (await getVulnSyncStatus(pool)).cvss.last_success;
+    await setSyncState(pool, "cvss", null, false);
+
+    const mid = await getVulnSyncStatus(pool);
+    expect(mid.cvss.last_ok).toBe(false);
+    expect(mid.cvss.last_failure).not.toBeNull();
+    const failureAt = mid.cvss.last_failure;
+
+    // `null` = attempt begun, no outcome yet — see setSyncState.
+    await setSyncState(pool, "cvss", null, null);
+
+    const status = await getVulnSyncStatus(pool);
+    expect(status.cvss.last_ok).toBeNull();
+    expect(status.cvss.last_attempt).not.toBeNull();
+    expect(Date.parse(status.cvss.last_attempt!)).toBeGreaterThanOrEqual(Date.parse(failureAt!));
+    expect(status.cvss.last_success).toBe(okAt); // preserved
+    expect(status.cvss.last_failure).toBe(failureAt); // preserved
+    expect((await getDataFreshness(pool)).cvss_last_sync).toBe(okAt); // success still counts
+
+    // Completing flips it to a clean success.
+    await setSyncState(pool, "cvss", null, true);
+    const done = await getVulnSyncStatus(pool);
+    expect(done.cvss.last_ok).toBe(true);
+    expect(done.cvss.last_failure).toBe(failureAt);
   });
 });

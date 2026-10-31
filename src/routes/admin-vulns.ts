@@ -1,10 +1,30 @@
 import { Router } from "express";
-import { renderSharedHtml, escHtml } from "./admin.js";
+import { renderSharedHtml, escHtml, type PageMode } from "./admin.js";
+import { withBase } from "../common/base-path.js";
 import { VulnQueryResult, DataFreshness } from "../services/vuln-query.js";
-import { isVulnSyncSource, runVulnSync, SourceOutcome, VulnSyncImpls } from "../vuln/sync/index.js";
+import {
+  isVulnSyncSource,
+  parseVulnSyncOptions,
+  runVulnSync,
+  SourceOutcome,
+  VulnSyncImpls,
+} from "../vuln/sync/index.js";
+import { VulnSyncAlreadyRunningError } from "../vuln/sync/lock.js";
 import type { VulnSourceStatus, VulnSyncStatus } from "../db/queries/vuln-sync-state.js";
-import type { VulnBackfillJobRow } from "../db/queries/vuln-backfill-jobs.js";
+import type {
+  VulnBackfillJobRow,
+  VulnBackfillJobStatus,
+} from "../db/queries/vuln-backfill-jobs.js";
 import { buildPublicationWindows } from "../vuln/sync/nvd-sync.js";
+import { VERSION_NA } from "../vuln/version-ranges.js";
+import { meetsCriticalGate } from "../services/vuln-service.js";
+import type {
+  CreateCveSuppressionInput,
+  CveSuppressionRow,
+} from "../db/queries/cve-suppressions.js";
+import type { SuppressionPreview } from "../services/cve-suppression-service.js";
+import type { AdminActionRow, ListSuppressionAuditOptions } from "../db/queries/admin-actions.js";
+import type { AvailabilityTransition } from "../services/availability-history.js";
 
 export interface AdminVulnsRouteDeps {
   /** Bound /vulns query (same code path as the public API). */
@@ -12,7 +32,16 @@ export interface AdminVulnsRouteDeps {
   getDataFreshness: () => Promise<DataFreshness>;
   getSyncStatus: () => Promise<VulnSyncStatus>;
   vulnSyncImpls: VulnSyncImpls;
-  logAdminAction: (details: Record<string, unknown>) => Promise<void>;
+  logAdminAction: (details: Record<string, unknown>, subject?: string) => Promise<void>;
+  /** Record gate transitions after an admin-triggered sync, exactly as /internal does. */
+  recordAvailability?: (source: string) => Promise<{
+    newlyBlocked: Array<{ package_name: string; version: string; cve_id: string | null }>;
+    newlyAvailable: Array<{ package_name: string; version: string }>;
+  }>;
+  /** Backs GET /admin/v1/transitions — every package's gate transitions since a point in
+   * time, for correlating a "blocked a version" alert back to what it actually blocked
+   * without already knowing which package to ask. */
+  listTransitionsSince?: (since: Date, limit?: number) => Promise<AvailabilityTransition[]>;
   /** Operator hints (e.g. "run vuln:backfill") shown above the freshness panel. */
   getHints?: () => Promise<string[]>;
   startVulnBackfill: (
@@ -20,6 +49,29 @@ export interface AdminVulnsRouteDeps {
     packageName?: string,
   ) => Promise<{ job?: VulnBackfillJobRow; alreadyRunning?: boolean }>;
   getVulnBackfill: (id: string) => Promise<VulnBackfillJobRow | null>;
+  /** Newest-first backfill listing backing GET /admin/v1/vuln-backfill (WAL-121). */
+  listVulnBackfills: (opts: {
+    status?: VulnBackfillJobStatus;
+    limit?: number;
+    offset?: number;
+  }) => Promise<VulnBackfillJobRow[]>;
+  /** WAL-100: clear the retry budget so the sweep picks a stuck package up again. */
+  resetBackfillAttempts: (packageName?: string) => Promise<string[]>;
+  getActiveSuppressionCount: () => Promise<number>;
+  listActiveSuppressions: () => Promise<CveSuppressionRow[]>;
+  listSuppressionAudit: (opts: ListSuppressionAuditOptions) => Promise<AdminActionRow[]>;
+  cveExists: (cveId: string) => Promise<boolean>;
+  packageExists: (packageName: string) => Promise<boolean>;
+  previewSuppression: (
+    input: Pick<CreateCveSuppressionInput, "cve_id" | "package_name">,
+  ) => Promise<SuppressionPreview>;
+  createSuppression: (input: CreateCveSuppressionInput) => Promise<CveSuppressionRow>;
+  previewSuppressionRevocation: (id: number) => Promise<SuppressionPreview | null>;
+  revokeSuppression: (input: {
+    id: number;
+    reason: string;
+    revoked_by: string;
+  }) => Promise<CveSuppressionRow | null>;
 }
 
 /**
@@ -27,7 +79,7 @@ export interface AdminVulnsRouteDeps {
  * /admin/v1 style. Data flows through the shared query service (no duplicate SQL);
  * autocomplete calls the public search endpoint client-side.
  */
-export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
+export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps, basePath: string): Router {
   const router = Router();
 
   router.get("/vulns", async (req, res, next) => {
@@ -36,27 +88,76 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
       const version = optionalString(req.query.version);
       const synced = optionalString(req.query.synced);
       const syncError = optionalString(req.query.sync_error);
+      const backfillStarted = optionalString(req.query.backfill_started);
 
-      const [freshness, syncStatus] = await Promise.all([
+      const [freshness, syncStatus, activeSuppressions] = await Promise.all([
         deps.getDataFreshness(),
         deps.getSyncStatus(),
+        deps.listActiveSuppressions(),
       ]);
       const hints = deps.getHints ? await deps.getHints() : [];
       const result = product ? await deps.queryVulns(product, version) : null;
 
       res.setHeader("Content-Type", "text/html; charset=utf-8");
       res.send(
-        renderExplorer({
-          product,
-          version,
-          synced,
-          syncError,
-          freshness,
-          syncStatus,
-          hints,
-          result,
-        }),
+        renderExplorer(
+          {
+            product,
+            version,
+            synced,
+            syncError,
+            backfillStarted,
+            freshness,
+            syncStatus,
+            hints,
+            activeSuppressions,
+            result,
+          },
+          basePath,
+        ),
       );
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get("/transitions", async (req, res, next) => {
+    try {
+      const sinceParam = optionalString(req.query.since);
+      if (!sinceParam) {
+        res.status(400).json({ error: "since is required (ISO 8601 timestamp)" });
+        return;
+      }
+      const since = new Date(sinceParam);
+      if (Number.isNaN(since.getTime())) {
+        res.status(400).json({ error: `Invalid since: ${sinceParam}` });
+        return;
+      }
+      if (!deps.listTransitionsSince) {
+        res.status(503).json({ error: "Transition history is not available" });
+        return;
+      }
+
+      const limit = optionalInteger(req.query.limit);
+      const rows = await deps.listTransitionsSince(since, limit);
+
+      res.json({
+        since: since.toISOString(),
+        transitions: rows.map((r) => ({
+          package_name: r.package_name,
+          version: r.version,
+          status: r.status,
+          cve_id: r.cve_id,
+          cvss_v3_score: r.cvss_v3_score === null ? null : Number(r.cvss_v3_score),
+          cvss_v4_score: r.cvss_v4_score === null ? null : Number(r.cvss_v4_score),
+          cvss_v2_score: r.cvss_v2_score === null ? null : Number(r.cvss_v2_score),
+          severity: r.severity,
+          severity_source: r.severity_source,
+          source: r.source,
+          trigger: r.trigger_type,
+          at: new Date(r.created_at).toISOString(),
+        })),
+      });
     } catch (err) {
       next(err);
     }
@@ -69,52 +170,329 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
         res.status(400).json({ error: `Unknown vuln sync source: ${source}` });
         return;
       }
-      const outcomes = await runVulnSync(source, deps.vulnSyncImpls);
-      await deps.logAdminAction({ action: "vuln-sync", source, outcomes });
+      const parsed = parseVulnSyncOptions(source, req.body);
+      if (!parsed.ok) {
+        res.status(400).json({ error: parsed.error });
+        return;
+      }
+
+      if (parsed.opts.dryRun) {
+        const preview = deps.vulnSyncImpls.cvssPreview;
+        if (!preview) {
+          res.status(503).json({ error: "cvss preview is not available" });
+          return;
+        }
+        let result;
+        try {
+          result = await preview({ limit: parsed.opts.limit });
+        } catch (err) {
+          if (err instanceof VulnSyncAlreadyRunningError) {
+            res.status(409).json({ code: "already_running", error: err.message });
+            return;
+          }
+          throw err;
+        }
+        // Logged like any other admin action even though nothing was written — who
+        // previewed a gate change, and when, is part of the audit trail.
+        await deps.logAdminAction(
+          {
+            action: "vuln-sync-preview",
+            source,
+            proposals: result.proposals.length,
+            newly_blocked: result.newly_blocked.reduce((n, d) => n + d.newly_blocked.length, 0),
+          },
+          req.auth?.subject,
+        );
+        res.status(200).json({ source, dry_run: true, preview: result });
+        return;
+      }
+
+      const outcomes = await runVulnSync(source, deps.vulnSyncImpls, parsed.opts);
+      const availability = outcomes.some((o: SourceOutcome) => o.ok)
+        ? await deps.recordAvailability?.(source).catch(() => undefined)
+        : undefined;
+      await deps.logAdminAction(
+        {
+          action: "vuln-sync",
+          source,
+          outcomes,
+          ...(availability
+            ? {
+                newly_blocked: availability.newlyBlocked.length,
+                newly_available: availability.newlyAvailable.length,
+              }
+            : {}),
+        },
+        req.auth?.subject,
+      );
       const wantsHtml = req.headers.accept?.includes("text/html");
       const alreadyRunning = source !== "all" && outcomes[0]?.code === "already_running";
       if (wantsHtml) {
         res.redirect(
           alreadyRunning
-            ? `/admin/v1/vulns?sync_error=${encodeURIComponent(`${source} sync is already running`)}`
-            : `/admin/v1/vulns?synced=${encodeURIComponent(source)}`,
+            ? `${withBase(basePath, "/admin/v1/vulns")}?sync_error=${encodeURIComponent(`${source} sync is already running`)}`
+            : `${withBase(basePath, "/admin/v1/vulns")}?synced=${encodeURIComponent(source)}`,
         );
         return;
       }
       const allOk = outcomes.every((o: SourceOutcome) => o.ok);
-      res.status(allOk ? 200 : alreadyRunning ? 409 : 207).json({ source, outcomes });
+      // Same rule as the internal route (WAL-108): 207 says "some of this set worked", which is
+      // true for `all` and a misstatement for one named source, where the set has one member. No
+      // scheduler reads this route, so nothing retries on it either way — but an API client
+      // deserves the same answer from both, and two routes disagreeing about what a failed sync
+      // looks like is how the next reader learns the wrong rule.
+      res
+        .status(allOk ? 200 : alreadyRunning ? 409 : source === "all" ? 207 : 502)
+        .json({ source, outcomes });
     } catch (err) {
       next(err);
     }
   });
 
+  router.post("/vuln-suppressions/preview", async (req, res, next) => {
+    try {
+      const parsed = parseSuppressionBody(req.body, req.auth?.subject);
+      if (!parsed.ok) return void res.status(400).json({ error: parsed.error });
+      const existenceError = await validateSuppressionScope(deps, parsed.input);
+      if (existenceError) return void res.status(404).json({ error: existenceError });
+      const preview = await deps.previewSuppression(parsed.input);
+      res.json({ preview });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Count only: this is polled by the admin nav chip on every page, so it must stay a
+  // single cheap query. The rows themselves are rendered by the explorer page.
+  router.get("/vuln-suppressions/active-count", async (_req, res, next) => {
+    try {
+      res.json({ active_count: await deps.getActiveSuppressionCount() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/vuln-suppressions/audit", async (req, res, next) => {
+    try {
+      const parsed = parseSuppressionAuditQuery(req.query);
+      if (!parsed.ok) return void res.status(400).json({ error: parsed.error });
+      const actions = await deps.listSuppressionAudit(parsed.options);
+      res.json({
+        actions,
+        next_before_id:
+          actions.length === parsed.options.limit ? (actions.at(-1)?.id ?? null) : null,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/vuln-suppressions", async (req, res, next) => {
+    try {
+      const parsed = parseSuppressionBody(req.body, req.auth?.subject);
+      if (!parsed.ok) return void res.status(400).json({ error: parsed.error });
+      const existenceError = await validateSuppressionScope(deps, parsed.input);
+      if (existenceError) return void res.status(404).json({ error: existenceError });
+      let suppression;
+      try {
+        suppression = await deps.createSuppression(parsed.input);
+      } catch (error) {
+        if (isUniqueViolation(error)) {
+          return void res.status(409).json({
+            error: "An active suppression already exists for this CVE and package scope",
+          });
+        }
+        throw error;
+      }
+      const availability = await deps.recordAvailability?.("suppression");
+      res.status(201).json({ suppression, availability });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/vuln-suppressions/:id/revoke/preview", async (req, res, next) => {
+    try {
+      const id = positiveInteger(req.params.id);
+      if (id === null) return void res.status(400).json({ error: "Invalid suppression id" });
+      const parsed = parseRevocationBody(req.body, req.auth?.subject);
+      if (!parsed.ok) return void res.status(400).json({ error: parsed.error });
+      const preview = await deps.previewSuppressionRevocation(id);
+      if (!preview) return void res.status(404).json({ error: "Suppression not found" });
+      res.json({ preview });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/vuln-suppressions/:id/revoke", async (req, res, next) => {
+    try {
+      const id = positiveInteger(req.params.id);
+      if (id === null) return void res.status(400).json({ error: "Invalid suppression id" });
+      const parsed = parseRevocationBody(req.body, req.auth?.subject);
+      if (!parsed.ok) return void res.status(400).json({ error: parsed.error });
+      const suppression = await deps.revokeSuppression({ id, ...parsed.input });
+      if (!suppression) return void res.status(404).json({ error: "Suppression not found" });
+      const availability = await deps.recordAvailability?.("suppression");
+      res.json({ suppression, availability });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.post("/vuln-backfill", async (req, res, next) => {
     try {
-      const body = (req.body ?? {}) as { since?: unknown; package?: unknown };
+      const body = (req.body ?? {}) as {
+        since?: unknown;
+        package?: unknown;
+        return_version?: unknown;
+      };
       const since = optionalString(body.since);
       const packageName = optionalString(body.package);
       if (since) buildPublicationWindows(since);
       const result = await deps.startVulnBackfill(since, packageName);
+      // Browser form posts get a redirect back to the explorer with a status message —
+      // navigating to a JSON body was a dead end for operators. API clients keep JSON.
+      const wantsHtml = req.headers.accept?.includes("text/html");
+      if (wantsHtml) {
+        // A package-scoped backfill is started from a package's own view, so the redirect has
+        // to land back on it — dropping the operator on an empty explorer would make them
+        // retype the lookup to see what the run they just started did.
+        const context = new URLSearchParams();
+        if (packageName) context.set("product", packageName);
+        const returnVersion = optionalString(body.return_version);
+        if (returnVersion) context.set("version", returnVersion);
+
+        if (result.alreadyRunning) {
+          context.set("sync_error", "A vulnerability backfill is already running");
+          res.redirect(303, `${withBase(basePath, "/admin/v1/vulns")}?${context.toString()}`);
+          return;
+        }
+        context.set("backfill_started", String(result.job?.id ?? ""));
+        if (since) context.set("backfill_since", since);
+        res.redirect(303, `${withBase(basePath, "/admin/v1/vulns")}?${context.toString()}`);
+        return;
+      }
       if (result.alreadyRunning)
         return void res
           .status(409)
           .json({ code: "already_running", ...(result.job ? { job: result.job } : {}) });
       if (!result.job) throw new Error("Backfill launcher did not return a job");
-      await deps.logAdminAction({
-        action: "vuln-backfill",
-        since,
-        package: packageName,
-        job_id: result.job.id,
+      await deps.logAdminAction(
+        {
+          action: "vuln-backfill",
+          since,
+          package: packageName,
+          job_id: result.job.id,
+        },
+        req.auth?.subject,
+      );
+      res.status(202).json({
+        job: result.job,
+        status_url: `${withBase(basePath, "/admin/v1/vuln-backfill/")}${result.job.id}`,
       });
-      res
-        .status(202)
-        .json({ job: result.job, status_url: `/admin/v1/vuln-backfill/${result.job.id}` });
     } catch (error) {
       if (
         error instanceof Error &&
         (error.message.includes("since") || error.message.includes("No CPE pairs"))
-      )
+      ) {
+        if (req.headers.accept?.includes("text/html")) {
+          return void res.redirect(
+            303,
+            `${withBase(basePath, "/admin/v1/vulns")}?sync_error=${encodeURIComponent(error.message)}`,
+          );
+        }
         return void res.status(400).json({ error: error.message });
+      }
+      next(error);
+    }
+  });
+
+  /**
+   * WAL-100 AC1. Re-enable self-healing for packages the sweep has given up on.
+   *
+   * Audited like every other operator action, and for a sharper reason than consistency: this one
+   * re-enables *automatic* work. The next sweep will launch a Cloud Run Job nobody watched anyone
+   * ask for, so the audit row is the only thing connecting that job to a person.
+   *
+   * Resetting nothing is a 200 with an empty list, not a 404. "No package was exhausted" is a
+   * successful, idempotent outcome — an operator clearing a state that has already cleared itself
+   * (a sweep succeeded, or the environment was rebuilt) has not made a mistake, and a retry of the
+   * same call must not start reporting errors.
+   */
+  router.post("/vuln-backfill/reset-attempts", async (req, res, next) => {
+    try {
+      const body = (req.body ?? {}) as { package?: unknown };
+      const packageName = optionalString(body.package);
+      if (packageName && deps.packageExists && !(await deps.packageExists(packageName))) {
+        const message = `Unknown package: ${packageName}`;
+        if (req.headers.accept?.includes("text/html")) {
+          return void res.redirect(
+            303,
+            `${withBase(basePath, "/admin/v1/vulns")}?sync_error=${encodeURIComponent(message)}`,
+          );
+        }
+        return void res.status(404).json({ error: message });
+      }
+
+      const reset = await deps.resetBackfillAttempts(packageName);
+      await deps.logAdminAction(
+        {
+          action: "vuln-backfill-reset-attempts",
+          ...(packageName ? { package: packageName } : { scope: "all-exhausted" }),
+          reset_count: reset.length,
+          packages: reset,
+        },
+        req.auth?.subject,
+      );
+
+      if (req.headers.accept?.includes("text/html")) {
+        const context = new URLSearchParams();
+        if (packageName) context.set("product", packageName);
+        context.set(
+          "synced",
+          reset.length === 0
+            ? "No package had exhausted its backfill attempts"
+            : `Backfill attempts reset for ${reset.length} package(s): ${reset.join(", ")}`,
+        );
+        return void res.redirect(
+          303,
+          `${withBase(basePath, "/admin/v1/vulns")}?${context.toString()}`,
+        );
+      }
+      res.status(200).json({ reset_count: reset.length, packages: reset });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // WAL-121. The backfill collection had no read side: a queued job was only visible as a
+  // transient banner link and the detail endpoint returned raw JSON. This is the list resource,
+  // content-negotiated exactly like GET /admin/v1/jobs — HTML for browsers, { jobs } for API
+  // clients (ADR-007: one handler, the page is a client of it).
+  router.get("/vuln-backfill", async (req, res, next) => {
+    try {
+      const status = parseVulnBackfillStatus(req.query.status);
+      const wantsHtml = req.headers.accept?.includes("text/html");
+      // The HTML page mirrors the Sync Jobs page: fixed 100/page, 1-based `page`. JSON keeps an
+      // optional unbounded-by-default limit.
+      const page = wantsHtml ? Math.max(1, optionalInteger(req.query.page) ?? 1) : undefined;
+      const limit = wantsHtml ? 100 : optionalInteger(req.query.limit);
+
+      const jobs = await deps.listVulnBackfills({
+        status,
+        ...(limit !== undefined ? { limit } : {}),
+        ...(page !== undefined ? { offset: (page - 1) * (limit ?? 100) } : {}),
+      });
+
+      if (wantsHtml) {
+        res.setHeader("Content-Type", "text/html; charset=utf-8");
+        res.send(renderVulnJobsPage(jobs, { page: page ?? 1, pageSize: 100, status }, basePath));
+        return;
+      }
+
+      res.json({ jobs });
+    } catch (error) {
       next(error);
     }
   });
@@ -123,6 +501,11 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
     try {
       const job = await deps.getVulnBackfill(req.params.id);
       if (!job) return void res.status(404).json({ error: "Backfill job not found" });
+      if (req.headers.accept?.includes("text/html")) {
+        res.setHeader("Content-Type", "text/html; charset=utf-8");
+        res.send(renderVulnJobPage(job, basePath));
+        return;
+      }
       res.json({ job });
     } catch (error) {
       next(error);
@@ -132,99 +515,192 @@ export function createAdminVulnsRouter(deps: AdminVulnsRouteDeps): Router {
   return router;
 }
 
-function renderExplorer(ctx: {
-  product?: string;
-  version?: string;
-  synced?: string;
-  syncError?: string;
-  freshness: DataFreshness;
-  syncStatus: VulnSyncStatus;
-  hints: string[];
-  result: VulnQueryResult | null;
-}): string {
-  const esc = escHtml;
-  const product = ctx.product ?? "";
-  const version = ctx.version ?? "";
+/** Relative-time labels for the freshness chips. Shared by the admin explorer and the viewer page. */
+export const SOURCE_CHIPS_SCRIPT = `
+    // ── Relative timestamps for the source chips ──
+    function relTime(iso) {
+      const then = new Date(iso).getTime();
+      if (isNaN(then)) return null;
+      const mins = Math.round((Date.now() - then) / 60000);
+      if (mins < 1) return 'just now';
+      if (mins < 60) return mins + 'm ago';
+      const hours = Math.round(mins / 60);
+      if (hours < 48) return hours + 'h ago';
+      return Math.round(hours / 24) + 'd ago';
+    }
+    document.querySelectorAll('.src-ts').forEach(el => {
+      const iso = el.getAttribute('data-ts');
+      if (!iso) return;
+      const rel = relTime(iso);
+      if (rel) el.textContent = rel;
+      el.parentElement.title = el.parentElement.title + ' — last success ' + new Date(iso).toISOString();
+    });`;
 
-  const hintsBanner = ctx.hints
-    .map((h) => `<div class="note note-warn">${renderHint(h)}</div>`)
-    .join("");
-
-  const freshnessPanel = `
-    <div class="freshness">
-      <strong>Data freshness</strong>
-      <span>NVD: ${fmtTs(ctx.freshness.nvd_last_sync)} ${fmtSourceStatus(ctx.syncStatus.nvd)}</span>
-      <span>KEV: ${fmtTs(ctx.freshness.kev_last_sync)} ${fmtSourceStatus(ctx.syncStatus.kev)}</span>
-      <span>OSV: ${fmtTs(ctx.freshness.osv_last_sync)} ${fmtSourceStatus(ctx.syncStatus.osv)}</span>
-      <form method="post" action="/admin/v1/vuln-sync/nvd" style="display:inline"><button class="btn btn-sm btn-secondary">Sync NVD now</button></form>
-      <form method="post" action="/admin/v1/vuln-sync/kev" style="display:inline"><button class="btn btn-sm btn-secondary">Sync KEV now</button></form>
-      <form method="post" action="/admin/v1/vuln-sync/osv" style="display:inline"><button class="btn btn-sm btn-secondary">Sync OSV now</button></form>
-      <form method="post" action="/admin/v1/vuln-backfill" style="display:inline"><button class="btn btn-sm btn-secondary">Start NVD backfill</button></form>
-    </div>`;
-
-  const syncedBanner = ctx.synced
-    ? `<div class="note note-ok">Triggered ${esc(ctx.synced)} sync. Freshness updates once ingestion completes.</div>`
-    : "";
-  const syncErrorBanner = ctx.syncError
-    ? `<div class="note note-warn">${esc(ctx.syncError)}</div>`
-    : "";
-
-  const form = `
-    <form method="get" action="/admin/v1/vulns" class="vform" autocomplete="off">
-      <div style="position:relative">
-        <input id="product" name="product" value="${esc(product)}" placeholder="Product or alias (e.g. openjdk, npp)" required>
-        <div id="ac" class="ac"></div>
-      </div>
-      <input name="version" value="${esc(version)}" placeholder="Version (optional)">
-      <button class="btn btn-primary" type="submit">Look up</button>
-    </form>`;
-
-  const results = ctx.result
-    ? renderResult(ctx.result)
-    : `<p class="empty">Enter a product to look up known CVEs.</p>`;
-
-  const body = `
-    <h1>Vulnerability explorer</h1>
-    ${hintsBanner}
-    ${freshnessPanel}
-    ${syncedBanner}
-    ${syncErrorBanner}
-    ${form}
-    ${results}`;
-
-  const scripts = `
+/** Product autocomplete against the public search endpoint; works unauthenticated. */
+export const autocompleteScript = (basePath: string): string => `
+    // ── Autocomplete with keyboard navigation ──
     const input = document.getElementById('product');
     const ac = document.getElementById('ac');
-    let timer;
+    let acItems = [];
+    let acIndex = -1;
+    function clearAc() { ac.innerHTML = ''; acItems = []; acIndex = -1; }
+    function highlightAc() {
+      acItems.forEach((el, i) => el.classList.toggle('ac-active', i === acIndex));
+    }
+    function chooseAc(el) {
+      input.value = el.getAttribute('data-slug');
+      clearAc();
+      input.form.submit();
+    }
     input.addEventListener('input', () => {
       clearTimeout(timer);
       const q = input.value.trim();
-      if (q.length < 2) { ac.innerHTML=''; return; }
+      if (q.length < 2) { clearAc(); return; }
       timer = setTimeout(async () => {
         try {
-          const r = await fetch('/api/v1/vulns/products/search?q=' + encodeURIComponent(q));
+          const r = await fetch('${withBase(basePath, "/api/v1/vulns/products/search")}?q=' + encodeURIComponent(q));
           if (!r.ok) return;
           const d = await r.json();
           ac.innerHTML = d.results.map(x =>
             '<div class="ac-item" data-slug="' + x.slug + '">' + x.display_name + ' <span class="ac-slug">' + x.slug + '</span></div>'
           ).join('');
-          ac.querySelectorAll('.ac-item').forEach(el => el.addEventListener('mousedown', () => {
-            input.value = el.getAttribute('data-slug'); ac.innerHTML='';
-          }));
+          acItems = [...ac.querySelectorAll('.ac-item')];
+          acIndex = -1;
+          acItems.forEach(el => el.addEventListener('mousedown', (ev) => { ev.preventDefault(); chooseAc(el); }));
         } catch(e) {}
       }, 150);
     });
-    input.addEventListener('blur', () => setTimeout(() => ac.innerHTML='', 150));`;
+    input.addEventListener('keydown', (e) => {
+      if (!acItems.length) return;
+      if (e.key === 'ArrowDown') { e.preventDefault(); acIndex = Math.min(acIndex + 1, acItems.length - 1); highlightAc(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); acIndex = Math.max(acIndex - 1, 0); highlightAc(); }
+      else if (e.key === 'Enter' && acIndex >= 0) { e.preventDefault(); chooseAc(acItems[acIndex]); }
+      else if (e.key === 'Escape') { clearAc(); }
+    });
+    input.addEventListener('blur', () => setTimeout(() => clearAc(), 150));
+    let timer;`;
 
-  const styleTail = `<style>
+/** Client-side severity/KEV filter chips over the result table. */
+export const RESULT_FILTER_SCRIPT = `
+    // ── Results filter chips (client-side; no pagination machinery) ──
+    const resultsEl = document.getElementById('results-anchor');
+    const resultsTable = resultsEl ? resultsEl.querySelector('table') : null;
+    if (resultsTable) {
+      const rows = [...resultsTable.querySelectorAll('tbody tr')];
+      const total = rows.length;
+      const counts = { all: total, CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, kev: 0 };
+      rows.forEach(tr => {
+        const sevEl = tr.querySelector('[class*="sev-"]');
+        const cls = sevEl ? sevEl.className : '';
+        const m = cls.match(/sev-([A-Z]+)/);
+        if (m && counts[m[1]] !== undefined) counts[m[1]]++;
+        if (tr.querySelector('.badge-kev')) counts.kev++;
+      });
+      if (total > 12) {
+        const bar = document.createElement('div');
+        bar.className = 'filter-bar';
+        const chips = [
+          ['all', 'All (' + total + ')'],
+          ['CRITICAL', 'Critical (' + counts.CRITICAL + ')'],
+          ['HIGH', 'High (' + counts.HIGH + ')'],
+          ['MEDIUM', 'Medium (' + counts.MEDIUM + ')'],
+          ['LOW', 'Low (' + counts.LOW + ')'],
+          ['kev', 'KEV (' + counts.kev + ')'],
+        ];
+        bar.innerHTML = '<span class="filter-label">Show:</span>' + chips.map(([k, label], i) =>
+          '<button type="button" class="filter-chip' + (i === 0 ? ' filter-on' : '') + '" data-filter="' + k + '">' + label + '</button>'
+        ).join('');
+        resultsTable.parentNode.insertBefore(bar, resultsTable);
+        const counter = document.createElement('p');
+        counter.className = 'meta filter-count';
+        bar.parentNode.insertBefore(counter, bar.nextSibling);
+        const shown = document.createElement('span');
+        shown.textContent = 'Showing ' + total + ' of ' + total + ' CVE(s).';
+        counter.appendChild(shown);
+        let active = 'all';
+        bar.addEventListener('click', (e) => {
+          const btn = e.target.closest('.filter-chip');
+          if (!btn) return;
+          active = btn.getAttribute('data-filter');
+          bar.querySelectorAll('.filter-chip').forEach(c => c.classList.toggle('filter-on', c === btn));
+          let visible = 0;
+          rows.forEach(tr => {
+            const sevEl = tr.querySelector('[class*="sev-"]');
+            const m = sevEl ? sevEl.className.match(/sev-([A-Z]+)/) : null;
+            const sev = m ? m[1] : '';
+            const isKev = Boolean(tr.querySelector('.badge-kev'));
+            const show = active === 'all'
+              || (active === 'kev' ? isKev : sev === active);
+            tr.style.display = show ? '' : 'none';
+            if (show) visible++;
+          });
+          shown.textContent = 'Showing ' + visible + ' of ' + total + ' CVE(s)'
+            + (active !== 'all' ? ' — ' + active + ' only' : '') + '.';
+        });
+      }
+    }`;
+
+/** Per-source freshness chips. Read-only: the sync buttons live beside them in the admin strip. */
+export function renderSourceChips(freshness: DataFreshness, syncStatus: VulnSyncStatus): string {
+  const esc = escHtml;
+  const sources: Array<{
+    key: string;
+    label: string;
+    ts: string | null;
+    status: VulnSourceStatus;
+  }> = [
+    { key: "nvd", label: "NVD", ts: freshness.nvd_last_sync, status: syncStatus.nvd },
+    { key: "kev", label: "KEV", ts: freshness.kev_last_sync, status: syncStatus.kev },
+    { key: "osv", label: "OSV", ts: freshness.osv_last_sync, status: syncStatus.osv },
+    { key: "cvss", label: "CVSS", ts: freshness.cvss_last_sync, status: syncStatus.cvss },
+  ];
+  return sources
+    .map((s) => {
+      const state = chipState(s.status);
+      const tooltip = chipTooltip(s);
+      return `<span class="src-chip src-${state}" title="${esc(tooltip)}">
+        <span class="dot"></span>${esc(s.label)}
+        <span class="src-ts" data-ts="${esc(s.ts ?? "")}">${esc(s.ts ? "…" : "never")}</span>
+      </span>`;
+    })
+    .join("");
+}
+
+/** The product/version lookup. `action` is the already-prefixed URL of the page to submit to. */
+export function renderLookupForm(action: string, product: string, version: string): string {
+  const esc = escHtml;
+  return `
+    <form method="get" action="${action}" class="vform" autocomplete="off">
+      <div style="position:relative">
+        <input id="product" name="product" value="${esc(product)}" placeholder="Product or alias (e.g. openjdk, npp)" required autofocus>
+        <div id="ac" class="ac"></div>
+      </div>
+      <input name="version" value="${esc(version)}" placeholder="Version (optional)">
+      <button class="btn btn-primary" type="submit">Look up</button>
+    </form>`;
+}
+
+/** Rules shared by the admin explorer and the public /vulns viewer page. */
+export const VULN_VIEW_CSS = `
     .vform { display:flex; gap:8px; margin:16px 0; flex-wrap:wrap; }
     .vform input { padding:8px 10px; border:1px solid #d1d5db; border-radius:6px; font-size:0.9rem; min-width:280px; }
     .ac { position:absolute; top:100%; left:0; right:0; background:#fff; border:1px solid #e5e7eb; border-radius:6px; z-index:10; box-shadow:0 4px 12px rgba(0,0,0,0.08); }
     .ac-item { padding:6px 10px; cursor:pointer; font-size:0.85rem; }
-    .ac-item:hover { background:#f3f4f6; }
+    .ac-item:hover, .ac-item.ac-active { background:#f3f4f6; }
     .ac-slug { color:#9ca3af; font-size:0.75rem; }
-    .freshness { display:flex; gap:16px; align-items:center; flex-wrap:wrap; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:10px 14px; font-size:0.82rem; color:#6b7280; }
-    .freshness strong { color:#111; }
+    .status-strip { background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:10px 14px; margin-top:16px; }
+    .status-row { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+    .status-row strong { font-size:0.82rem; color:#111; }
+    .src-chips { display:flex; gap:8px; flex-wrap:wrap; flex:1; }
+    .src-chip { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:12px; font-size:0.8rem; background:#f3f4f6; color:#374151; }
+    .src-chip .dot { width:8px; height:8px; border-radius:50%; background:#9ca3af; }
+    .src-ok { background:#f0fdf4; color:#166534; }
+    .src-ok .dot { background:#22c55e; }
+    .src-fail { background:#fef2f2; color:#b91c1c; }
+    .src-fail .dot { background:#ef4444; }
+    .src-never { background:#f3f4f6; color:#6b7280; }
+    .src-never .dot { background:#9ca3af; }
+    .src-ts { color:inherit; opacity:0.75; font-size:0.75rem; }
     .note { padding:10px 14px; border-radius:8px; margin:12px 0; font-size:0.85rem; }
     .note-ok { background:#dcfce7; color:#15803d; }
     .note-warn { background:#fef3c7; color:#92400e; }
@@ -233,30 +709,711 @@ function renderExplorer(ctx: {
     .sev-HIGH { color:#c2410c; font-weight:700; }
     .sev-MEDIUM { color:#a16207; }
     .sev-LOW { color:#6b7280; }
+    .filter-bar { display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-top:12px; }
+    .filter-label { font-size:0.8rem; color:#6b7280; }
+    .filter-chip { padding:3px 10px; border-radius:12px; border:1px solid #d1d5db; background:#fff; font-size:0.78rem; cursor:pointer; color:#374151; }
+    .filter-chip:hover { background:#f3f4f6; }
+    .filter-chip.filter-on { background:#1d4ed8; border-color:#1d4ed8; color:#fff; }
+    .filter-count { margin:6px 0 0; }
+    .hist-link { font-size:0.8rem; }
+    .badge-blocked-gate { background:#b91c1c; color:#fff; margin-left:6px; }
+    .badge-suppressed { background:#ffedd5; color:#9a3412; margin-right:6px; }
+`;
+
+function renderExplorer(
+  ctx: {
+    product?: string;
+    version?: string;
+    synced?: string;
+    syncError?: string;
+    backfillStarted?: string;
+    freshness: DataFreshness;
+    syncStatus: VulnSyncStatus;
+    hints: string[];
+    activeSuppressions: CveSuppressionRow[];
+    result: VulnQueryResult | null;
+  },
+  basePath: string,
+): string {
+  const esc = escHtml;
+  const product = ctx.product ?? "";
+  const version = ctx.version ?? "";
+
+  const hintsBanner = ctx.hints
+    .map((h) => `<div class="note note-warn">${renderHint(h)}</div>`)
+    .join("");
+
+  // ── Status strip: state chips left, actions right. Two fixed rows — the old single
+  // flex-wrap mixed readouts and buttons at one level and re-wrapped arbitrarily as
+  // timestamps changed length.
+  const sourceChips = renderSourceChips(ctx.freshness, ctx.syncStatus);
+  const statusStrip = `
+    <div class="status-strip">
+      <div class="status-row">
+        <strong>Data sources</strong>
+        <span class="src-chips">${sourceChips}</span>
+        <span class="strip-actions">
+          <form method="post" action="${withBase(basePath, "/admin/v1/vuln-sync/nvd")}"><button class="btn btn-sm btn-secondary">Sync NVD</button></form>
+          <form method="post" action="${withBase(basePath, "/admin/v1/vuln-sync/kev")}"><button class="btn btn-sm btn-secondary">Sync KEV</button></form>
+          <form method="post" action="${withBase(basePath, "/admin/v1/vuln-sync/osv")}"><button class="btn btn-sm btn-secondary">Sync OSV</button></form>
+          <form method="post" action="${withBase(basePath, "/admin/v1/vuln-backfill")}"><button class="btn btn-sm btn-secondary">NVD backfill</button></form>
+        </span>
+      </div>
+    </div>`;
+
+  // CVSS enrichment is triggerable below rather than by a sync button, because it is the
+  // one write that can change what /download serves -- the preview is not a convenience
+  // here, it is the step that makes applying safe. Collapsed by default: rarely used,
+  // and its explanation is long.
+  const enrichPanel = `
+    <details class="enrich-wrap">
+      <summary>CVSS enrichment <span class="summary-hint">fills missing severities; can block versions — preview first</span></summary>
+      <div class="enrich">
+        <div class="enrich-head">
+          <span>Fills in severity for CVEs that have none (mostly OSV stubs). Applying can newly
+          satisfy the &ge; 9.0 gate, which makes versions that serve today return 403.
+          Preview first.</span>
+        </div>
+        <div class="enrich-actions">
+          <label for="cvss-limit">Limit</label>
+          <input id="cvss-limit" type="number" min="1" placeholder="all">
+          <button id="cvss-preview" class="btn btn-sm btn-secondary" type="button">Preview</button>
+          <button id="cvss-apply" class="btn btn-sm btn-danger" type="button" disabled
+            title="Run a preview first">Apply</button>
+        </div>
+        <div id="cvss-out"></div>
+      </div>
+    </details>`;
+
+  const syncedBanner = ctx.synced
+    ? `<div class="note note-ok">Triggered ${esc(ctx.synced)} sync. Freshness updates once ingestion completes.</div>`
+    : "";
+  const backfillBanner = ctx.backfillStarted
+    ? `<div class="note note-ok">NVD backfill job <a href="${withBase(basePath, "/admin/v1/vuln-backfill/")}${esc(ctx.backfillStarted)}">#${esc(ctx.backfillStarted)}</a> queued — it runs in the background; this page's NVD chip updates when it finishes.</div>`
+    : "";
+  const syncErrorBanner = ctx.syncError
+    ? `<div class="note note-warn">${esc(ctx.syncError)}</div>`
+    : "";
+
+  // ── Lookup first: it is the page's primary task; ops panels sit below the fold.
+  const form = renderLookupForm(withBase(basePath, "/admin/v1/vulns"), product, version);
+
+  const results = ctx.result
+    ? renderResult(ctx.result, basePath)
+    : `<p class="empty">Enter a product to look up known CVEs.</p>`;
+
+  const suppressionPanel = `
+    <section id="suppression-panel" class="suppression-panel" hidden>
+      <h2 id="suppression-title">CVE suppression</h2>
+      <p id="suppression-scope" class="meta"></p>
+      <div class="note note-warn">This changes what <code>/download</code> serves. Apply only after
+        the team's six-eyes review and formal approval. Your authenticated identity and reason are written to the
+        database audit trail.</div>
+      <div class="suppression-fields">
+        <label>Reason <textarea id="suppression-reason" rows="3" required></textarea></label>
+        <label id="suppression-expiry-wrap">Expires at (optional)
+          <input id="suppression-expiry" type="datetime-local">
+        </label>
+      </div>
+      <div class="suppression-actions">
+        <button id="suppression-preview" class="btn btn-sm btn-secondary" type="button">Preview</button>
+        <button id="suppression-apply" class="btn btn-sm btn-danger" type="button" disabled>Apply</button>
+        <button id="suppression-cancel" class="btn btn-sm btn-secondary" type="button">Cancel</button>
+      </div>
+      <div id="suppression-out"></div>
+    </section>`;
+
+  const activeSuppressionList =
+    ctx.activeSuppressions.length === 0
+      ? ""
+      : `<details class="active-suppressions" id="active-suppressions">
+          <summary>Active CVE suppressions (${ctx.activeSuppressions.length})</summary>
+          <p class="meta">Operational exceptions remain visible here until revoked or expired.</p>
+          <table>
+            <thead><tr><th>CVE</th><th>Scope</th><th>Reason</th><th>Operator</th><th>Expires</th><th></th></tr></thead>
+            <tbody>${ctx.activeSuppressions
+              .map(
+                (s) => `<tr>
+                  <td>${esc(s.cve_id)}</td>
+                  <td>${esc(s.package_name ?? "all packages")}</td>
+                  <td>${esc(s.reason)}</td>
+                  <td>${esc(s.created_by)}</td>
+                  <td>${esc(s.expires_at ? fmtTs(s.expires_at.toISOString()) : "until revoked")}</td>
+                  <td><button class="btn btn-sm btn-danger suppression-open" type="button"
+                    data-mode="revoke" data-id="${s.id}" data-cve="${esc(s.cve_id)}"
+                    data-package="${esc(s.package_name ?? "")}"
+                    data-scope="${esc(s.package_name ?? "")}">Revoke</button></td>
+                </tr>`,
+              )
+              .join("")}</tbody>
+          </table>
+        </details>`;
+
+  const body = `
+    <h1>Vulnerability Explorer</h1>
+    ${
+      product
+        ? `<p class="meta"><a href="${withBase(basePath, "/vulns")}?product=${encodeURIComponent(product)}${version ? `&version=${encodeURIComponent(version)}` : ""}">Public view</a> of this lookup</p>`
+        : ""
+    }
+    ${syncErrorBanner}
+    ${syncedBanner}
+    ${backfillBanner}
+    ${form}
+    <div id="results-anchor">${results}</div>
+    ${suppressionPanel}
+    ${activeSuppressionList}
+    ${hintsBanner}
+    ${statusStrip}
+    ${enrichPanel}`;
+
+  const scripts = `
+    // ── Deep link from the nav suppression chip ──
+    // The list is a collapsed <details>; arriving at #active-suppressions should land on
+    // it open, whether that is a fresh page load or a hash change from this same page.
+    function openSuppressionList() {
+      if (location.hash !== '#active-suppressions') return;
+      const el = document.getElementById('active-suppressions');
+      if (!el) return;
+      el.open = true;
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    openSuppressionList();
+    window.addEventListener('hashchange', openSuppressionList);
+
+    ${SOURCE_CHIPS_SCRIPT}
+
+    ${autocompleteScript(basePath)}
+
+    ${RESULT_FILTER_SCRIPT}
+
+    // ── CVSS enrichment preview/apply ──
+    const limitEl = document.getElementById('cvss-limit');
+    const previewBtn = document.getElementById('cvss-preview');
+    const applyBtn = document.getElementById('cvss-apply');
+    const out = document.getElementById('cvss-out');
+    // Apply stays locked to the limit the preview was computed for: applying with a
+    // different bound would write a change set nobody looked at.
+    let previewedLimit;
+    let previewedBlocked = 0;
+
+    function esc(v) {
+      const d = document.createElement('div');
+      d.textContent = v == null ? '' : String(v);
+      return d.innerHTML;
+    }
+
+    function currentLimit() {
+      const raw = limitEl.value.trim();
+      return raw === '' ? undefined : Number(raw);
+    }
+
+    function lockApply(why) {
+      applyBtn.disabled = true;
+      applyBtn.title = why;
+      previewedLimit = undefined;
+    }
+
+    limitEl.addEventListener('input', () => lockApply('Limit changed — preview again'));
+
+    async function post(payload) {
+      const r = await fetch('${withBase(basePath, "/admin/v1/vuln-sync/cvss")}', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      let data = {};
+      try { data = await r.json(); } catch (e) {}
+      return { status: r.status, data: data };
+    }
+
+    function renderError(status, data) {
+      const msg = data && data.error ? data.error : 'Request failed (HTTP ' + status + ')';
+      out.innerHTML = '<div class="note note-warn">' + esc(msg) + '</div>';
+    }
+
+    function renderPreview(d) {
+      const p = d.preview || {};
+      const proposals = p.proposals || [];
+      const blocked = p.newly_blocked || [];
+      previewedBlocked = blocked.reduce((n, x) => n + x.newly_blocked.length, 0);
+
+      let html = '<div class="note note-info">Dry run — nothing was written. '
+        + esc(p.candidates) + ' candidate(s), ' + esc(p.fetched) + ' fetched, '
+        + proposals.length + ' proposal(s).</div>';
+
+      if (previewedBlocked > 0) {
+        html += '<div class="note note-warn"><strong>' + previewedBlocked
+          + ' version(s) would start returning 403:</strong><ul class="blocked">'
+          + blocked.map(b => '<li>' + esc(b.package_name) + ': '
+              + b.newly_blocked.map(esc).join(', ') + '</li>').join('')
+          + '</ul></div>';
+      } else if (proposals.length > 0) {
+        html += '<div class="note note-ok">No cached version changes availability.</div>';
+      }
+
+      if (proposals.length > 0) {
+        html += '<table><thead><tr><th>CVE</th><th>Severity</th><th>CVSS v3</th>'
+          + '<th>CVSS v4</th><th>CVSS v2</th><th>Source</th><th>Crosses gate</th></tr></thead><tbody>'
+          + proposals.map(x =>
+              '<tr><td>' + esc(x.cve_id) + '</td>'
+              + '<td class="sev-' + esc(x.severity) + '">' + esc(x.severity) + '</td>'
+              + '<td>' + esc(x.cvss_v3_score == null ? '—' : x.cvss_v3_score) + '</td>'
+              + '<td>' + esc(x.cvss_v4_score == null ? '—' : x.cvss_v4_score) + '</td>'
+              + '<td>' + esc(x.cvss_v2_score == null ? '—' : x.cvss_v2_score) + '</td>'
+              + '<td>' + esc(x.severity_source) + '</td>'
+              + '<td>' + (x.crosses_critical_gate ? 'yes' : 'no') + '</td></tr>'
+            ).join('')
+          + '</tbody></table>';
+      } else {
+        html += '<p class="empty">Nothing to enrich — no CVE is missing a severity.</p>';
+      }
+      out.innerHTML = html;
+    }
+
+    previewBtn.addEventListener('click', async () => {
+      previewBtn.disabled = true;
+      out.innerHTML = '<p class="empty">Previewing…</p>';
+      try {
+        const limit = currentLimit();
+        const payload = { dry_run: true };
+        if (limit !== undefined) payload.limit = limit;
+        const r = await post(payload);
+        if (r.status !== 200) { renderError(r.status, r.data); lockApply('Preview failed'); return; }
+        renderPreview(r.data);
+        previewedLimit = limit;
+        applyBtn.disabled = false;
+        applyBtn.title = 'Apply the previewed changes';
+      } catch (e) {
+        renderError(0, { error: String(e) });
+        lockApply('Preview failed');
+      } finally {
+        previewBtn.disabled = false;
+      }
+    });
+
+    applyBtn.addEventListener('click', async () => {
+      const warning = previewedBlocked > 0
+        ? previewedBlocked + ' version(s) will start returning 403 from /download.\\n\\n'
+        : '';
+      if (!confirm(warning + 'Apply the previewed CVSS enrichment?')) return;
+      applyBtn.disabled = true;
+      out.innerHTML = '<p class="empty">Applying…</p>';
+      try {
+        const payload = {};
+        if (previewedLimit !== undefined) payload.limit = previewedLimit;
+        const r = await post(payload);
+        if (r.status !== 200 && r.status !== 207) { renderError(r.status, r.data); return; }
+        const s = (r.data.outcomes && r.data.outcomes[0] && r.data.outcomes[0].summary) || {};
+        out.innerHTML = '<div class="note note-ok">Applied: ' + esc(s.updated) + ' updated, '
+          + esc(s.fetched) + ' fetched of ' + esc(s.candidates) + ' candidate(s). '
+          + 'Re-run the lookup to see the new severities.</div>';
+      } catch (e) {
+        renderError(0, { error: String(e) });
+      } finally {
+        lockApply('Preview again before applying');
+      }
+    });
+
+    // WAL-70 suppression-ui:start
+    // ── CVE suppression/revocation preview + apply (ADR-007) ──
+    const suppressionPanel = document.getElementById('suppression-panel');
+    const suppressionTitle = document.getElementById('suppression-title');
+    const suppressionScope = document.getElementById('suppression-scope');
+    const suppressionReason = document.getElementById('suppression-reason');
+    const suppressionExpiry = document.getElementById('suppression-expiry');
+    const suppressionExpiryWrap = document.getElementById('suppression-expiry-wrap');
+    const suppressionPreview = document.getElementById('suppression-preview');
+    const suppressionApply = document.getElementById('suppression-apply');
+    const suppressionCancel = document.getElementById('suppression-cancel');
+    const suppressionOut = document.getElementById('suppression-out');
+    let suppressionState = null;
+    let suppressionPreviewSignature = null;
+
+    function lockSuppressionApply() {
+      suppressionApply.disabled = true;
+      suppressionApply.title = 'Preview this exact change first';
+      suppressionPreviewSignature = null;
+    }
+
+    function suppressionPayload() {
+      const reason = suppressionReason.value.trim();
+      if (!reason) throw new Error('Reason is required');
+      if (suppressionState.mode === 'revoke') {
+        return { reason: reason };
+      }
+      const payload = {
+        cve_id: suppressionState.cve,
+        package_name: suppressionState.packageName,
+        reason: reason,
+      };
+      if (suppressionExpiry.value) payload.expires_at = new Date(suppressionExpiry.value).toISOString();
+      return payload;
+    }
+
+    function suppressionUrl(preview) {
+      if (suppressionState.mode === 'revoke') {
+        return '${withBase(basePath, "/admin/v1/vuln-suppressions/")}' + suppressionState.id + '/revoke'
+          + (preview ? '/preview' : '');
+      }
+      return '${withBase(basePath, "/admin/v1/vuln-suppressions")}' + (preview ? '/preview' : '');
+    }
+
+    async function postSuppression(preview, payload) {
+      const response = await fetch(suppressionUrl(preview), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      let data = {};
+      try { data = await response.json(); } catch (e) {}
+      return { status: response.status, data: data };
+    }
+
+    function renderSuppressionPreview(preview) {
+      const available = preview.newly_available || [];
+      const blocked = preview.newly_blocked || [];
+      let html = '<div class="note note-info">Dry run — nothing was written. '
+        + esc(preview.versions_changed) + ' cached version(s) would change.</div>';
+      if (available.length) {
+        html += '<div class="note note-ok"><strong>Would become available:</strong><ul>'
+          + available.map(x => '<li>' + esc(x.package_name) + ': '
+              + x.versions.map(esc).join(', ') + '</li>').join('') + '</ul></div>';
+      }
+      if (blocked.length) {
+        html += '<div class="note note-warn"><strong>Would become blocked:</strong><ul>'
+          + blocked.map(x => '<li>' + esc(x.package_name) + ': '
+              + x.versions.map(esc).join(', ') + '</li>').join('') + '</ul></div>';
+      }
+      suppressionOut.innerHTML = html;
+    }
+
+    document.querySelectorAll('.suppression-open').forEach(button => {
+      button.addEventListener('click', () => {
+        suppressionState = {
+          mode: button.getAttribute('data-mode'),
+          id: button.getAttribute('data-id'),
+          cve: button.getAttribute('data-cve'),
+          packageName: button.getAttribute('data-package'),
+          scopePackage: button.getAttribute('data-scope'),
+        };
+        suppressionTitle.textContent = suppressionState.mode === 'revoke'
+          ? 'Revoke CVE suppression' : 'Suppress CVE from gate';
+        const displayScope = suppressionState.mode === 'revoke'
+          ? (suppressionState.scopePackage || 'all packages')
+          : suppressionState.packageName;
+        suppressionScope.textContent = suppressionState.cve + ' · '
+          + (displayScope === 'all packages' ? displayScope : 'package ' + displayScope);
+        suppressionExpiryWrap.hidden = suppressionState.mode === 'revoke';
+        suppressionReason.value = '';
+        suppressionExpiry.value = '';
+        suppressionOut.innerHTML = '';
+        lockSuppressionApply();
+        suppressionPanel.hidden = false;
+        suppressionPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      });
+    });
+    [suppressionReason, suppressionExpiry].forEach(inputEl => {
+      inputEl.addEventListener('input', lockSuppressionApply);
+    });
+    suppressionCancel.addEventListener('click', () => {
+      suppressionPanel.hidden = true;
+      suppressionState = null;
+      lockSuppressionApply();
+    });
+    suppressionPreview.addEventListener('click', async () => {
+      try {
+        const payload = suppressionPayload();
+        suppressionPreview.disabled = true;
+        suppressionOut.innerHTML = '<p class="empty">Previewing…</p>';
+        const result = await postSuppression(true, payload);
+        if (result.status !== 200) {
+          suppressionOut.innerHTML = '<div class="note note-warn">'
+            + esc(result.data.error || 'Preview failed') + '</div>';
+          lockSuppressionApply();
+          return;
+        }
+        renderSuppressionPreview(result.data.preview);
+        suppressionPreviewSignature = JSON.stringify(payload);
+        suppressionApply.disabled = false;
+        suppressionApply.title = 'Apply the previewed change';
+      } catch (e) {
+        suppressionOut.innerHTML = '<div class="note note-warn">' + esc(String(e)) + '</div>';
+        lockSuppressionApply();
+      } finally {
+        suppressionPreview.disabled = false;
+      }
+    });
+    suppressionApply.addEventListener('click', async () => {
+      try {
+        const payload = suppressionPayload();
+        if (JSON.stringify(payload) !== suppressionPreviewSignature) {
+          throw new Error('Inputs changed — preview again');
+        }
+        if (!confirm('Apply the previewed gate change?')) return;
+        suppressionApply.disabled = true;
+        const result = await postSuppression(false, payload);
+        if (result.status !== 200 && result.status !== 201) {
+          suppressionOut.innerHTML = '<div class="note note-warn">'
+            + esc(result.data.error || 'Apply failed') + '</div>';
+          return;
+        }
+        window.location.reload();
+      } catch (e) {
+        suppressionOut.innerHTML = '<div class="note note-warn">' + esc(String(e)) + '</div>';
+        lockSuppressionApply();
+      }
+    });
+    // WAL-70 suppression-ui:end`;
+
+  const styleTail = `<style>${VULN_VIEW_CSS}
+    .strip-actions { display:flex; gap:8px; flex-wrap:wrap; margin-left:auto; }
+    .enrich-wrap { margin-top:12px; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:10px 14px; }
+    .enrich-wrap summary { cursor:pointer; font-size:0.85rem; font-weight:700; color:#111; }
+    .enrich-wrap .summary-hint { font-weight:400; color:#6b7280; font-size:0.8rem; margin-left:6px; }
+    .enrich { margin-top:10px; }
+    .enrich-head span { font-size:0.8rem; color:#6b7280; max-width:70ch; }
+    .enrich-actions { display:flex; align-items:center; gap:8px; margin-top:10px; flex-wrap:wrap; }
+    .enrich-actions label { font-size:0.8rem; color:#6b7280; }
+    .enrich-actions input { padding:4px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:0.8rem; width:90px; }
+    .enrich .btn:disabled { opacity:0.5; cursor:not-allowed; }
+    .blocked { margin:6px 0 0 18px; }
+    .blocked li { font-size:0.82rem; }
+    .suppression-cell { white-space:nowrap; }
+    .suppression-panel { margin:14px 0; padding:14px; border:1px solid #fdba74; border-radius:8px; background:#fff7ed; }
+    .suppression-panel h2 { margin:0 0 4px; font-size:1rem; }
+    .suppression-fields { display:grid; gap:8px; max-width:680px; }
+    .suppression-fields label { display:grid; gap:3px; font-size:0.8rem; color:#4b5563; }
+    .suppression-fields input, .suppression-fields textarea { padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; font:inherit; }
+    .suppression-actions { display:flex; gap:8px; margin-top:10px; }
+    .active-suppressions { margin:14px 0; padding:10px 14px; border:1px solid #fdba74; border-radius:8px; background:#fff; }
+    .active-suppressions summary { cursor:pointer; font-weight:700; color:#9a3412; }
+    .pkg-backfill { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin:0 0 14px; }
+    .pkg-backfill label { font-size:0.8rem; color:#4b5563; }
+    .pkg-backfill input[type=date] { font-size:0.8rem; padding:3px 6px; }
+    .pkg-backfill-hint { font-size:0.75rem; color:#6b7280; }
   </style>`;
 
-  return renderSharedHtml("Vulnerabilities", "vulns", body, scripts, styleTail);
+  return renderSharedHtml("Vulnerabilities", "vulns", body, basePath, scripts, styleTail);
 }
 
-function renderResult(r: VulnQueryResult): string {
+/** Badge class/label for a backfill status; `queued`/`succeeded` styles live in renderSharedHtml. */
+function vulnJobStatusBadge(status: VulnBackfillJobStatus): string {
+  return `<span class="badge badge-${escHtml(status)}">${escHtml(status)}</span>`;
+}
+
+/**
+ * WAL-121. Newest-first listing of vulnerability backfill jobs. Deliberately mirrors the Sync
+ * Jobs page (fixed 100/page, status filter, auto-refresh while work is active) so the two job
+ * families behave the same way; only the columns differ, because the rows are a different shape.
+ */
+function renderVulnJobsPage(
+  jobs: VulnBackfillJobRow[],
+  paging: { page: number; pageSize: number; status?: VulnBackfillJobStatus },
+  basePath: string,
+): string {
+  const esc = escHtml;
+  const rows = jobs
+    .map((j) => {
+      const scope = j.package_name
+        ? `<a href="${withBase(basePath, "/admin/v1/packages/")}${esc(j.package_name)}">${esc(j.package_name)}</a>`
+        : `<span class="muted">all packages</span>`;
+      const error = j.error_message ? `<div class="error-msg">${esc(j.error_message)}</div>` : "";
+      const pairs = j.cpe_pairs_total > 0 ? `${j.cpe_pairs_done}/${j.cpe_pairs_total}` : "—";
+      return `<tr>
+        <td><a href="${withBase(basePath, "/admin/v1/vuln-backfill/")}${esc(j.id)}">#${esc(j.id)}</a></td>
+        <td>${scope}</td>
+        <td>${j.since_date ? esc(j.since_date) : `<span class="muted">all history</span>`}</td>
+        <td>${vulnJobStatusBadge(j.status)}${error}</td>
+        <td>${esc(pairs)}</td>
+        <td class="ts">${esc(fmtTs(j.created_at.toISOString()))}</td>
+        <td class="ts">${j.started_at ? esc(fmtTs(j.started_at.toISOString())) : "—"}</td>
+        <td class="ts">${j.finished_at ? esc(fmtTs(j.finished_at.toISOString())) : "—"}</td>
+      </tr>`;
+    })
+    .join("");
+
+  const tableHtml =
+    jobs.length === 0
+      ? `<p class="empty">No vulnerability backfill jobs found.</p>`
+      : `<table>
+        <thead><tr>
+          <th>ID</th><th>Package</th><th>Since</th><th>Status</th><th>CPE pairs</th>
+          <th>Queued</th><th>Started</th><th>Finished</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+
+  const hasActive = jobs.some((j) => j.status === "queued" || j.status === "running");
+
+  const pageUrl = (p: number) => {
+    const params = new URLSearchParams({ page: String(p) });
+    if (paging.status) params.set("status", paging.status);
+    return `${withBase(basePath, "/admin/v1/vuln-backfill")}?${params.toString()}`;
+  };
+  const pager =
+    jobs.length === 0 && paging.page === 1
+      ? ""
+      : `<div class="pager">
+          ${paging.page > 1 ? `<a href="${pageUrl(paging.page - 1)}">&larr; Previous</a>` : `<span class="pager-off">&larr; Previous</span>`}
+          <span class="pager-state">Page ${paging.page} · ${jobs.length} job(s)</span>
+          ${jobs.length >= paging.pageSize ? `<a href="${pageUrl(paging.page + 1)}">Next &rarr;</a>` : `<span class="pager-off">Next &rarr;</span>`}
+        </div>`;
+
+  const statusFilter = `<form method="get" action="${withBase(basePath, "/admin/v1/vuln-backfill")}" class="filters">
+    <label>Status
+      <select name="status">
+        ${(["", "queued", "running", "succeeded", "failed"] as const)
+          .map(
+            (s) =>
+              `<option value="${s}"${(paging.status ?? "") === s ? " selected" : ""}>${s === "" ? "all" : s}</option>`,
+          )
+          .join("")}
+      </select>
+    </label>
+    <button class="btn btn-sm btn-secondary" type="submit">Filter</button>
+  </form>`;
+
+  const body = `
+    <h1>Vulnerability Fetch Jobs</h1>
+    <p class="meta">NVD backfill runs. Feed downloads (NVD, KEV, OSV, CVSS) are not jobs — see the
+    <a href="${withBase(basePath, "/admin/v1/vulns")}">Vulnerability Explorer</a> for their freshness.</p>
+    ${statusFilter}
+    ${tableHtml}
+    ${pager}
+    <div id="ts" style="font-size:0.75rem;color:#9ca3af;margin-top:12px"></div>`;
+
+  const scripts = `
+    document.getElementById('ts').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
+    ${hasActive ? "setInterval(() => location.reload(), 3000);" : ""}`;
+
+  const styleTail = `<style>
+    .muted { color:#9ca3af; }
+    .filters { display:flex; gap:10px; align-items:center; margin:12px 0; font-size:0.85rem; }
+    .filters select { padding:4px 8px; border:1px solid #d1d5db; border-radius:6px; font:inherit; background:#fff; }
+    td.ts { color:#9ca3af; font-size:0.78rem; white-space:nowrap; }
+    .pager { display:flex; gap:16px; align-items:center; margin-top:12px; font-size:0.85rem; }
+    .pager a { text-decoration:none; }
+    .pager-off { color:#d1d5db; }
+    .pager-state { color:#6b7280; font-size:0.8rem; }
+    .error-msg { color:#b91c1c; font-size:0.78rem; margin-top:3px; }
+  </style>`;
+
+  return renderSharedHtml(
+    "Vulnerability Fetch Jobs",
+    "vuln-jobs",
+    body,
+    basePath,
+    scripts,
+    styleTail,
+  );
+}
+
+/** WAL-121. Detail page so a job id is not a link into a raw JSON body for a browser. */
+function renderVulnJobPage(job: VulnBackfillJobRow, basePath: string): string {
+  const esc = escHtml;
+  const active = job.status === "queued" || job.status === "running";
+  const field = (label: string, value: string) =>
+    `<tr><th>${esc(label)}</th><td>${value}</td></tr>`;
+  const scope = job.package_name
+    ? `<a href="${withBase(basePath, "/admin/v1/packages/")}${esc(job.package_name)}">${esc(job.package_name)}</a>`
+    : "all packages";
+
+  const body = `
+    <p class="meta"><a href="${withBase(basePath, "/admin/v1/vuln-backfill")}">&larr; All vuln jobs</a></p>
+    <h1>Vuln Backfill Job #${esc(job.id)}</h1>
+    <table class="detail">
+      <tbody>
+        ${field("Status", vulnJobStatusBadge(job.status))}
+        ${field("Package", scope)}
+        ${field("Since", job.since_date ? esc(job.since_date) : "all history")}
+        ${field("CPE pairs", `${job.cpe_pairs_done} / ${job.cpe_pairs_total}`)}
+        ${field("Execution", job.execution_name ? esc(job.execution_name) : "—")}
+        ${field("Queued", esc(fmtTs(job.created_at.toISOString())))}
+        ${field("Started", job.started_at ? esc(fmtTs(job.started_at.toISOString())) : "—")}
+        ${field("Finished", job.finished_at ? esc(fmtTs(job.finished_at.toISOString())) : "—")}
+        ${job.error_message ? field("Error", `<span class="error-msg">${esc(job.error_message)}</span>`) : ""}
+      </tbody>
+    </table>`;
+
+  const scripts = active ? "setInterval(() => location.reload(), 3000);" : "";
+  const styleTail = `<style>
+    table.detail { max-width: 760px; }
+    table.detail th { width: 150px; vertical-align: top; }
+    table.detail td { vertical-align: top; }
+    table.detail a { text-decoration:none; }
+  </style>`;
+
+  return renderSharedHtml(
+    `Vuln Backfill #${job.id}`,
+    "vuln-jobs",
+    body,
+    basePath,
+    scripts,
+    styleTail,
+  );
+}
+
+/**
+ * Per-package NVD backfill, offered where the operator already is: looking at one package.
+ *
+ * The strip's "NVD backfill" walks every CPE pair of every package, which is the wrong tool for
+ * "this package's history is missing" — the case that actually arises, since incremental sync is
+ * cursor-based and can never reach a newly tracked package's older CVEs. The API has taken a
+ * `package` scope since WAL-37; only the UI was missing it (ADR-007).
+ */
+function renderPackageBackfill(
+  slug: string,
+  displayName: string,
+  version: string | null | undefined,
+  basePath: string,
+): string {
+  if (!slug) return "";
+  return `<form class="pkg-backfill" method="post" action="${withBase(basePath, "/admin/v1/vuln-backfill")}">
+    <input type="hidden" name="package" value="${escHtml(slug)}">
+    ${version ? `<input type="hidden" name="return_version" value="${escHtml(version)}">` : ""}
+    <label for="pkg-backfill-since">Backfill ${escHtml(displayName)} from</label>
+    <input id="pkg-backfill-since" type="date" name="since" max="${new Date().toISOString().slice(0, 10)}">
+    <button class="btn btn-sm btn-secondary" type="submit">Backfill this package</button>
+    <span class="pkg-backfill-hint">Walks this package's CPE pairs only. Leave the date empty for all history.</span>
+  </form>`;
+}
+
+export function renderResult(
+  r: VulnQueryResult,
+  basePath: string,
+  mode: PageMode = "admin",
+  /** Viewer only: the product is a served, enabled package with a page to link to. */
+  hasPackagePage = false,
+): string {
   const esc = escHtml;
   const m = r.match;
+  const viewer = mode === "viewer";
 
   if (!m.resolved) {
+    const lookupPath = withBase(basePath, viewer ? "/vulns" : "/admin/v1/vulns");
     const cands = m.candidates.length
       ? `<p>Did you mean:</p><ul>${m.candidates
           .map(
             (c) =>
-              `<li><a href="/admin/v1/vulns?product=${encodeURIComponent(c.slug)}">${esc(c.display_name)}</a> <span class="ac-slug">${esc(c.slug)}</span></li>`,
+              `<li><a href="${lookupPath}?product=${encodeURIComponent(c.slug)}">${esc(c.display_name)}</a> <span class="ac-slug">${esc(c.slug)}</span></li>`,
           )
           .join("")}</ul>`
       : "<p>No similar products found.</p>";
     return `<div class="note note-warn"><strong>Not matched:</strong> “${esc(r.query.product)}” did not resolve to a tracked package.</div>${cands}`;
   }
 
+  const packageLink =
+    viewer && hasPackagePage
+      ? ` · <a href="${withBase(basePath, "/packages/")}${encodeURIComponent(m.product_slug ?? "")}">package page</a>`
+      : "";
   const header = `<p class="meta">Resolved to <strong>${esc(m.display_name ?? m.product_slug ?? "")}</strong>
     (<code>${esc(m.product_slug ?? "")}</code>, ${esc(m.method ?? "")}, confidence ${m.confidence ?? "—"})
-    · ${r.counts.total} CVE(s)${r.counts.kev > 0 ? ` · <span class="badge badge-kev">${r.counts.kev} KEV</span>` : ""}</p>`;
+    · ${r.counts.total} CVE(s)${r.counts.kev > 0 ? ` · <span class="badge badge-kev">${r.counts.kev} KEV</span>` : ""}
+    · <a class="hist-link" href="${withBase(basePath, "/api/v1/packages/")}${esc(m.product_slug ?? "")}/availability${
+      r.query.version ? `?version=${encodeURIComponent(r.query.version)}` : ""
+    }">availability history</a>${packageLink}</p>
+    ${viewer ? "" : renderPackageBackfill(m.product_slug ?? "", m.display_name ?? m.product_slug ?? "", r.query.version, basePath)}`;
 
   const warn = r.version_parse_warning
     ? `<div class="note note-warn">${esc(r.version_parse_warning)}</div>`
@@ -273,20 +1430,65 @@ function renderResult(r: VulnQueryResult): string {
         v.affected.matched_because === "range-uncomparable"
           ? ` <span class="badge badge-vuln-high">uncomparable</span>`
           : "";
+      // The gate (ADR-005) blocks on ANY CVSS base score >= 9.0, so a HIGH-labeled CVE
+      // can still block: its v4 or v2 score may cross the threshold where v3 does not
+      // (live example: CVE-2026-6100, v3 8.1 / v4 9.1, blocks python 3.12.13). Show the
+      // max score and mark gate-crossers explicitly, rather than displaying one
+      // sub-threshold number and leaving the block unexplained.
+      const scores = [v.cvss_v3_score, v.cvss_v4_score, v.cvss_v2_score].filter((s) => s !== null);
+      const maxScore = scores.length > 0 ? Math.max(...scores) : null;
+      // Crossing the threshold is necessary but not sufficient: the row must also gate. A CPE
+      // naming no version (WAL-69) and a fail-open match are both excluded from the gate, so
+      // badging them "blocks at 9.8" told operators the opposite of what /download does — the
+      // explorer went on calling CVE-2024-43488 a blocker after the fix had unblocked vscode.
+      const gateable =
+        v.affected.matched_because !== VERSION_NA &&
+        v.affected.matched_because !== "range-uncomparable";
+      const meetsGate = gateable && meetsCriticalGate(v);
+      const gates =
+        meetsGate && !v.suppression
+          ? ` <span class="badge badge-blocked-gate">${maxScore === null ? "blocks" : `blocks at ${maxScore}`}</span>`
+          : "";
+      const suppression = v.suppression
+        ? `<span class="badge badge-suppressed" title="${esc(v.suppression.reason)}">suppressed</span>
+           <button class="btn btn-sm btn-danger suppression-open" type="button"
+             data-mode="revoke" data-id="${v.suppression.id}" data-cve="${esc(v.cve_id)}"
+             data-package="${esc(m.product_slug ?? "")}"
+             data-scope="${esc(v.suppression.package_name ?? "")}">Revoke</button>`
+        : meetsGate
+          ? `<button class="btn btn-sm btn-secondary suppression-open" type="button"
+               data-mode="suppress" data-cve="${esc(v.cve_id)}"
+               data-package="${esc(m.product_slug ?? "")}">Suppress</button>`
+          : "—";
+      const scoreLabel = maxScore !== null ? ` (${maxScore})` : "";
+      // A viewer has no Gate action column, so a suppression is stated inline on the severity
+      // cell instead. Only the reason and expiry are shown -- the same fields the public
+      // /api/v1/vulns response carries. Who suppressed it, and its id, stay operator-only.
+      const viewerSuppressed =
+        viewer && v.suppression
+          ? ` <span class="badge badge-suppressed" title="${esc(
+              `${v.suppression.reason} · ${
+                v.suppression.expires_at
+                  ? `expires ${fmtTs(v.suppression.expires_at)}`
+                  : "until revoked"
+              }`,
+            )}">suppressed</span>`
+          : "";
       return `<tr>
         <td><a href="https://nvd.nist.gov/vuln/detail/${esc(v.cve_id)}" target="_blank" rel="noopener">${esc(v.cve_id)}</a></td>
-        <td class="sev-${esc(v.severity ?? "")}">${esc(v.severity ?? "—")}${v.cvss_v3_score !== null ? ` (${v.cvss_v3_score})` : ""}</td>
+        <td class="sev-${esc(v.severity ?? "")}">${esc(v.severity ?? "—")}${scoreLabel}${gates}${viewerSuppressed}</td>
         <td>${esc(v.affected.range)}${unc}</td>
         <td>${v.fixed_in ? esc(v.fixed_in) : "—"}</td>
         <td>${kev || "—"}</td>
         <td>${v.sources.map((s) => esc(s)).join(", ")}</td>
+        ${viewer ? "" : `<td class="suppression-cell">${suppression}</td>`}
       </tr>`;
     })
     .join("");
 
   return `${header}${warn}
     <table>
-      <thead><tr><th>CVE</th><th>Severity</th><th>Affected range</th><th>Fixed in</th><th>KEV</th><th>Sources</th></tr></thead>
+      <thead><tr><th>CVE</th><th>Severity</th><th>Affected range</th><th>Fixed in</th><th>KEV</th><th>Sources</th>${viewer ? "" : "<th>Gate action</th>"}</tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
 }
@@ -302,13 +1504,181 @@ function fmtTs(ts: string | null): string {
   return isNaN(d.getTime()) ? "never" : d.toISOString().replace("T", " ").slice(0, 16) + " UTC";
 }
 
-function fmtSourceStatus(status: VulnSourceStatus): string {
-  if (status.last_ok === null) return "(never attempted)";
-  if (status.last_ok) return "(last attempt succeeded)";
-  return `(last attempt failed ${fmtTs(status.last_failure)})`;
-}
-
 function optionalString(value: unknown): string | undefined {
   if (typeof value === "string" && value.length > 0) return value;
   return undefined;
+}
+
+function optionalInteger(value: unknown): number | undefined {
+  const raw = optionalString(value);
+  if (raw === undefined || !/^\d+$/.test(raw)) return undefined;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
+const VULN_BACKFILL_STATUSES: readonly VulnBackfillJobStatus[] = [
+  "queued",
+  "running",
+  "succeeded",
+  "failed",
+];
+
+function parseVulnBackfillStatus(value: unknown): VulnBackfillJobStatus | undefined {
+  const raw = optionalString(value);
+  return raw && (VULN_BACKFILL_STATUSES as readonly string[]).includes(raw)
+    ? (raw as VulnBackfillJobStatus)
+    : undefined;
+}
+
+function requiredTrimmedString(
+  value: unknown,
+  field: string,
+):
+  | { ok: true; value: string }
+  | {
+      ok: false;
+      error: string;
+    } {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return { ok: false, error: `${field} must be a non-empty string` };
+  }
+  return { ok: true, value: value.trim() };
+}
+
+function parseSuppressionBody(
+  body: unknown,
+  authenticatedSubject?: string,
+): { ok: true; input: CreateCveSuppressionInput } | { ok: false; error: string } {
+  const value = (body ?? {}) as Record<string, unknown>;
+  const cve = requiredTrimmedString(value.cve_id, "cve_id");
+  if (!cve.ok) return cve;
+  const reason = requiredTrimmedString(value.reason, "reason");
+  if (!reason.ok) return reason;
+  const createdBy = requiredTrimmedString(authenticatedSubject ?? value.created_by, "created_by");
+  if (!createdBy.ok) return createdBy;
+
+  let packageName: string | null = null;
+  if (
+    value.package_name !== undefined &&
+    value.package_name !== null &&
+    value.package_name !== ""
+  ) {
+    const parsed = requiredTrimmedString(value.package_name, "package_name");
+    if (!parsed.ok) return parsed;
+    packageName = parsed.value;
+  }
+
+  let expiresAt: Date | null = null;
+  if (value.expires_at !== undefined && value.expires_at !== null && value.expires_at !== "") {
+    if (typeof value.expires_at !== "string") {
+      return { ok: false, error: "expires_at must be an ISO-8601 timestamp" };
+    }
+    expiresAt = new Date(value.expires_at);
+    if (Number.isNaN(expiresAt.getTime())) {
+      return { ok: false, error: "expires_at must be an ISO-8601 timestamp" };
+    }
+    if (expiresAt.getTime() <= Date.now()) {
+      return { ok: false, error: "expires_at must be in the future" };
+    }
+  }
+
+  return {
+    ok: true,
+    input: {
+      cve_id: cve.value.toUpperCase(),
+      package_name: packageName,
+      reason: reason.value,
+      created_by: createdBy.value,
+      expires_at: expiresAt,
+    },
+  };
+}
+
+function parseRevocationBody(
+  body: unknown,
+  authenticatedSubject?: string,
+): { ok: true; input: { reason: string; revoked_by: string } } | { ok: false; error: string } {
+  const value = (body ?? {}) as Record<string, unknown>;
+  const reason = requiredTrimmedString(value.reason, "reason");
+  if (!reason.ok) return reason;
+  const revokedBy = requiredTrimmedString(authenticatedSubject ?? value.revoked_by, "revoked_by");
+  if (!revokedBy.ok) return revokedBy;
+  return { ok: true, input: { reason: reason.value, revoked_by: revokedBy.value } };
+}
+
+function parseSuppressionAuditQuery(
+  query: unknown,
+): { ok: true; options: ListSuppressionAuditOptions } | { ok: false; error: string } {
+  const value = (query ?? {}) as Record<string, unknown>;
+  let limit = 50;
+  if (value.limit !== undefined) {
+    if (typeof value.limit !== "string") return { ok: false, error: "limit must be an integer" };
+    const parsed = positiveInteger(value.limit);
+    if (parsed === null || parsed > 100) {
+      return { ok: false, error: "limit must be an integer between 1 and 100" };
+    }
+    limit = parsed;
+  }
+
+  let beforeId: number | undefined;
+  if (value.before_id !== undefined) {
+    if (typeof value.before_id !== "string") {
+      return { ok: false, error: "before_id must be a positive integer" };
+    }
+    const parsed = positiveInteger(value.before_id);
+    if (parsed === null) return { ok: false, error: "before_id must be a positive integer" };
+    beforeId = parsed;
+  }
+
+  let cveId: string | undefined;
+  if (value.cve_id !== undefined) {
+    const parsed = requiredTrimmedString(value.cve_id, "cve_id");
+    if (!parsed.ok) return parsed;
+    cveId = parsed.value.toUpperCase();
+  }
+
+  return { ok: true, options: { limit, beforeId, cveId } };
+}
+
+async function validateSuppressionScope(
+  deps: AdminVulnsRouteDeps,
+  input: Pick<CreateCveSuppressionInput, "cve_id" | "package_name">,
+): Promise<string | null> {
+  if (!(await deps.cveExists(input.cve_id))) return `Unknown CVE: ${input.cve_id}`;
+  if (input.package_name && !(await deps.packageExists(input.package_name))) {
+    return `Unknown package: ${input.package_name}`;
+  }
+  return null;
+}
+
+function positiveInteger(value: string): number | null {
+  if (!/^\d+$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "23505"
+  );
+}
+
+/** Chip state class for one source: ok / fail / never drives the strip's color coding. */
+function chipState(status: VulnSourceStatus): "ok" | "fail" | "never" {
+  if (status.last_ok === null) return "never";
+  return status.last_ok ? "ok" : "fail";
+}
+
+/** Tooltip text: absolute times, because the chip itself stays compact. */
+function chipTooltip(s: { label: string; ts: string | null; status: VulnSourceStatus }): string {
+  if (s.status.last_ok === null) {
+    return `${s.label}: never attempted`;
+  }
+  if (!s.status.last_ok) {
+    return `${s.label}: last attempt FAILED ${fmtTs(s.status.last_failure)} (last success ${fmtTs(s.ts)})`;
+  }
+  return `${s.label}: last sync succeeded ${fmtTs(s.ts)}`;
 }

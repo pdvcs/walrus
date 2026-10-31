@@ -1,0 +1,70 @@
+name = "duckdb"
+display_name = "DuckDB"
+vendor = "DuckDB Foundation"
+website = "https://duckdb.org"
+description = "In-process analytical SQL database; the standalone command-line shell"
+
+# GitHub Releases API capabilities:
+#   Release date: "published_at" field on each release (ISO 8601) — captured automatically
+#   Checksum:     per-asset "digest" field ("sha256:…") — configured below
+#
+# Serves the CLI only (duckdb_cli-*), not libduckdb-* or static-libs-*. Asset names carry no
+# version, so the filename is identical across releases; the version lives in the storage path.
+
+[discovery]
+type = "github-releases"
+repo = "duckdb/duckdb"
+include_prereleases = false
+tag_pattern = "^v(\\d+\\.\\d+\\.\\d+)$"
+
+[versioning]
+type = "semver"
+version_group_extract = "^(\\d+\\.\\d+)" # DuckDB minors are the release series: 1.4, 1.5
+# Floor: v1.4.2 is the oldest release with a GitHub per-asset digest on all three served
+# platforms. v1.3.1-v1.4.1 have digests but publish no duckdb_cli-osx-arm64.zip (macOS ships as
+# osx-universal there), and v1.3.0 and older have no digests at all.
+min_version = "1.4.2"
+lts_support = false
+
+[retention]
+versions_per_group = 2
+groups_to_keep = 2 # 1.5 and 1.4; 1.4 is still receiving patch releases (v1.4.5, 2026-06-17)
+cooling_off_days = 7
+
+[checksum]
+# Per-asset digest from the GitHub API; DuckDB attaches no sidecar checksum files.
+type = "github-asset-digest"
+algorithm = "sha256"
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "windows"
+arch_upstream = "amd64"
+extension = "zip"
+filename_template = "duckdb_cli-{os}-{arch}.{ext}"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "osx"
+arch_upstream = "arm64"
+extension = "zip"
+filename_template = "duckdb_cli-{os}-{arch}.{ext}"
+
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "linux"
+arch_upstream = "amd64"
+extension = "zip" # not the -musl variant; that is a different asset name
+filename_template = "duckdb_cli-{os}-{arch}.{ext}"
+
+[vulnerabilities]
+# duckdb:duckdb — 56 dictionary entries (verified live against the NVD CPE dictionary 2026-10-07).
+cpes = ["duckdb:duckdb"]
+# The PyPI package is built from the same engine and shares its version numbers (CLI 1.5.6 ↔
+# PyPI duckdb 1.5.6), so its advisories' version ranges apply to the CLI. OSV returns 4
+# advisories for it today (2026-10-07).
+osv = { ecosystem = "PyPI", name = "duckdb" }
+aliases = ["duckdb", "duck db", "duckdb cli"]

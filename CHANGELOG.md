@@ -2,9 +2,60 @@
 
 All notable changes to Walrus are documented here.
 
+## Version 0.4.0: More packages and deeper test coverage
+
+Broadens the catalogue with sixteen new package definitions and backs each new discovery path
+with its own test suite.
+
+**New packages**
+
+- **`rust`** — the Rust toolchain, with versions resolved from rustup's TOML channel manifests.
+- **`dotnetsdk`** / **`asp-hosting`** — the .NET SDK and the ASP.NET Core hosting bundle.
+- **`postgresql`** — PostgreSQL Windows and macOS binaries from EnterpriseDB, served through the
+  now-real `directory-listing` strategy (version history and artifacts live on separate hosts).
+- **`mise`** — the polyglot dev-tool manager.
+- **`powershell`** — PowerShell LTS, with the LTS channel read from upstream's `metadata.json`.
+- **`bat`**, **`difftastic`**, **`eza`**, **`fd`**, **`git-delta`**, **`jq`**, **`micro`**,
+  **`ms-edit`**, **`starship`**, **`zoxide`** — small CLI tools served for Windows, Linux x64, and,
+  where upstream publishes them, macOS arm64.
+
+**Testing**
+
+- Dedicated suites for the new discovery paths: `tests/discovery/directory-listing.test.ts`,
+  `dotnet-releases.test.ts`, and `rust-channel.test.ts`.
+- `tests/scripts/vuln-ingest-all.test.ts` covers the new fleet-wide CVE ingestion script.
+- Expanded coverage for `github-releases` (LTS documents and `min_version` tag handling), the
+  download service, `/internal/vuln-sync`, and CVE version handling.
+
+**Other changes**
+
+- **WAL-117 (Added):** `WALRUS_BASE_PATH` serves the whole app under an adopter's own path prefix.
+- **WAL-121 (Added):** the Admin nav's Jobs item is a dropdown, and a **Vulnerability Fetch Jobs**
+  page lists vulnerability backfill runs; the package jobs page is retitled and the config page
+  becomes **Validate Package Configuration**.
+- **WALRUS_BRANDING** overrides the public landing page's product name (default `Walrus`).
+- **Added:** view-only **Packages** (`/packages`, `/packages/:name`) and **Vulnerabilities**
+  (`/vulns`) pages that need no login and carry no admin actions.
+- **Added:** `WALRUS_LOGO` and `WALRUS_ADMIN_LOGO` set the nav logo for visitors and for
+  logged-in operators. They are paths to image files in the repository, not URLs; the defaults
+  are the bundled `src/static/applogo.jpg` and `applogo-admin.jpg`. A wrong path refuses to start.
+- **Fixed:** `POST /internal/vuln-sync/:source` no longer fails when its audit row cannot be
+  written, and a backfill job's `since_date` is read back as the `YYYY-MM-DD` string its type
+  declares.
+- **`npm run vuln:ingest-all`** ingests CVEs for every tracked package over the API, and the admin
+  package list can be filtered by first letter.
+
 ## Version 0.2.0: Vulnerability intelligence
 
 Add CVE-lookup capability into walrus, keyed to walrus packages. Also add an admin UI and the ability to cross-reference CVEs against the package versions walrus has cached (i.e. which of the versions walrus is actually serving carry known CVEs).
+
+**Observability**
+
+- Added a base-path-aware `GET /metrics` Prometheus endpoint with API request rate, status, latency,
+  and payload-size metrics; download throughput; Node.js/process and PostgreSQL pool metrics; and
+  durable catalogue, sync, and vulnerability state sourced from PostgreSQL. Database snapshots are
+  refreshed asynchronously behind a 60-second cache. Scrapes return the last successful database
+  snapshot immediately, report its age, and remain available during a database outage.
 
 **Wave 1 — Foundation**
 
@@ -95,6 +146,730 @@ New deps: `fuzzball`, `semver` (runtime); `fast-check` (dev). `pg_trgm` extensio
   known critical CVE.
 - **WAL-32 (Security):** `GET /download/:package/:version/:os/:arch` returns `403` before
   artifact lookup or storage access when the requested version carries a known critical CVE.
+
+**Wave 11 — Git for Windows and the transform stage**
+
+- **WAL-57 (Added):** A transform stage in the download pipeline, structured like discovery —
+  a registry in `src/transform/` with one file per conversion, `tar-bz2-to-zip` first. The
+  pipeline becomes `upstream → sourceHash → transform → outputHash → storage.upload`: the
+  upstream digest is verified against the source bytes, the artifact's `checksum`/`file_size`
+  describe the stored bytes, and output is deterministic (fixed deflate level, tar entry
+  order, mtime from the tar header — byte-identical output across runs, verified against the
+  real upstream archive). Peak memory is bounded by a measured link-cache window
+  (`link_cache_bytes`), never artifact size; hardlinks are duplicated from that window and a
+  target that falls out of it fails the artifact loudly. Symlinks and device/fifo entries fail
+  the artifact unless explicitly listed in the config's `drop_symlinks` — nothing is skipped
+  silently. A post-transform gate (`require_paths`, `min_entries`) blocks an empty or
+  truncated output from reaching `available`, and the failure-path storage delete is now
+  unconditional, since a transform can die mid-stream after a partial upload.
+- **WAL-58 (Added):** Artifact provenance, via migration `0013_artifact_provenance.sql`:
+  `source_checksum`, `source_file_size`, and `transform` join `artifacts`, while
+  `checksum`/`file_size` keep meaning the bytes we serve. `upstream_url` is the source URL —
+  no second column. The chain (source URL, source digest, transform identity) is exposed
+  through `GET .../versions/:group/latest` and OpenAPI; for untransformed artifacts the new
+  fields are NULL. Redownloading a transformed artifact now re-verifies against
+  `source_checksum` instead of the stored zip digest it would never match.
+
+**Wave 13 — CPE version semantics**
+
+- **WAL-70 (Added):** Operator CVE suppressions are stored independently of ingestion and can be
+  scoped to one package or all packages, optionally expiring. Public vulnerability responses keep
+  suppressed CVEs visible with their reason; the critical gate ignores only active assertions.
+  The API-first admin flow previews affected cached versions before create/revoke, audits both
+  mutations with operator attribution, records availability transitions, and surfaces the active
+  count in health degradations and the vulnerability explorer. The bounded
+  `GET /admin/v1/vuln-suppressions/audit` endpoint exposes the create/revoke trail without
+  production shell or database access.
+- **WAL-59 (Added):** `npm run validate -- --transform` exercises a package's transforms for
+  real against upstream — full pipeline into a no-op sink, nothing persisted — and reports
+  entry count, output size, output digest, `require_paths` hits/misses, and symlink drops,
+  per platform. Default off (minutes of CPU, hundreds of MB of transfer); configs without a
+  transform behave exactly as before.
+- **WAL-60 (Added):** `packages/walrus-gitwindows.toml` — Git for Windows served as `zip`
+  transformed from upstream's streamable `Git-<version>-<arch>.tar.bz2`, because the portable
+  `.7z.exe` is quarantined on managed laptops. Version pivots off the asset name
+  (`asset_version_pattern`), since the tag (`v2.55.0.windows.5`) and the asset version
+  (`2.55.0.5`) disagree; first-of-series three-component versions are spanned. Verified live:
+  both arches transform (9,590 / 7,919 entries, `cmd/git.exe` and `usr/bin/bash.exe` present).
+  CPE pairs remain deliberately unset until PO verification against the live NVD dictionary
+  (WAL-60 MANUAL_TEST), and the served-size call is the PO's: measured **~162 MB (x86-64) /
+  ~207 MB (arm64)** against 59 MB for the `.7z`.
+- **WAL-61 (Changed):** Transform concurrency is bounded independently of
+  `DOWNLOAD_CONCURRENCY` (`TRANSFORM_CONCURRENCY`, semaphore shared process-wide): the sync
+  job runs transforms two at a time beside its eight IO-bound downloads, and the API service —
+  which can run on-demand syncs and had inherited a 512 MiB memory default — is now pinned
+  1Gi/1cpu with one transform at a time. Sized against the measured transform footprint
+  (up to ~475 MiB of hardlink link cache per artifact on the arm64 tree).
+- **WAL-62 (Added):** [ADR-006](engineering/decisions/ADR-006-transformed-artifacts.md) —
+  _walrus may serve repackaged artifacts under stated conditions_. Accepted 2026-08-29. Records
+  the eight conditions repackaging is permitted under, what a consumer verifies against
+  (`checksum` = served bytes, `source_checksum` = what the vendor published), and what is
+  given up: no vendor signature on the served zip, no byte-identity with upstream, and a
+  162.4 MB zip against a 59 MB `.7z`.
+- **WAL-57 (Fixed):** GitHub release discovery now carries the API's own `size` for each
+  asset, so the truncation check prefers an independent number over the response's
+  `Content-Length` (WAL-67's intent) instead of only when a checksum sidecar happens to exist.
+- **WAL-73 (Fixed):** Review follow-ups on the transform stage. Two memory defects that made
+  peak scale with artifact size rather than with `link_cache_bytes` — hardlink duplicates
+  bypassing backpressure, and collected chunks retained for the life of the archive — plus the
+  test assertion that could not have caught either (it sampled `heapUsed`, which cannot see
+  Buffer memory, once at the end). The link cache now reserves space before an entry is
+  collected instead of charging for it once stored, so `link_cache_bytes` is the ceiling the
+  config, the changelog and the Cloud Run memory pins have been claiming rather than
+  `budget + 2 x largest cached file`. An admin redownload of an artifact whose `transform` is
+  recorded now fails with 409 when the live config resolves no transform for that platform,
+  instead of quietly storing the raw `.tar.bz2` under the served `.zip` name and passing every
+  check on the way. An upstream-published `size` no longer bypasses the content-coding bail
+  that the response's own `Content-Length` obeys. `validate`'s spot-check line names the
+  platform it actually checked rather than always `linux/x86-64`, which misreported every
+  Windows-only package. Releasing a transform semaphore permit twice is now a no-op.
+
+- **WAL-78 (Fixed):** CVE ranges are evaluated against the upstream version a served version
+  embeds, where the package declares how ([ADR-008](engineering/decisions/ADR-008-cve-version-normalisation.md)).
+  `gitwindows` serves `2.55.0.5` — Git 2.55.0, Windows rebuild 5 — against CVE ranges naming
+  three-component Git, so `< 2.56.0` matched but a CVE naming `2.55.0` exactly, or bounding
+  inclusively at it, silently did not: a build containing the affected Git looked clean. The rule
+  is a regex in `[vulnerabilities].cve_version_extract`, reconciled to `packages` on boot like
+  `osv_*`, and joined onto the affects rows so every evaluator has it without threading a
+  parameter through nine call sites. The accepted cost is over-blocking — every `2.55.0.x` blocks
+  under `<= 2.55.0` — which is deliberate, and `matched_because` now names both versions so a
+  block is explicable. Packages declaring no rule are unaffected.
+
+**Wave 12 — IntelliJ IDEA and multi-GB artifacts**
+
+- **WAL-63 (Fixed):** The version sorter ranked a four-component build below the
+  three-component version it extends — `2025.3.6` outranked its own `2025.3.6.1` — because a
+  stable key was terminated with `~` (126) while overflow components were separated with
+  `.` (46). `~` now both terminates a stable key and introduces every component past the third,
+  so a longer version's key is a strict extension of the shorter one's and sorts above it.
+  `version_sort` drives retention, so the effect was keeping a superseded build and pruning the
+  newer one in any group that mixes component counts.
+- **WAL-63 (Fixed):** `semver.parse(…, { loose: true })` does not merely reject a
+  four-component version: with a multi-digit patch it reads the fourth component as an
+  undelimited pre-release, turning `0.0.10.0` into `0.0.1-0.0` and keying it below `0.0.2`. The
+  sorter now routes on the version's own shape before consulting semver instead of treating a
+  failed parse as the signal. Keys for three-component versions — every version walrus currently
+  stores — are byte-identical to before.
+- **WAL-63 (Added):** `version_sort` is recomputed at boot for any row whose key no longer
+  matches the sorter. The column is written once at discovery and there is no shell in
+  production to run a fixup from, so a change to the algorithm would otherwise leave old rows
+  keyed by the retired scheme indefinitely.
+
+- **WAL-66 (Added):** Artifact downloads support `Range`. A single range — explicit,
+  open-ended, or suffix — returns `206` with `Content-Range`, reading only those bytes from
+  storage rather than the whole object; an unsatisfiable range returns `416`. `Accept-Ranges`
+  and an `ETag` are advertised, and `If-Range` is honoured, so a client resuming against an
+  artifact that has been re-synced gets a full `200` and starts over instead of splicing two
+  builds into one corrupt archive. Multi-range requests are answered with the full
+  representation, as RFC 9110 permits. `X-Checksum-*` still describes the whole artifact:
+  verify after reassembly, not per chunk.
+- **WAL-66 (Fixed):** A stale `If-Range` on an artifact above the threshold is reported as
+  `400 stale_range_validator` rather than `400 range_required`. The two rules collided: a
+  validator mismatch is answered with the whole representation, which is the very thing an
+  oversized artifact refuses to send, so the mismatch fell through to the size refusal and told
+  a client that had sent a `Range` to send one. Nothing about that is actionable — the client
+  repeats the request, is refused identically, and never learns its partial file is stale — so
+  the protection against splicing two builds together was unreportable on precisely the
+  artifacts large enough to be resumed across processes. The refusal now names the cause and
+  carries the current `ETag`. Below the threshold the RFC behaviour is unchanged.
+- **WAL-66 (Changed):** An unranged `GET` of an artifact above `RANGE_REQUIRED_BYTES` (1 GB by
+  default) is now refused with `400` and `code: "range_required"` rather than served. Cloud
+  Run's 3600s request deadline is not raisable, and at that size a single request cannot finish
+  for any client under a few Mbps — "degrading gracefully" would mean an hour of doomed
+  transfer and no partial result. Below the threshold nothing changes, which is every package
+  walrus serves today. Artifact metadata carries `requires_range` so a client can tell before
+  it starts.
+- **WAL-67 (Changed):** GCS uploads set an explicit chunk size, which is what puts the client
+  in resumable multi-chunk mode — previously a blip at 1.5 GB of a 1.6 GB upload discarded the
+  whole transfer. The default is the value that is safe in an unpinned container (8 MiB); the
+  sync job raises it to 32 MiB alongside the CPU and memory it now pins. Whole-transfer
+  attempts drop from three to two: the storage half retries its own chunks now, so an outer
+  restart only re-covers the upstream fetch.
+- **WAL-67 (Fixed):** A truncated download is no longer marked `available`. The digest of the
+  bytes that did arrive is perfectly self-consistent, so the checksum could not catch it; the
+  received byte count is now compared against the size upstream advertises — the API's own
+  number where it publishes one, otherwise `Content-Length` — and the object is deleted on a
+  mismatch.
+- **WAL-67 (Changed):** `sync_job_timeout` 3600s → 21600s. A first backfill of an
+  IntelliJ-sized package moves 25.8 GB, which does not fit in an hour; the job maximum is 24h.
+
+- **WAL-65 (Added):** A json-api sub-mode for APIs that key their downloads by platform rather
+  than listing them — `files_shape = "platform-map"`. The existing nested-files mode assumes an
+  array with the platform in a field, so a keyed object (JetBrains'
+  `downloads: { windowsZip: …, macM1: … }`) silently yielded zero artifacts. Each
+  `[[platforms]]` entry now selects its download by `os_upstream` matching the key; the URL,
+  its checksum sidecar, and the published byte size come from the value. Filenames are taken
+  from the URL rather than constructed, so an upstream that renames its artifact prefix
+  mid-window is spanned without special-casing. The sub-mode is named rather than inferred from
+  the response shape, and mixing its fields with the array shape's is a schema error rather
+  than a silent no-op.
+- **WAL-68 (Added):** `packages/walrus-intellij.toml` — IntelliJ IDEA Ultimate, served as the
+  Windows `.win.zip` and the Apple Silicon `.dmg`, with everything (URL, sha256 sidecar,
+  published size, release date) read from JetBrains' release API rather than constructed.
+  Ultimate only: JetBrains has stopped publishing Community, and the API agrees. Groups come
+  straight from the version — the first two components equal the API's own `majorVersion` for
+  all 281 releases — and CVE tracking runs on `jetbrains:intellij_idea` (230 dictionary entries,
+  verified live 2026-08-30), with no `cve_version_extract`, because IDEA's fourth component is
+  JetBrains' own rather than a downstream rebuild counter. Ships at one group and one version so
+  local and GCP Dev pull ~3.2 GB rather than the 25.8 GB production will hold; the production
+  rule sits commented beside it. Both platforms stay configured even at that depth, since the
+  `macM1` key and the sidecar are the only per-platform paths in the config and would otherwise
+  reach production unexercised.
+- **WAL-68 (Changed):** The platform-map sub-mode reports its skips once per sync instead of
+  once per release and platform. JetBrains' feed carries every IDEA release back to 2011, and
+  152 of its 281 records predate the `windowsZip` and `macM1` keys entirely — 276 warn lines on
+  a feed where nothing was wrong. The summary is keyed by platform and carries a count and a
+  sample, which is what distinguishes an asset that has gone missing from an archive that
+  predates the keys.
+
+**Wave 13 — CPE version semantics**
+
+- **WAL-69 (Fixed):** A CPE whose version component is NA (`-`) no longer blocks every version.
+  CPE 2.3 distinguishes NA from ANY (`*`), and ingestion collapsed the two — so an advisory that
+  named no version was read as naming all of them. CNAs file that way against products they
+  cannot version, which made an Arduino _extension_ flaw (CVE-2024-43488, NVD-rescored to 9.8
+  CRITICAL) block every VS Code build walrus serves, along with four older NA advisories gating
+  on CVSS v2 scores. Migration `0012_cve_affects_version_na.sql` records the distinction; the
+  critical gate skips NA rows the way it already skips fail-open matches, while `*` with no
+  bounds still means all versions. NA advisories stay visible on `/packages/:name/vulns` under
+  `matched_because: "version-not-applicable"`.
+- **WAL-69 (Fixed):** The vulnerability explorer no longer badges a non-gating CVE
+  "blocks at 9.8". The gate exclusions (an NA-versioned CPE, a fail-open range match) were
+  applied to `/download` but not to the explorer's own rendering, which computed the badge from
+  the score alone — so the page went on naming CVE-2024-43488 a blocker after the fix had
+  unblocked VS Code. The affected-range column now reads "not applicable (names no version)"
+  rather than "all versions" for such rows, on the explorer, `/api/v1/vulns`, and the CVE
+  detail endpoint.
+- **WAL-71 (Added):** The vulnerability explorer offers a backfill scoped to the package being
+  viewed, with an optional start date. The API has taken a `package` scope since WAL-37; only
+  the affordance was missing (ADR-007).
+- **WAL-71 (Fixed):** `createApp` now mounts `express.urlencoded`. The admin UI posts plain HTML
+  forms, and with only `express.json()` every field was dropped silently — which made the new
+  package-scoped backfill button run an unscoped 11-package backfill and return 303 as though it
+  had worked.
+
+**Wave 14 — Deployment health contract**
+
+- **WAL-80 (Changed):** `/health` is now a minimal deployment availability check, also available
+  at `/app/health`. It reports package version/repository metadata, current and startup timestamps,
+  and PostgreSQL-backed availability. Database startup is protected by a 300-second grace period;
+  after it expires an unavailable database returns `isAvailable: false` with HTTP 503. Detailed
+  vulnerability freshness, sync outcomes, and degradations moved to `/app/status`, and the admin
+  banner reads that endpoint. Successful and failed database probe results are cached for 60
+  seconds, with concurrent health requests sharing one in-flight probe.
+
+**Wave 15 — Operator and machine authentication**
+
+- **WAL-81 (Added):** A dependency-free HMAC-SHA256 session primitive supports distinct cookie
+  and bearer credentials, current/previous key rotation, epoch revocation, clock-skew tolerance,
+  short renewable browser expiry, and an immutable absolute session cap.
+- **WAL-82/WAL-83 (Added):** Authentication is resolved once at boot through a provider contract;
+  the built-in constant-time password provider fails unsafe production configuration, while a
+  strict reviewed TOML roster authorizes opaque provider subjects on every request.
+- **WAL-82 (Changed):** The built-in provider now requires a password of at least 16 bytes in every
+  environment. Local development reads it from gitignored `.env.secrets`; no working credential is
+  committed in `.env.local` or embedded in application code.
+- **WAL-87 (Added):** Adopters can load an authentication provider by module path with API-version,
+  provider-owned environment schema, and initialization checks that fail startup cleanly.
+- **WAL-84/WAL-85 (Added):** `/admin/v1` now has form and JSON login, kind-bound signed cookies
+  and bearer tokens, roster authorization, safe redirects, origin checks, bounded login backoff,
+  and authenticated-subject audit attribution. Suppression actors can no longer be caller-forged.
+- **WAL-86 (Added):** `/internal` verifies Google OIDC signature, issuer, expiry, exact audience,
+  and scheduler principal at one mount. Human backfill start/status routes now exist only under
+  `/admin/v1`; the autonomous machine sweep remains internal.
+- **WAL-88 (Changed):** Cloud Run receives admin/session secrets from Secret Manager and shares an
+  explicit OIDC audience with Scheduler. Deployment now applies secret references before rolling
+  out the boot-validating image; operator, provider-delivery, token, and rotation runbooks are
+  documented. Live Terraform/GCP validation remains a DevOps manual gate.
+- **WAL-89 (Security):** Security-tier tests now enumerate the routers actually mounted by the
+  application. Login success, invalid credentials, forbidden subjects, provider unavailability,
+  and thrown provider failures are audited without passwords; runtime boot, response timing,
+  independent username/IP throttling, cookie CSRF/logout, session format, and OIDC/JWKS failure
+  and cache behavior have expanded regression coverage. Auth and static infra checks now run in
+  the unit-test lane.
+- **WAL-90 (Added):** `/` is now a public Walrus landing page showing the running package version
+  and links to admin login, docs, health, status, and OpenAPI. Login and one-time bearer-token
+  pages share responsive Walrus page chrome, while every admin page now exposes API-token and
+  logout actions in its navigation. Logout returns to an explicit signed-out state.
+
+**Wave 16 — Explaining the gate**
+
+- **WAL-79 (Changed):** A `403` from the critical-CVE gate now names the advisory that blocked
+  the download instead of returning a fixed string. The body carries the CVE id, the version
+  comparison that matched it — including whether the served version was normalised before the
+  comparison — every CVSS score, the KEV flag, and `fixed_in`, so a failed build says which
+  version to move to. The explanation is the one the gate computed while deciding, not a second
+  evaluation; where several critical CVEs match, the highest-scoring one is reported, and the
+  same one on every request. A suppressed CVE does not block, and so is never named. `blocked_by`
+  is omitted, and the refusal still sent, if the detail cannot be assembled: describing a block is
+  never allowed to prevent one, and a `500` would tell a client to retry a version walrus withheld
+  on purpose.
+
+**Wave 17 — Embargo correctness**
+
+- **WAL-91 (Fixed):** A release embargo on a package whose upstream publishes no release date
+  never expired, leaving the newest version of `golang`, `azuljdk` and `vscode` permanently
+  undownloadable behind a `423` whose `available_at` was always about `cooling_off_days` away.
+  With no upstream date the embargo end was measured from the current time and rewritten on every
+  sync, so it advanced by one sync interval per run; the watermark that would have ended it only
+  moves when a version becomes available, which that same embargo prevented. The fallback is now
+  anchored to `versions.discovered_at` — the moment walrus first saw the version, stable across
+  syncs — so the embargo means three days after discovery and is reached on schedule. An upstream
+  release date still takes precedence where one exists, and artifacts already stuck are corrected
+  on the next sync rather than needing an operator, since the recomputed end is now in the past.
+
+**Wave 18 — Infrastructure re-validation**
+
+- **WAL-92 (Fixed):** `NVD_API_KEY` had no infrastructure-as-code route at all — no Secret Manager
+  resource, no env wiring, no IAM binding anywhere under `infra/` — while the runbook told
+  operators to configure it in production. The whole fleet therefore ran keyless at NVD's 5
+  requests/30s instead of 50 unless someone hand-edited deployed config outside version control,
+  which made every throughput figure in the runbook, and the `1800s` attempt deadline chosen for
+  the NVD scheduler job, an order of magnitude optimistic. The key now travels the same path as
+  every other runtime secret: `walrus-nvd-api-key` is declared in Terraform with no value in
+  source, `deploy.sh` adds a version when `NVD_API_KEY` is present, and it is mounted by reference
+  on the `walrus-api` service and both Cloud Run Jobs under one `secretAccessor` grant to the
+  account they share. The key stays optional — Cloud Run will not start a revision that references
+  a versionless secret, so the mounts are conditional on whether a version was populated, and a
+  project deploying without a key gets a note and the keyless path rather than a failed deploy.
+  Static wiring is now asserted in `tests/infra/nvd-api-key-terraform.test.ts`, since the gap was
+  originally found by a human grepping `infra/`.
+
+- **WAL-93 (Fixed):** `infra/scripts/teardown.sh` could not finish. Cloud Run Jobs default to
+  `deletion_protection = true` in the provider; `cloudrun.tf` opted the _service_ out but never the
+  two Jobs, and teardown lowered only the Cloud SQL and bucket guards. `terraform destroy` aborted
+  on `walrus-sync` and `walrus-vuln-backfill` — after the script's targeted apply had already
+  stripped protection from the database and set `force_destroy` on the artifact bucket, so a failed
+  teardown left the project less safe than not running it. Both Jobs now sit behind a
+  `job_deletion_protection` variable defaulting to protected, which teardown lowers alongside the
+  other two, on both its targeted apply and its destroy. The Terraform state bucket — the only
+  record of the deployment — is now created with object versioning. Found by the first
+  `terraform plan` ever run against a real project.
+
+- **WAL-95 (Fixed):** The scheduled incremental NVD sync crashed the service. It fetched the whole
+  lastMod window into one array before writing anything, and on a fresh database — where there is
+  no cursor, so the window is the full 119-day lookback — that is hundreds of thousands of parsed
+  CVE objects against a V8 heap capped near 512 MB. The process aborted on a heap-limit fatal
+  about two minutes in, well before the scheduler's 1,800-second deadline; Cloud Run restarted it
+  seconds later, so the only trace was a container log and a scheduled job that never completed.
+  The sync now streams a page at a time — filter, ingest, discard — so peak memory is flat in the
+  window's size rather than linear, and `knownCveIds` is queried per page instead of passing every
+  id in the window to one query. Each page is its own transaction; the cursor still advances only
+  on full success, and because every write is an upsert whose affects rows are rebuilt per CVE, an
+  interrupted run is redone idempotently instead of discarded. First live run after the fix walked
+  367,090 modified CVEs, wrote 15,915 affects rows, and left the serving instance up throughout.
+
+- **WAL-97 (Fixed):** The historical CVE backfill had the same defect as the incremental sync,
+  where it mattered more. `backfillNvd` concatenated every page of a CPE pair's results before
+  writing a row — with no relevance filter to shrink the set, per publication window per pair, in
+  a Cloud Run Job that has no resource pin at all. It now ingests per page. Not reached in live
+  testing only because no environment had run a historical backfill yet, which is exactly what
+  WAL-77 does.
+- **WAL-45 (Added):** `npm run validate -- --online` probes every configured CPE pair against the
+  NVD CPE dictionary and reports how many entries each has;
+  `/admin/v1/validate-toml` renders the same check as a `cpe_dictionary` step. A syntactically
+  valid `vendor:product` can name the wrong product, and nothing downstream notices — the targeted
+  backfill walks zero results, reports success, and marks the package covered.
+
+  Deliberately advisory: zero hits **warns and names the pair**, never fails, because products NVD
+  has never had to name legitimately have no dictionary entry, so absence of evidence cannot
+  distinguish a typo from an obscure-but-correct pair. Upstream being unreachable is reported as
+  `unchecked` rather than as zero hits — conflating them would train analysts to ignore the
+  warning. No network calls without the flag, so CI stays offline, and the walk paces itself
+  through the NVD client's rate limiter for the keyless 4-per-30s budget.
+
+  OSV mappings get no equivalent probe; that half is [WAL-109](engineering/tasks/WAL-109.md),
+  deferred.
+
+- **WAL-48 (Changed):** The scheduled CVSS enrichment run is bounded. Cloud Scheduler now POSTs a
+  `limit`, sized by a documented Terraform variable rather than walking the entire un-scored
+  backlog and being cut off mid-walk. The default is derived for the keyless NVD rate, since an
+  API key is optional. The runbook records that the backlog now drains at `limit` per run, so a
+  successful run no longer implies an empty backlog, and gives the query to watch the trend.
+- **WAL-96 (Fixed):** `terraform plan` is no longer permanently dirty after a deploy. The Cloud
+  Run service now ignores three fields it does not declare but the API and `gcloud run services
+  update` return anyway — including a service-level `scaling` block the API reports as zeros,
+  whose diff cannot be applied away because removing zeros is a server-side no-op. A plan that
+  always shows a diff on the most important resource in the project is how the next real drift
+  goes unnoticed. The instance ceiling and the Postgres pool size are now declared together, with
+  the connection budget binding them enforced by a plan-time precondition.
+
+- **WAL-95 / WAL-97 (Fixed):** Container memory is now budgeted rather than inherited. Node caps
+  its heap at roughly half the container, which sounds conservative but is not: the archive
+  transform's link cache and the resumable-upload chunks are Buffers, which live outside that heap.
+  Both claimants could reach their maximum at once — 512 + 539 MiB against a 1Gi service, 1024 +
+  1280 against a 2Gi sync job — and the container would be OOM-killed with no stack to explain it.
+  Each workload now declares an old-space ceiling derived from what is left after its Buffer
+  budget, and `walrus-vuln-backfill`, previously the one workload with no resource limits at all,
+  is pinned. Postgres `max_connections` is pinned too, and the Cloud Run connection budget now
+  divides that number instead of a tier default nobody had checked.
+
+- **WAL-98 (Fixed):** The autonomous per-package CVE backfill had never launched successfully on
+  GCP. It passed the database job id into the Cloud Run Jobs API as a JSON number, and the API
+  type-checks that field, so every package on every sweep failed with a 400 — while the scheduler
+  reported success, because per-package launch failures are logged and swallowed. The id is
+  `BIGSERIAL` and a global BIGINT type parser hands it back as a JS number, so the `string` type on
+  both the row and the launcher signature was wrong at runtime; Postgres coerces either happily,
+  which is why every other consumer of that id worked. The launch payload now stringifies at the
+  wire boundary, and `CloudRunBackfillLauncher` has test coverage for the first time — only the
+  local launcher, which passes the id to an in-process call where a number is fine, had any.
+
+- **WAL-99 (Fixed):** With the job id serialised correctly, launching the backfill began failing
+  403 instead of 400: `walrus-api` held `roles/run.invoker` on the job, which grants a plain
+  execution but not `run.jobs.runWithOverrides` — and overrides are how the job id reaches the
+  container, so the binding could never have worked. Replaced with a custom role carrying exactly
+  `run.jobs.run` and `run.jobs.runWithOverrides`, rather than `roles/run.developer`, which would
+  also grant create, update and delete over every Cloud Run resource in the project. The two
+  defects were layered: fixing the first only revealed the second, and neither is visible without
+  a real launch.
+
+- **WAL-101 (Fixed):** The autonomous backfill sweep re-launched the same package every two hours,
+  forever. A package's CPE coverage marker was written from TypeScript (`hashCpePairs`, which sorts
+  by UTF-16 code unit) but recomputed in SQL to select against (`string_agg(... ORDER BY ...)`,
+  which sorts by the database's collation). Cloud SQL's database is `en_US.UTF8`, and glibc ignores
+  punctuation at the primary weight, so `git-scm:git` and `git:git` canonicalise in opposite orders
+  on the two sides: `gitwindows` could never match its own marker. Nothing surfaced it — the job
+  exited 0 each time, and `markBackfillComplete` resets the attempt counter, so the retry budget
+  that would have raised an operator hint was never consumed. The digest is now computed in exactly
+  one place: the query returns the raw pairs and the comparison happens in TypeScript, which no
+  collation can affect. Found by inspecting twelve hours of unattended scheduler activity on GCP
+  Dev, on a deployment reporting no degradations throughout.
+
+- **WAL-102 (Fixed):** A re-sync erased the stored checksum of an already-cached artifact, so
+  four of the thirteen packages served multi-hundred-MB and multi-GB downloads with no integrity
+  value at all — and the reference client treats an absent digest as a pass. `SyncService` wrote
+  `checksum: artifact.checksum ?? null` at _discovery_ time, behind a guard satisfied by the
+  checksum _algorithm_ alone; for a package whose config supplies a checksum URL rather than a
+  value the digest is not known until the download fetches it, so the write landed as NULL over a
+  correct digest. It could not self-heal, because only pending artifacts are queued for download.
+  Discovery no longer writes to an available artifact — its digest describes stored bytes, which
+  discovery does not know — and no longer writes fields it did not resolve. Affected artifacts
+  recover by re-download, triggered from the sync rather than by resetting rows to `pending`,
+  which would have 404ed them until the next sync completed. Also restores the content-derived
+  `If-Range` validator: without a checksum the ETag falls back to a completion timestamp, so the
+  guard against splicing two builds together rotated on any re-download, on exactly the artifacts
+  large enough to need resuming.
+
+- **WAL-103 (Fixed):** GitHub discovery ran unauthenticated on GCP, so a scheduled sync failed
+  outright when the 60 req/hour per-IP limit — measured against a Cloud Run egress address shared
+  with other tenants — ran out; four of thirteen packages 403'd and the job exited non-zero.
+  `GITHUB_TOKEN` was already read by the discovery client and simply never wired into the
+  deployment. Now supplied from Secret Manager the way `NVD_API_KEY` is, mounted on `walrus-sync`
+  alone since that is the only workload running discovery. A response carrying
+  `x-ratelimit-remaining: 0` is now named in the log with its reset time and never retried,
+  including a 429 that the old code would have retried within seconds against a window measured
+  in minutes. Implementing that exposed a live defect: `fetchWithRetry` threw inside its own
+  `try`, so its `catch` re-wrapped the error and discarded `status` — leaving `json-api.ts`'s
+  "a 404 feed means no releases yet" branch unreachable. Already-classified errors are now
+  rethrown untouched.
+
+- **WAL-102 (Fixed, second defect):** The same discovery-time write had a second branch. Where
+  discovery supplies a checksum _value_ rather than a URL, it did not null the stored digest — it
+  replaced it with **upstream's**. On an untransformed artifact those are the same number and
+  nothing shows; on a transformed one the published digest describes bytes walrus does not serve,
+  so every client that verifies its download fails on a good file. `gitwindows` was serving bytes
+  hashing to `feeea25e…` while publishing its upstream tar.bz2's `58fdf567…`. The repair now also
+  covers a transformed artifact whose `checksum` equals its `source_checksum` — WAL-58's
+  provenance split means those must differ — and the invariant is asserted by
+  `verify-deployment.sh`. Found by the first run of `examples/windows-endpoint-test.ps1`.
+
+- **WAL-60 / WAL-68:** `examples/windows-endpoint-test.ps1` — executed on Windows 10 19045 with
+  pwsh 7.6.5 as well as on Linux; all Windows-only checks pass and the 1.6 GB artifact reassembles
+  to its published digest in 107s. The host is a developer machine, so WAL-60's managed-estate
+  premise is still open.
+
+- **WAL-60 / WAL-68:** `examples/windows-endpoint-test.ps1` — managed-Windows endpoint checks
+  (antimalware survival, Explorer's own zip handling, `git.exe`, Git Bash, and the 1.6 GB ranged
+  download). PowerShell 7 so the transport half runs on Linux before a device exists; the
+  Windows-only checks skip cleanly elsewhere. Reduces those tickets' next step to acquiring a
+  device rather than designing a test.
+
+- **Tooling:** `infra/scripts/verify-deployment.sh` — asserts a deployed environment against the
+  invariants its tickets claim (WAL-40, WAL-43, WAL-48, WAL-66, WAL-86, WAL-92, WAL-95, WAL-96,
+  WAL-97, WAL-101, WAL-102), each check tagged with its ticket and exiting non-zero on failure.
+  Most of these were previously "manual tests", which in practice meant a person typing gcloud
+  commands and transcribing the result into a ticket — unrepeatable, and no help after the next
+  deploy. Distinguishes a broken invariant from a transient upstream failure so it does not cry
+  wolf, and scopes the backfill-sweep check to the running revision so it cannot be answered by
+  the history of code since replaced.
+
+- **WAL-104 (Open, found 2026-09-01):** `listAffectsWithCveForPackage` selects each CVE's whole
+  `raw` advisory JSON for every `cve_affects` row of a package, unbounded, and seven call sites
+  reach it — including `download.ts`, so **every download of a JDK artifact loads the package's
+  entire CVE corpus into a 384 MiB heap before a byte is served**. Sixteen heap aborts on
+  `pdutta-demos` between 2026-08-31T15:15Z and 2026-09-01T10:22Z, on `azuljdk` and `openjdk` read
+  paths. Exposed by WAL-101's fix: the sweep only began completing backfills once the coverage hash
+  was single-sourced, and the JDK packages' new historical CVE sets are what crossed the ceiling.
+  Not addressed by WAL-49, whose scope is the sync path rather than the request handler.
+
+- **WAL-100 (Fixed):** `POST /admin/v1/vuln-backfill/reset-attempts` clears the automatic-backfill
+  retry budget for one package or every exhausted one, audited like any other operator action.
+  After three failed attempts a package stopped being retried, and the counter was cleared only by
+  a successful backfill — the very thing that could not start — so the documented recovery was a
+  `psql` session against a Cloud SQL instance the deployment deliberately keeps off the public
+  internet. On `pdutta-demos` that had put eleven of thirteen packages permanently outside
+  self-healing (WAL-98, WAL-99).
+
+  It resets only rows at or above the ceiling, and only the counter and last error — never
+  `vuln_backfill_cpe_hash` or `vuln_backfill_completed_at`, which are the sweep's record of what it
+  has covered. Resetting nothing is a `200` with an empty list, not a `404`, so the call is safe to
+  repeat. The exhausted-packages hint now names the route and says to fix the underlying cause
+  first, since the error is already in the hint and resetting without reading it just burns three
+  more attempts.
+
+  **Recorded decision: the counter does not decay.** Ageing attempts out would restore the
+  unbounded retry the budget exists to prevent — a permanently broken package would hold the
+  sweep's single active slot on every round, starving packages that could be fixed. The problem was
+  never that the budget is too strict but that an exhausted package was invisible and
+  unrecoverable, which an alert plus a one-call reset solves without blunting the signal.
+  Documented in `engineering/docs/build-release.md`.
+
+- **WAL-107 (Fixed):** the download refusal quotes the CVSS score that actually crossed the gate.
+  `firstScore` took the first non-null of v3, v4, v2, but the gate fires when _any_ of them reaches
+  9.0 — so `CVE-2026-6100` (v3 8.1, v4 9.1) produced
+  `blocked by CVE-2026-6100 (CVSS 8.1)` under a rule that blocks at 9.0, an explanation that argues
+  against itself. WAL-79 exists so that line stands alone in a CI log.
+
+  Only the filter changed, not the v3 → v4 → v2 order: quoting the _highest_ crossing score would
+  have started preferring CVSS v2, two generations old and routinely rating higher than the modern
+  vectors. An existing test caught that, having already pinned v4 9.9 over v2 10.0.
+
+  The admin UI was correct throughout — it renders `HIGH (9.1) blocks at 9.1` — and two of the three
+  faults originally filed under this ticket were errors in how the gate was being checked, not in
+  the product. Recorded on the ticket, because the method error is the more useful half: when
+  checking whether a gate fires, ask the gate.
+
+- **WAL-108 (Fixed):** `POST /internal/vuln-sync/:source` answers **502** when a single named
+  source's sync wholly failed, instead of `207`. For one source there is exactly one outcome, so
+  207 reported a total failure as partial success of a set of one — and Cloud Scheduler, which
+  treats any 2xx as success, recorded the attempt as fine and did not retry. That is how the
+  18:20Z nvd tick on 2026-09-01 failed on an upstream timeout with every scheduler-shaped signal
+  calling it clean, and why WAL-106's retry could not fire for the failure that actually recurs.
+  `207` is kept for `all`, where the set genuinely can be partial; `409 already_running` is
+  unchanged, because contention is not a failure and must not consume a retry. The admin route
+  carried the same expression and now follows the same rule.
+
+  Accepted cost: a transient upstream timeout now opens an alert incident where it previously
+  stayed silent until a second failure within four hours. The retry is worth more than the quiet —
+  and under the old behaviour the second failure would have paged anyway, later and after two lost
+  runs instead of none.
+
+- **WAL-111 (Fixed):** `NvdClient.get` now reads the response body **inside** the guard that wraps
+  the fetch. `AbortSignal.timeout` bounds the whole exchange, but only the handshake sat in the
+  `try` — so when the 30s deadline landed during the body read, which is where it lands on a
+  2000-row NVD page, `res.json()` rejected with a raw `TimeoutError` that bypassed the retry loop
+  entirely. `maxRetries: 5` and its exponential backoff were dead code on the path that actually
+  fails.
+
+  Five occurrences between 2026-08-31 and 2026-09-04, all `nvd`. Every one recovered on Cloud
+  Scheduler's `retryCount: 1` at +600s rather than in the client, and on 2026-09-02 that retry
+  also timed out, losing the window until the 16:20Z tick. Two signatures prove the loop was
+  skipped rather than exhausted: a 30.2s request latency, where five retries plus backoff would be
+  150s+, and a log carrying the bare `TimeoutError` instead of
+  `NVD request failed after 5 retries: …`, with no backoff warning anywhere in the window.
+
+  Same line, second trigger: a 200 carrying truncated JSON rejected with `SyntaxError` and escaped
+  identically. Both are retried now, and a body-phase failure is no longer judged by the status
+  that happened to arrive with the headers — an aborted 200 must not classify as a non-retryable
+  `HTTP 200`. Failures also reach the log as `name: message`; the incident's DOMException was
+  serialized with all 25 of its legacy constants, burying the one line that mattered.
+
+  This narrows the accepted cost recorded just above: an NVD timeout that recovers on the first
+  retry no longer opens an incident at all, because it no longer leaves the client.
+
+  The test that should have caught this passed throughout — it rejects the _fetch promise_, the
+  one phase that was always handled. The suite could not have caught it: every response in
+  `nvd-client.test.ts` is built from an already-materialized string, so `res.json()` on one can
+  never reject. It gains a `streamingFailure()` fixture — a `Response` backed by a stream that
+  errors mid-body — and a table-driven case asserting nothing escapes `get` unwrapped at any of
+  the three stages a request can fail at.
+
+- **Tooling (WAL-108):** `verify-deployment.sh`'s scheduler-tick check now warns on a 2xx that is
+  not 200. `/internal/vuln-sync/:source` answers `207` when the sync ran and failed — for one named
+  source, a partial success of a set of one — and Cloud Scheduler treats any 2xx as success, so the
+  18:20Z nvd tick on 2026-09-01 failed on an upstream timeout while every scheduler-shaped signal
+  called it clean. The tick did reach the service, which is what the check asks, so this is a
+  warning rather than a failure; the underlying status code is WAL-108.
+
+- **WAL-105 (Tooling):** `verify-deployment.sh` asserts that every Cloud Scheduler tick since the
+  running revision deployed actually reached the service, not just that each job's _last_ attempt
+  succeeded. A tick refused hours ago and recovered since was previously indistinguishable from
+  one that never failed — which is how two scheduled syncs refused with a Cloud Run 429 on
+  2026-09-01 left no trace but an email. A rescued tick warns; only a job whose most recent
+  attempt failed is a failure. An attempt with no parsable response code counts as failed, or an
+  unreachable service reads as a clean run.
+
+- **WAL-106:** `walrus-vuln-sync-nvd` gets `retries = 1`. It was 0, reasoned as "retrying would
+  mostly re-hit the advisory lock and log 409s" — true for a request that arrived and met a
+  running sync, false for a Cloud Run 429, where the request never reached walrus, no lock was
+  taken and there is nothing to duplicate. The shared `min_backoff_duration` stays at 600s
+  because cvss depends on that gap to clear the nvd lock. Pinned by
+  `tests/infra/scheduler-terraform.test.ts`.
+
+- **WAL-104 (AC3, width half):** `listAffectsWithCveForPackage` caps `c.description` at the length
+  its one consumer actually renders. A multi-kilobyte NVD description travelled per row on every
+  request including downloads, and `vuln-query.ts` truncated it to 300 characters before display.
+  The cap is a query parameter rather than a literal so the number has one home, and it is
+  `+ 1` so the consumer can still distinguish an exact fit from an overflow and keep its ellipsis
+  — the cap is invisible in rendered output. Measured before the change: ~1.1s of every JDK
+  download's time to first byte was the gate loading affects (1.32s vs 0.25s for ripgrep).
+
+  The _count_ half of AC3 is deliberately not done. Pushing version matching or criticality into
+  SQL would put the same rule in two languages, which is exactly WAL-101; doing it safely means
+  storing a computed flag at ingest, which is a migration rather than a query edit.
+
+- **WAL-95 / WAL-97 (Removed):** `NvdClient.cvesForCpe` and `NvdClient.cvesModifiedSince` are
+  deleted. Both were three lines draining `cvePages` into one array, and both had already become
+  out-of-memory aborts in production — WAL-95 on the incremental path, WAL-97 on the backfill
+  path. WAL-97 recorded them as "a loaded gun" and asked for this. Deleted rather than deprecated:
+  the hazard was that the accumulating call sat in autocomplete beside the streaming one, and a
+  comment does not move autocomplete. `nvd-client.test.ts` drains `cvePages` through a local
+  `collect()` helper instead — accumulation was never the defect, accumulation reachable from
+  `src/` was.
+
+  Two now-vacuous tests went with them: `nvd-streaming.test.ts` asserted the methods were never
+  called, which cannot fail once they do not exist. `tests/infra/accumulating-helpers.test.ts`
+  replaces them and is stronger — it fails on a call _or_ a redefinition, and strips comments
+  first so it does not fire on the note explaining why the methods are gone.
+
+- **Tooling (WAL-93):** `infra/scripts/verify-teardown.sh` — asserts a torn-down project is
+  actually empty, and that the three things `teardown.sh` documents as retained (Terraform state
+  bucket, artifact bucket, Artifact Registry images) survived. Written before the teardown it
+  checks, because the manual test is one-shot and destructive: the 2026-08-30 disposal was
+  interrupted and its evidence is unrecoverable. Includes a reachability gate, since every check
+  is a list-and-count and an expired credential would otherwise report a pristine teardown.
+  Inverse-tested against the live environment: 10 failures with counts matching reality.
+
+- **WAL-104 (Fixed):** `listAffectsWithCveForPackage` no longer selects `c.raw`. It rebuilds only
+  the references subtree in SQL, so the loader stops carrying every CVE's whole advisory to all
+  seven of its call sites — `download.ts` among them, which is why serving one JDK artifact meant
+  parsing that package's entire advisory history into a 384 MiB heap first. No opt-in flag and no
+  type change: `AffectsWithCveRow.raw` was already declared as nothing but
+  `{ cve?: { references?: … } }`, so the query had been over-delivering against its own contract.
+  Fixing it at the projection covers `/vulns` too, which an opt-in would have left aborting.
+  Guarded by `jsonb_typeof(c.raw) = 'null'` rather than `IS NULL`, since the column is
+  `JSONB NOT NULL` and an absent advisory is stored as the JSON value `null`.
+
+- **Tooling (WAL-95, WAL-97):** `tests/infra/accumulating-helpers.test.ts` — WAL-97 left
+  `cvesForCpe` and `cvesModifiedSince` on `NvdClient` with no callers in `src/`, and recorded them
+  as "a loaded gun": public, obvious to reach for, and reintroducing WAL-95 verbatim with nothing
+  failing. This greps `src/` for call sites and fails naming the file that added one. It does not
+  replace deleting them, which still means rewriting twenty-one test usages against `cvePages`.
+
+- **Tooling (WAL-40):** `verify-deployment.sh`'s failed-execution check is scoped to the running
+  revision, like the sweep check beside it. Unscoped it warned about `walrus-sync-ltnwz` — the
+  WAL-103 rate-limit failure — at every run for days after the fix for it shipped.
+
+- **Tooling (WAL-104):** `verify-deployment.sh` no longer swallows a failed catalog request. Its
+  artifact block wrapped every fetch in `except Exception: continue`, so the 503 from an instance
+  the script had itself crashed was indistinguishable from a package with nothing to check: two
+  runs on 2026-09-01 each aborted `walrus-api` and each printed "0 failures", with the affected
+  package's artifacts silently absent from the count. A failed request now names the package and
+  the status and fails the run.
+
+- **Tooling (WAL-40 AC5):** `verify-deployment.sh`'s backfill-sweep check can now tell the sweep's
+  terminal state from a stalled one. Zero launches used to warn "needs a second to be conclusive"
+  at every run, which is a check nobody reads for long; it now also reads the sweep's own fire
+  count and the exhausted-retries log line, so an estate where every CPE set is covered passes
+  rather than warning forever.
+
+- **WAL-66:** `examples/wal66-resume-test.sh` — an asserting harness for the interrupt/resume
+  manual test: SIGKILLs a ranged transfer mid-flight, resumes it in a fresh process, and checks
+  the chunk boundary, the persisted range validator, that it resumed rather than restarted, that
+  only the missing ranges crossed the wire, and the assembled digest.
+
+**Wave 19 — Enterprise egress: chokepoint, declarative rewrites, and configuration**
+
+An enterprise running walrus as its own ingress, often behind a corporate proxy or an
+Artifactory remote, previously had no seam for rewriting upstream URLs or for its own config
+variables short of forking walrus's own source. See
+[plans/enterprise-extension-points.md](engineering/plans/enterprise-extension-points.md) for the
+full design; this wave ships the two lowest-friction layers (Layer 0 CONNECT proxying and the
+Layer 2 extension module remain deferred — [WAL-72](engineering/tasks/WAL-72.md)).
+
+- **WAL-112 (Added):** `createEgressFetch()` (`src/common/http.ts`) is now the single chokepoint
+  every outbound public-internet `fetch` in walrus goes through — discovery, artifact bytes,
+  checksum sidecars, the NVD/OSV/KEV vuln feeds, and Google OIDC/JWKS verification for
+  machine-tier auth, five call sites unified with no behaviour change. GCP-internal traffic
+  (GCS, Cloud SQL, the Cloud Run control plane) never passes through it.
+- **WAL-113 (Added):** `WALRUS_EGRESS_RULES` points at a TOML file of prefix-match rewrite
+  rules (longest-prefix-wins, first-match-wins, optional per-rule header injection with `${VAR}`
+  interpolation, optional `purpose` restriction), validated at boot with the same fail-fast
+  contract as `loadConfig()`. `WALRUS_EGRESS_MODE` (`direct` default / `rules` / `strict`)
+  governs what happens when nothing matches. The simplest supported case needs no special
+  handling: `match = "https://"` / `rewrite = "https://my-rewriting-proxy/url/https://"` wraps
+  every HTTPS URL under the same prefix-substitution mechanism as any other rule.
+  `WALRUS_EGRESS_RULES` defaults to `config/egress-rules.toml`, a real file shipped empty
+  (comments only), the same way `WALRUS_ADMINS_FILE` defaults to `config/admins.toml` — both
+  enterprise config files now live side by side under `config/`, edited in a fork the same way.
+- **WAL-114 (Added):** `WALRUS_EXT_*` is now a reserved env-var namespace upstream promises
+  never to define into, so an adopter's future extension config can't collide with a walrus
+  release — see [engineering/docs/enterprise.md](engineering/docs/enterprise.md).
+- **WAL-115 (Added):** `GET /admin/v1/egress` reports the active mode and rule count, and, given
+  `?url=`, a dry-run of how that URL would be rewritten — header _names_ only, never values, so
+  the endpoint can't be used to read back a credential a rule injects. Per ADR-004 (no shell in
+  production) and ADR-007 (every production action has an API).
+- **WAL-116 (Fixed):** Node's global `fetch` throws an opaque `TypeError: fetch failed` on a
+  connection-level failure and stashes the real reason (`ENOTFOUND`, `ECONNREFUSED`, a TLS
+  error) on `err.cause`, which `normalizeFetchError` discarded. Surfaced now — most useful for
+  telling a misconfigured egress rewrite or proxy apart from a plain outage.
+
+- **Tooling note:** `@iarna/toml` tags every parsed table, including inline tables, with hidden
+  `Symbol(type)`/`Symbol(declared)` own properties. Zod v4's `z.record()` validates via
+  `Reflect.ownKeys` and trips on them; `.strict()` object schemas don't. WAL-113's rule
+  `headers` are validated by hand with `Object.entries()` instead — worth remembering before
+  reaching for `z.record()` on any other `@iarna/toml` output in this codebase.
+
+**Wave 20 — Operator error visibility**
+
+Investigating the Cloud Monitoring alerts of 7 September 2026 found that walrus already has a
+working error surface nobody had been told about — Cloud Error Reporting has grouped every
+stack-carrying error since the first deployment, at zero configuration — and three faults around
+it. See [plans/operator-error-visibility.md](engineering/plans/operator-error-visibility.md) for
+the full picture; this is the first of them.
+
+- **WAL-120 (Fixed):** pino runs its error serializer on the `err` key and no other, so
+  `log.error({ error }, "…")` emitted `"error": {}` — `message` and `stack` are non-enumerable on
+  `Error`, and the exception was silently dropped while the line still looked like it had logged
+  something. Four sites did this, all in `src/authn/`, including **both audit-failure logs**
+  (`"Failed to audit operator action"`, `"Failed to audit machine invocation"`), where the record
+  written to note a lost audit entry itself carried nothing. The cost went beyond the missing
+  field: Cloud Error Reporting groups by stack trace, so a record with no stack enters no group
+  and appears in no count — these four faults were the only errors in the project invisible to
+  it. Now logged under `err`, with `tests/common/log.test.ts` pinning the mechanism.
+- **WAL-120 (Added):** a `no-restricted-syntax` lint rule catching an identifier logged under an
+  `error` key, so the pattern fails at author time rather than in production. Its first draft
+  matched 11 sites and 7 were false positives — a key built from an error (`String(err)`,
+  `err.message`) is already a string and loses nothing — so it is narrowed to identifier values,
+  which is the shape that carries a live `Error`.
+- **WAL-120 (Changed):** three log keys holding an already-extracted string renamed `error` →
+  `reason` (`common/http.ts`, `services/package-registry.ts`, `services/sync-service.ts`). No
+  monitoring filter or metric reads them; the point is that a log key named `error` now always
+  holds an `Error`, which is what makes the lint rule above honest rather than a source of
+  suppression comments.
+- **WAL-119 (Added):** a _Walrus operations_ dashboard (`google_monitoring_dashboard` in
+  `infra/terraform/monitoring.tf`, the project's first) charting vulnerability sync failures by
+  source, Cloud Scheduler invocation failures by job, walrus-api requests by response class, and
+  Cloud Run Job executions by result. Applied and destroyed by `deploy.sh` / `teardown.sh` with
+  everything else; `verify-deployment.sh` asserts it exists. It is Terraform rather than a
+  console artefact for the reason WAL-96 established on the service — a dragged widget is drift
+  no plan will show you, and a console dashboard is absent from a freshly deployed project.
+- **WAL-119 (Added):** `walrus/scheduler_job_failed`, a second log-based metric, over the same
+  filter as the scheduler alert policy and extracting the job id as a label. Cloud Scheduler
+  publishes **no** metric to Cloud Monitoring — verified against the deployed project, where
+  `cloudscheduler.googleapis.com/*` has no descriptors at all while the `cloud_scheduler_job`
+  resource type is well known — so a scheduler failure is chartable only from its log. The
+  policy still matches the log directly: it should alert on the event, not on a threshold over
+  an alignment window.
+- **WAL-119 (Added):** runbook §3b, _Where to look when something fails_
+  ([build-release.md](engineering/docs/build-release.md)) — the three tiers, and Cloud Error
+  Reporting written down for the first time. It has grouped every stack-carrying error since the
+  first deployment at zero configuration, and nothing in the repo mentioned it: the WAL-111
+  investigation reconstructed by hand a grouping it had been maintaining all along. Documents
+  that it groups by **stack trace, not severity** (hence WAL-120's `err` key), that coverage was
+  measured at 65 of 65 stack-carrying entries grouped, that it also groups platform errors walrus
+  never logs, and what `OPEN` / `ACKNOWLEDGED` / `RESOLVED` are for — `ACKNOWLEDGED` being the
+  one that answers inbox fatigue without hiding anything.
 
 ## Version 0.1.0: Initial Release
 

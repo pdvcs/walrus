@@ -3,23 +3,76 @@ import { buildArtifactPath } from "../storage/types.js";
 import { ArtifactRow, PackageRow, SyncJobRow, VersionRow } from "../types/db.js";
 import { FailedArtifactRow, PendingArtifactRow } from "../db/queries/artifacts.js";
 import { JobDetail } from "../db/queries/sync-jobs.js";
-import { DownloadResult } from "../services/download-service.js";
+import {
+  ChecksumAlgorithm,
+  DownloadRequest,
+  DownloadResult,
+} from "../services/download-service.js";
 import { SyncRunOptions, SyncRunResult } from "../services/sync-service.js";
 import TOML from "@iarna/toml";
 import { getStrategy, DiscoveredVersion } from "../discovery/index.js";
 import { PackageConfigSchema, PackageConfig } from "../types/package-config.js";
 import { sortVersionsDesc } from "../common/version-utils.js";
+import { defaultCpeProbe, CpeVerifyResult } from "../vuln/cpe-verify.js";
+import {
+  BASE_PAGE_STYLES,
+  renderAdminNav,
+  renderPublicNav,
+  type AdminNavItem,
+} from "./page-shell.js";
+import { getEgressState, matchEgressRule } from "../common/egress-rules.js";
+import { withBase } from "../common/base-path.js";
+import { log } from "../common/log.js";
+import type { CoolingOffWaiverRow } from "../db/queries/cooling-off-waivers.js";
+import { CoolingOffWaiverRejectedError } from "../services/cooling-off-waiver-service.js";
 
-interface VersionDetail {
+export interface VersionDetail {
   version: string;
   versionId: number;
   isLts: boolean;
   artifacts: ArtifactRow[];
 }
 
-interface GroupDetail {
+export interface GroupDetail {
   name: string;
   versions: VersionDetail[];
+}
+
+/** Which audience a shared renderer is producing HTML for. Viewer output carries no actions. */
+export type PageMode = "admin" | "viewer";
+
+/** The read-only slice of deps that loads everything a package detail page shows. */
+export interface PackageDetailLoaderDeps {
+  listVersionGroupNamesForPackage: (packageName: string) => Promise<string[]>;
+  listVersionsInGroup: (packageName: string, group: string) => Promise<VersionRow[]>;
+  listArtifactsForVersionId: (versionId: number) => Promise<ArtifactRow[]>;
+}
+
+/**
+ * Groups -> versions -> artifacts for one package. Shared by the admin and the public viewer
+ * route so both pages are built from the same rows.
+ */
+export async function loadPackageGroups(
+  deps: PackageDetailLoaderDeps,
+  packageName: string,
+): Promise<GroupDetail[]> {
+  const groupNames = await deps.listVersionGroupNamesForPackage(packageName);
+  const groups: GroupDetail[] = [];
+  for (const groupName of groupNames) {
+    const versions = await deps.listVersionsInGroup(packageName, groupName);
+    const versionDetails: VersionDetail[] = [];
+    for (const ver of versions) {
+      const artifacts = await deps.listArtifactsForVersionId(ver.id);
+      versionDetails.push({
+        version: ver.version,
+        versionId: ver.id,
+        isLts: ver.is_lts,
+        artifacts,
+      });
+    }
+    groups.push({ name: groupName, versions: versionDetails });
+  }
+  return groups;
 }
 
 export interface AdminRouteDeps {
@@ -32,7 +85,7 @@ export interface AdminRouteDeps {
   runSyncAll: (opts: {
     dryRun: boolean;
     triggerType: "admin";
-  }) => Promise<Array<{ package: string; result: SyncRunResult }>>;
+  }) => Promise<Array<{ package: string; result?: SyncRunResult; skipped?: string }>>;
   startSyncAsync: (packageName: string, opts: { triggerType: "admin" }) => Promise<number>;
   startHistoricalBackfill?: (
     packageName: string,
@@ -90,12 +143,37 @@ export interface AdminRouteDeps {
   listArtifactsForVersionId: (versionId: number) => Promise<ArtifactRow[]>;
   getTomlSource: (name: string) => string | null;
   /**
+   * Release-embargo waivers: an audited, per-version override of `retention.cooling_off_days`
+   * for an urgent upstream fix. Optional so a deployment without them answers 501, not a crash.
+   */
+  coolingOffWaivers?: {
+    list: (packageName?: string) => Promise<CoolingOffWaiverRow[]>;
+    create: (input: {
+      package_name: string;
+      version: string;
+      reason: string;
+      created_by: string;
+    }) => Promise<{ waiver: CoolingOffWaiverRow; artifacts_released: number }>;
+    revoke: (input: {
+      id: number;
+      reason: string;
+      revoked_by: string;
+    }) => Promise<CoolingOffWaiverRow | null>;
+  };
+  /**
    * Per-version CVE summary for the package detail badges (plan §6). Backed by the
    * same cross-reference service as GET /api/v1/packages/:name/vulns — no duplicate SQL.
    */
   getPackageVulnBadges: (
     name: string,
   ) => Promise<{ tracked: boolean; byVersion: Record<string, VersionVulnBadge> }>;
+  /**
+   * CPE-pair probe for the validate flow (WAL-45). Defaults to a live NVD dictionary
+   * lookup; tests inject fakes. Deliberately advisory — it can only add warnings, never
+   * flip `overall`, because zero dictionary hits is also what an obscure-but-correct
+   * product looks like.
+   */
+  cpeProbe?: (pairs: string[]) => Promise<CpeVerifyResult>;
 }
 
 export interface VersionVulnBadge {
@@ -106,13 +184,14 @@ export interface VersionVulnBadge {
   /**
    * True when GET /download returns 403 for this version. This is the gate itself
    * (getVersionAvailabilityStatus), not a threshold over the counts above — the counts include
-   * fail-open range matches that do not gate, and the gate keys off cvss_v3_score rather than the
-   * severity label. Deriving one from the other would misreport in both directions.
+   * fail-open range matches that do not gate, and the gate keys off CVSS base scores
+   * (meetsCriticalGate) rather than the severity label. Deriving one from the other would
+   * misreport in both directions.
    */
   blocked: boolean;
 }
 
-export function createAdminRouter(deps: AdminRouteDeps): Router {
+export function createAdminRouter(deps: AdminRouteDeps, basePath: string): Router {
   const router = Router();
 
   router.post("/sync/:package", async (req, res, next) => {
@@ -154,7 +233,11 @@ export function createAdminRouter(deps: AdminRouteDeps): Router {
         const results = await deps.runSyncAll({ dryRun: true, triggerType: "admin" });
         res.json({
           dry_run: true,
-          jobs: results.map((entry) => ({ package: entry.package, result: entry.result })),
+          jobs: results.map((entry) => ({
+            package: entry.package,
+            result: entry.result,
+            skipped: entry.skipped,
+          })),
         });
         return;
       }
@@ -253,6 +336,12 @@ export function createAdminRouter(deps: AdminRouteDeps): Router {
         message: "Re-download finished",
       });
     } catch (err) {
+      // A provenance/config disagreement is an operator-fixable conflict, not a server fault:
+      // answer with the reason rather than a bare 500 (WAL-73 finding 4).
+      if (err instanceof RedownloadTransformUnavailableError) {
+        res.status(409).json({ error: err.message });
+        return;
+      }
       next(err);
     }
   });
@@ -387,13 +476,26 @@ export function createAdminRouter(deps: AdminRouteDeps): Router {
       const packageName = optionalString(req.query.package);
       const status = optionalStatus(req.query.status);
       const wantsHtml = req.headers.accept?.includes("text/html");
-      const limit = optionalInteger(req.query.limit) ?? (wantsHtml ? 50 : undefined);
+      // The HTML page is paginated at a fixed 100/page; `page` is 1-based. JSON keeps
+      // its unbounded-by-default contract with an optional limit.
+      const page = wantsHtml ? Math.max(1, optionalInteger(req.query.page) ?? 1) : undefined;
+      const limit = optionalInteger(req.query.limit);
 
-      const jobs = await deps.listJobs({ packageName, status, limit });
+      const jobs = await deps.listJobs({
+        packageName,
+        status,
+        ...(wantsHtml ? { limit: 100, offset: ((page ?? 1) - 1) * 100 } : { limit }),
+      });
 
       if (wantsHtml) {
         res.setHeader("Content-Type", "text/html; charset=utf-8");
-        res.send(renderJobsListPage(jobs));
+        res.send(
+          renderJobsListPage(
+            jobs,
+            { page: page ?? 1, pageSize: 100, packageName, status },
+            basePath,
+          ),
+        );
         return;
       }
 
@@ -419,10 +521,50 @@ export function createAdminRouter(deps: AdminRouteDeps): Router {
 
       if (req.headers.accept?.includes("text/html")) {
         res.setHeader("Content-Type", "text/html; charset=utf-8");
-        res.send(renderJobStatusPage(detail));
+        res.send(renderJobStatusPage(detail, basePath));
       } else {
         res.json(buildJobResponse(detail));
       }
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Per ADR-004 (no shell in production) and ADR-007 (every production action has an API),
+  // "is my egress rewrite working?" has to be answerable over HTTP — there is no container
+  // shell to grep logs in. Given ?url=, this is a dry-run only: it reports what *would* happen,
+  // never issues the request. Header values are never returned, only names, so a response can't
+  // leak a bearer token or credential set by a rule (WAL-115).
+  router.get("/egress", (req, res, next) => {
+    try {
+      const state = getEgressState();
+      const url = optionalString(req.query.url);
+      const body: {
+        mode: string;
+        ruleCount: number;
+        dryRun?: {
+          url: string;
+          matched: boolean;
+          rewrittenUrl: string | null;
+          headerNames: string[];
+        };
+      } = {
+        mode: state.mode,
+        ruleCount: state.rules.length,
+      };
+      if (url !== undefined) {
+        // No purpose filter: reports whether this URL would be rewritten under ANY configured
+        // rule, not one specific traffic class — the simplest thing that answers "is this
+        // working at all" without asking the adopter to also specify a purpose.
+        const match = matchEgressRule(url, undefined, state.rules);
+        body.dryRun = {
+          url,
+          matched: match !== null,
+          rewrittenUrl: match?.rewrittenUrl ?? null,
+          headerNames: match ? Object.keys(match.headers) : [],
+        };
+      }
+      res.json(body);
     } catch (err) {
       next(err);
     }
@@ -450,6 +592,97 @@ export function createAdminRouter(deps: AdminRouteDeps): Router {
     }
   });
 
+  router.get("/cooling-off-waivers", async (req, res, next) => {
+    try {
+      if (!deps.coolingOffWaivers) return void res.status(501).json({ error: "Not supported" });
+      const packageName = typeof req.query.package === "string" ? req.query.package : undefined;
+      res.json({ waivers: await deps.coolingOffWaivers.list(packageName) });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.post("/cooling-off-waivers", async (req, res, next) => {
+    try {
+      if (!deps.coolingOffWaivers) return void res.status(501).json({ error: "Not supported" });
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const fields = {
+        package: nonEmptyString(body.package),
+        version: nonEmptyString(body.version),
+        reason: nonEmptyString(body.reason),
+        created_by: nonEmptyString(req.auth?.subject ?? body.created_by),
+      };
+      for (const [name, value] of Object.entries(fields)) {
+        if (value === null) {
+          return void res.status(400).json({ error: `${name} must be a non-empty string` });
+        }
+      }
+      const packageName = fields.package as string;
+      if (!deps.listConfiguredPackages().includes(packageName)) {
+        return void res.status(404).json({ error: `Unknown package: ${packageName}` });
+      }
+
+      let result;
+      try {
+        result = await deps.coolingOffWaivers.create({
+          package_name: packageName,
+          version: fields.version as string,
+          reason: fields.reason as string,
+          created_by: fields.created_by as string,
+        });
+      } catch (err) {
+        if (err instanceof CoolingOffWaiverRejectedError) {
+          return void res
+            .status(err.code === "version-not-found" ? 404 : 409)
+            .json({ error: err.message });
+        }
+        if ((err as { code?: unknown } | null)?.code === "23505") {
+          return void res
+            .status(409)
+            .json({ error: "An active waiver already exists for this version" });
+        }
+        throw err;
+      }
+
+      // The waiver already releases the artifacts; the sync fetches their bytes now rather than
+      // at the next scheduled run. A failure to start it must not undo the (committed) waiver.
+      let syncJobId: number | null = null;
+      try {
+        syncJobId = await deps.startSyncAsync(packageName, { triggerType: "admin" });
+      } catch (err) {
+        log.warn({ err, package: packageName }, "Waiver recorded but sync could not be started");
+      }
+      res.status(201).json({ ...result, sync_job_id: syncJobId });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.post("/cooling-off-waivers/:id/revoke", async (req, res, next) => {
+    try {
+      if (!deps.coolingOffWaivers) return void res.status(501).json({ error: "Not supported" });
+      if (!/^\d+$/.test(req.params.id)) {
+        return void res.status(400).json({ error: "Invalid waiver id" });
+      }
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const reason = nonEmptyString(body.reason);
+      const revokedBy = nonEmptyString(req.auth?.subject ?? body.revoked_by);
+      if (reason === null)
+        return void res.status(400).json({ error: "reason must be a non-empty string" });
+      if (revokedBy === null)
+        return void res.status(400).json({ error: "revoked_by must be a non-empty string" });
+      const waiver = await deps.coolingOffWaivers.revoke({
+        id: Number(req.params.id),
+        reason,
+        revoked_by: revokedBy,
+      });
+      if (!waiver) return void res.status(404).json({ error: "Waiver not found" });
+      res.json({ waiver });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   router.get("/", async (req, res, next) => {
     try {
       const configuredPackages = deps.listConfiguredPackages();
@@ -466,7 +699,9 @@ export function createAdminRouter(deps: AdminRouteDeps): Router {
         }
       }
       res.setHeader("Content-Type", "text/html; charset=utf-8");
-      res.send(renderDashboardPage(configuredPackages, packageMap, lastJobByPackage, configMeta));
+      res.send(
+        renderDashboardPage(configuredPackages, packageMap, lastJobByPackage, configMeta, basePath),
+      );
     } catch (err) {
       next(err);
     }
@@ -476,7 +711,7 @@ export function createAdminRouter(deps: AdminRouteDeps): Router {
     try {
       const configuredPackages = deps.listConfiguredPackages();
       res.setHeader("Content-Type", "text/html; charset=utf-8");
-      res.send(renderValidatePage(configuredPackages));
+      res.send(renderValidatePage(configuredPackages, basePath));
     } catch (err) {
       next(err);
     }
@@ -490,7 +725,13 @@ export function createAdminRouter(deps: AdminRouteDeps): Router {
         return;
       }
 
-      type StepName = "toml_parse" | "schema_validate" | "discovery" | "spot_check" | "retention";
+      type StepName =
+        | "toml_parse"
+        | "schema_validate"
+        | "cpe_dictionary"
+        | "discovery"
+        | "spot_check"
+        | "retention";
       interface StepResult {
         name: StepName;
         ok: boolean;
@@ -509,6 +750,12 @@ export function createAdminRouter(deps: AdminRouteDeps): Router {
         prunedCount?: number;
         keptPreview?: string[];
         prunedPreview?: string[];
+        /** cpe_dictionary step only: per-pair dictionary verdicts (WAL-45). */
+        cpeResults?: Array<{
+          pair: string;
+          status: "verified" | "unverifiable" | "unchecked";
+          hits: number | null;
+        }>;
       }
 
       const steps: StepResult[] = [];
@@ -541,6 +788,48 @@ export function createAdminRouter(deps: AdminRouteDeps): Router {
       }
       const config = schemaResult.data;
       steps.push({ name: "schema_validate", ok: true });
+
+      // Step 2b: CPE dictionary probe (WAL-45). Runs before discovery so authoring-time
+      // NVD feedback survives a broken repo; only adds warnings, never `overall`, because
+      // zero dictionary hits is also what an obscure-but-correct product looks like.
+      const cpePairs = config.vulnerabilities?.cpes ?? [];
+      if (cpePairs.length > 0) {
+        let verification: CpeVerifyResult;
+        try {
+          const probe = deps.cpeProbe ?? defaultCpeProbe;
+          verification = await probe(cpePairs);
+        } catch (err) {
+          // Per-pair failures are caught inside the probe; reaching here is wiring-level
+          // breakage. Degrade to a single unchecked verdict so authoring can continue.
+          verification = {
+            results: cpePairs.map((pair) => ({
+              pair,
+              matchString: pair,
+              status: "unchecked" as const,
+              hits: null,
+              detail:
+                "Could not be checked (" + `${err instanceof Error ? err.message : String(err)})`,
+            })),
+            verified: 0,
+            unverifiable: 0,
+            unchecked: cpePairs.length,
+          };
+        }
+        const problems = verification.results.filter((r) => r.status !== "verified" && r.detail);
+        steps.push({
+          name: "cpe_dictionary",
+          ok: true,
+          warning:
+            problems.length > 0
+              ? `${problems.map((r) => `${r.pair}: ${r.detail}`).join(" ")}`
+              : undefined,
+          cpeResults: verification.results.map((r) => ({
+            pair: r.pair,
+            status: r.status,
+            hits: r.hits,
+          })),
+        });
+      }
 
       // Step 3: Discovery
       let versions: DiscoveredVersion[];
@@ -678,40 +967,30 @@ export function createAdminRouter(deps: AdminRouteDeps): Router {
             "Not Found",
             "packages",
             `<p>Package not found: ${escHtml(packageName)}</p>`,
+            basePath,
           ),
         );
         return;
       }
 
-      const [allDbPackages, recentJobs, groupNames] = await Promise.all([
+      const [allDbPackages, recentJobs, groups] = await Promise.all([
         deps.listAllPackages(),
         deps.listJobs({ packageName, limit: 1 }),
-        deps.listVersionGroupNamesForPackage(packageName),
+        loadPackageGroups(deps, packageName),
       ]);
 
       const pkg = allDbPackages.find((p) => p.name === packageName) ?? null;
       const lastJob = recentJobs[0] ?? null;
 
-      const groups: GroupDetail[] = [];
-      for (const groupName of groupNames) {
-        const versions = await deps.listVersionsInGroup(packageName, groupName);
-        const versionDetails: VersionDetail[] = [];
-        for (const ver of versions) {
-          const artifacts = await deps.listArtifactsForVersionId(ver.id);
-          versionDetails.push({
-            version: ver.version,
-            versionId: ver.id,
-            isLts: ver.is_lts,
-            artifacts,
-          });
-        }
-        groups.push({ name: groupName, versions: versionDetails });
-      }
-
       const vulnBadges = await deps.getPackageVulnBadges(packageName);
+      const waivers = deps.coolingOffWaivers
+        ? await deps.coolingOffWaivers.list(packageName)
+        : null;
 
       res.setHeader("Content-Type", "text/html; charset=utf-8");
-      res.send(renderPackageDetailPage(packageName, pkg, lastJob, groups, vulnBadges));
+      res.send(
+        renderPackageDetailPage(packageName, pkg, lastJob, groups, vulnBadges, waivers, basePath),
+      );
     } catch (err) {
       next(err);
     }
@@ -739,7 +1018,7 @@ function coolingOffUntil(artifact: {
 }
 
 function buildJobResponse(detail: JobDetail): Record<string, unknown> {
-  const { job, artifacts, elapsed_ms, cooling_off_days } = detail;
+  const { job, artifacts, elapsed_ms, queued_ms, transfer_ms, cooling_off_days } = detail;
   const enrichedArtifacts = artifacts.map((a) => {
     const until = coolingOffUntil(a);
     return { ...a, cooling_off_until: until?.toISOString() ?? null };
@@ -760,13 +1039,16 @@ function buildJobResponse(detail: JobDetail): Record<string, unknown> {
     cooling_off_days: cooling_off_days ?? null,
     error_message: job.error_message,
     started_at: job.started_at,
+    container_started_at: job.container_started_at,
     completed_at: job.completed_at,
     elapsed_ms,
+    queued_ms,
+    transfer_ms,
     artifacts: enrichedArtifacts,
   };
 }
 
-function renderJobStatusPage(detail: JobDetail): string {
+function renderJobStatusPage(detail: JobDetail, basePath: string): string {
   const { job } = detail;
   const initialJson = JSON.stringify(buildJobResponse(detail)).replace(
     /<\/script>/gi,
@@ -781,6 +1063,7 @@ function renderJobStatusPage(detail: JobDetail): string {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${title}</title>
   <style>
+    ${BASE_PAGE_STYLES}
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f5f5; color: #222; }
     .nav { display: flex; align-items: center; gap: 24px; background: #fff; border-bottom: 1px solid #e5e7eb; padding: 12px 24px; margin-bottom: 24px; }
@@ -794,6 +1077,8 @@ function renderJobStatusPage(detail: JobDetail): string {
     .badge-running { background: #dbeafe; color: #1d4ed8; }
     .badge-completed { background: #dcfce7; color: #15803d; }
     .badge-failed { background: #fee2e2; color: #b91c1c; }
+    .badge-queued { background: #fef3c7; color: #92400e; }
+    .queued-note { font-size: 0.8rem; color: #92400e; margin-left: 6px; }
     .cards { display: flex; gap: 12px; flex-wrap: wrap; margin: 16px 0; }
     .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 14px 20px; min-width: 130px; }
     .card-label { font-size: 0.75rem; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; }
@@ -818,7 +1103,7 @@ function renderJobStatusPage(detail: JobDetail): string {
   </style>
 </head>
 <body>
-  ${renderAdminNav("jobs")}
+  ${renderAdminNav(basePath, "jobs")}
   <div class="job-content">
   <h1 id="page-title">${title}</h1>
   <div id="status-badge"></div>
@@ -847,7 +1132,14 @@ function renderJobStatusPage(detail: JobDetail): string {
 
     function render(data) {
       const badge = document.getElementById('status-badge');
-      badge.innerHTML = '<span class="badge badge-' + esc(data.status) + '">' + esc(data.status) + '</span>';
+      // A launched Cloud Run Job execution has no warm pool: the row can sit at 'running' with
+      // nothing populated for tens of seconds while the container cold-starts. Without this,
+      // that gap is indistinguishable from a hang. container_started_at is stamped the moment
+      // the sync code itself begins (SyncService._doSync), so its absence means exactly that.
+      const queued = data.status === 'running' && !data.container_started_at;
+      const displayStatus = queued ? 'queued' : data.status;
+      badge.innerHTML = '<span class="badge badge-' + esc(displayStatus) + '">' + esc(displayStatus) + '</span>'
+        + (queued ? ' <span class="queued-note">waiting for the sync container to start…</span>' : '');
 
       const cards = document.getElementById('cards');
       const cardDefs = [
@@ -859,7 +1151,13 @@ function renderJobStatusPage(detail: JobDetail): string {
       if (data.cooling_off_days != null) {
         cardDefs.push(['Cooling Off (' + data.cooling_off_days + 'd)', data.artifacts_cooling_off]);
       }
-      cardDefs.push(['Elapsed', fmtElapsed(data.elapsed_ms)]);
+      // Split the one "how long has this taken" question into the three that actually matter
+      // once a sync can spend a real, variable amount of time cold-starting: how long that wait
+      // was, how long the sync itself has actually taken, and the sum an operator ultimately
+      // cares about.
+      cardDefs.push(['Startup', fmtElapsed(data.queued_ms)]);
+      cardDefs.push(['Transfer', data.transfer_ms == null ? '—' : fmtElapsed(data.transfer_ms)]);
+      cardDefs.push(['Total', fmtElapsed(data.elapsed_ms)]);
       cards.innerHTML = cardDefs.map(([label, val]) =>
         '<div class="card"><div class="card-label">' + esc(label) + '</div><div class="card-value">' + esc(val) + '</div></div>'
       ).join('');
@@ -929,19 +1227,70 @@ function fmtMs(ms: number): string {
 
 export function renderSharedHtml(
   title: string,
-  activeNav: "packages" | "jobs" | "validate" | "vulns",
+  activeNav: AdminNavItem,
   body: string,
+  basePath: string,
   scripts = "",
   rawTail = "",
 ): string {
+  return renderShell({
+    title,
+    nav: renderAdminNav(basePath, activeNav),
+    body,
+    basePath,
+    scripts,
+    rawTail,
+    suffix: "Walrus Admin",
+    adminChrome: true,
+  });
+}
+
+/**
+ * Same page chrome and CSS as the admin pages, for the unauthenticated viewer routes. Differs
+ * only where the admin shell talks to operator-only endpoints: no degradation banner (it is
+ * driven by /app/status, which is public, but its wording addresses operators) and the public
+ * nav instead of the admin nav, whose suppression chip would fetch an endpoint that answers 401.
+ */
+export function renderViewerHtml(
+  title: string,
+  activeNav: "packages" | "vulns" | undefined,
+  body: string,
+  basePath: string,
+  scripts = "",
+  rawTail = "",
+): string {
+  return renderShell({
+    title,
+    nav: renderPublicNav(basePath, activeNav),
+    body,
+    basePath,
+    scripts,
+    rawTail,
+    suffix: "Walrus",
+    adminChrome: false,
+  });
+}
+
+function renderShell(opts: {
+  title: string;
+  nav: string;
+  body: string;
+  basePath: string;
+  scripts: string;
+  rawTail: string;
+  suffix: string;
+  adminChrome: boolean;
+}): string {
+  const { title, nav, body, basePath, scripts, rawTail, adminChrome } = opts;
   const e = escHtml;
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${e(title)} — Walrus Admin</title>
+  <title>${e(title)} — ${e(opts.suffix)}</title>
   <style>
+    ${BASE_PAGE_STYLES}
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f5f5; color: #222; }
     .wrap { max-width: 1100px; margin: 0 auto; padding: 24px; }
@@ -958,6 +1307,8 @@ export function renderSharedHtml(
     .badge-running  { background: #dbeafe; color: #1d4ed8; }
     .badge-completed { background: #dcfce7; color: #15803d; }
     .badge-failed   { background: #fee2e2; color: #b91c1c; }
+    .badge-queued   { background: #fef3c7; color: #92400e; }
+    .badge-succeeded { background: #dcfce7; color: #15803d; }
     .badge-enabled  { background: #dcfce7; color: #15803d; }
     .badge-disabled { background: #f3f4f6; color: #6b7280; }
     .badge-lts      { background: #ede9fe; color: #6d28d9; }
@@ -992,31 +1343,64 @@ export function renderSharedHtml(
     .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 20px; }
     .empty { color: #9ca3af; font-size: 0.85rem; margin-top: 16px; }
     #msg { min-height: 1.2em; margin-top: 8px; font-size: 0.82rem; color: #6b7280; }
+    .degraded-banner { background: #fef3c7; border-bottom: 1px solid #fcd34d; color: #92400e; padding: 10px 24px; font-size: 0.85rem; }
+    .degraded-banner strong { text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.75rem; }
+    .degraded-banner ul { margin: 6px 0 0 18px; }
+    .degraded-banner li { margin-top: 2px; }
+    .degraded-banner code { background: #fde68a; padding: 0 4px; border-radius: 4px; font-size: 0.8em; }
+  ${adminChrome ? "" : VIEWER_ACCENT_CSS}
   </style>
 </head>
 <body>
-  ${renderAdminNav(activeNav)}
+  ${nav}
+  ${adminChrome ? `<div id="degraded-banner"></div>` : ""}
   <div class="wrap">
     ${body}
   </div>
 <script>
 ${scripts}
-</script>${rawTail}
+</script>
+${adminChrome ? DEGRADATION_BANNER_SCRIPT(basePath) : ""}${rawTail}
 </body>
 </html>`;
 }
 
-function renderAdminNav(activeNav: "packages" | "jobs" | "validate" | "vulns"): string {
-  return `<nav class="nav">
-    <span class="brand">Walrus</span>
-    <a href="/admin/v1/"${activeNav === "packages" ? ' class="active"' : ""}>Packages</a>
-    <a href="/admin/v1/jobs"${activeNav === "jobs" ? ' class="active"' : ""}>Jobs</a>
-    <a href="/admin/v1/validate"${activeNav === "validate" ? ' class="active"' : ""}>Validate TOML</a>
-    <a href="/admin/v1/vulns"${activeNav === "vulns" ? ' class="active"' : ""}>Vulnerabilities</a>
-    <a href="/api">API Docs</a>
-    <a href="/health">Health</a>
-  </nav>`;
-}
+/**
+ * Viewer pages share the admin pages' CSS, so a teal bar and page tint back up the day-scene
+ * logo in telling an operator they have landed on the public view. Kept small on purpose -- it
+ * is a signpost, not a second design.
+ */
+const VIEWER_ACCENT_CSS = `
+    body { background: #f1f6f6; }
+    .nav { border-top: 4px solid #0d9488; }
+    .btn-primary { background: #0d9488; }
+    .btn-primary:hover { background: #0f766e; }
+    body .filter-btn.active, body .filter-chip.filter-on { background: #0d9488; border-color: #0d9488; }`;
+
+const DEGRADATION_BANNER_SCRIPT = (basePath: string): string => `<script>
+// health-degradation-ui:start
+// Degradation banner (PO decision 2026-08-26): walrus's vulnerability ingestion runs
+// unattended, so the admin homepage is where an operator learns it has stopped working.
+// Fed by /app/status's degradations array; degradations do not change isAvailable.
+(async () => {
+  try {
+    const r = await fetch('${withBase(basePath, "/app/status")}');
+    if (!r.ok) return;
+    const d = await r.json();
+    const degradations = d.degradations || [];
+    if (degradations.length === 0) return;
+    const el = document.getElementById('degraded-banner');
+    const esc = (s) => { const t = document.createElement('div'); t.textContent = s == null ? '' : String(s); return t.innerHTML; };
+    el.className = 'degraded-banner';
+    el.innerHTML = '<strong>&#9888; System degraded</strong> — walrus is serving, but '
+      + degradations.length + ' part(s) of unattended operation need attention:'
+      + '<ul>' + degradations.map(x =>
+          '<li><code>' + esc(x.component) + '</code> ' + esc(x.reason) + '</li>'
+        ).join('') + '</ul>';
+  } catch (e) { /* the banner must never break an admin page */ }
+})();
+// health-degradation-ui:end
+</script>`;
 
 function computeRetentionPlan(
   versions: DiscoveredVersion[],
@@ -1045,14 +1429,14 @@ function computeRetentionPlan(
   return { kept, pruned };
 }
 
-function renderValidatePage(configuredPackages: string[]): string {
+function renderValidatePage(configuredPackages: string[], basePath: string): string {
   const esc = escHtml;
   const packageOptions = configuredPackages
     .map((p) => `<option value="${esc(p)}">${esc(p)}</option>`)
     .join("");
 
   const body = `
-    <h1>Validate TOML Config</h1>
+    <h1>Validate Package Configuration</h1>
     <p class="meta" style="margin-bottom:16px">Paste a package TOML config to validate it without writing to disk.</p>
     <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px">
       <label style="font-size:0.85rem;font-weight:600;color:#374151;white-space:nowrap">Load existing:</label>
@@ -1070,7 +1454,7 @@ function renderValidatePage(configuredPackages: string[]): string {
     <div id="results" style="margin-top:20px;display:none"></div>`;
 
   const rawTail = `
-<script src="/static/editor-bundle.js"></script>
+<script src="${withBase(basePath, "/static/editor-bundle.js")}"></script>
 <script>
   const { basicSetup, EditorView, StreamLanguage, toml } = window.WalrusEditor;
 
@@ -1093,7 +1477,7 @@ function renderValidatePage(configuredPackages: string[]): string {
     const statusEl = document.getElementById("load-status");
     statusEl.textContent = "Loading…";
     try {
-      const r = await fetch("/admin/v1/packages/" + encodeURIComponent(name) + "/toml-source");
+      const r = await fetch("${withBase(basePath, "/admin/v1/packages/")}" + encodeURIComponent(name) + "/toml-source");
       if (!r.ok) { statusEl.textContent = "Failed to load"; return; }
       const text = await r.text();
       setEditorContent(text);
@@ -1110,8 +1494,10 @@ function renderValidatePage(configuredPackages: string[]): string {
   }
 
   function stepLabel(name) {
-    return { toml_parse: "TOML Parse", schema_validate: "Schema Validate", discovery: "Discovery", spot_check: "Spot Check", retention: "Retention" }[name] || name;
+    return { toml_parse: "TOML Parse", schema_validate: "Schema Validate", cpe_dictionary: "CPE Dictionary (NVD)", discovery: "Discovery", spot_check: "Spot Check", retention: "Retention" }[name] || name;
   }
+
+  const CPE_STATUS_LABEL = { verified: "found in NVD", unverifiable: "no dictionary entry", unchecked: "not checked" };
 
   function renderStep(step) {
     const icon = step.ok ? (step.warning ? "⚠" : "✓") : "✗";
@@ -1126,6 +1512,14 @@ function renderValidatePage(configuredPackages: string[]): string {
     }
     if (step.errors && step.errors.length) {
       details += '<ul style="margin-top:6px;padding-left:18px;font-size:0.82rem;color:#b91c1c">' + step.errors.map(e => "<li>" + esc(e) + "</li>").join("") + "</ul>";
+    }
+    if (step.cpeResults && step.cpeResults.length) {
+      details += '<ul style="margin-top:6px;padding-left:18px;font-size:0.82rem;color:#374151">'
+        + step.cpeResults.map(r =>
+          '<li><code>' + esc(r.pair) + '</code> — ' + esc(CPE_STATUS_LABEL[r.status] || r.status)
+          + (r.hits != null ? ' (' + esc(r.hits) + ' entr' + (r.hits === 1 ? "y" : "ies") + ')' : "")
+          + '</li>').join("")
+        + "</ul>";
     }
     if (step.strategy) {
       details += '<p style="margin-top:6px;font-size:0.82rem;color:#374151">Strategy: <code>' + esc(step.strategy) + "</code></p>";
@@ -1174,7 +1568,7 @@ function renderValidatePage(configuredPackages: string[]): string {
     statusEl.textContent = "";
     resultsEl.style.display = "none";
     try {
-      const r = await fetch("/admin/v1/validate-toml", {
+      const r = await fetch("${withBase(basePath, "/admin/v1/validate-toml")}", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ toml }),
@@ -1198,16 +1592,32 @@ function renderValidatePage(configuredPackages: string[]): string {
   };
 </script>`;
 
-  return renderSharedHtml("Validate TOML", "validate", body, "", rawTail);
+  return renderSharedHtml(
+    "Validate Package Configuration",
+    "validate",
+    body,
+    basePath,
+    "",
+    rawTail,
+  );
 }
 
-function renderDashboardPage(
+export function renderDashboardPage(
   configuredPackages: string[],
   packageMap: Map<string, PackageRow>,
   lastJobByPackage: Map<string, SyncJobRow>,
   configMeta: Map<string, { display_name: string; vendor: string }>,
+  basePath: string,
+  mode: PageMode = "admin",
 ): string {
   const esc = escHtml;
+  const viewer = mode === "viewer";
+  const detailBase = withBase(basePath, viewer ? "/packages/" : "/admin/v1/packages/");
+
+  const initialOf = (name: string): string => {
+    const c = name.charAt(0).toUpperCase();
+    return /[A-Z]/.test(c) ? c : "#";
+  };
 
   const rows = configuredPackages
     .map((name) => {
@@ -1218,16 +1628,27 @@ function renderDashboardPage(
       const vendor = pkg ? esc(pkg.vendor) : esc(meta?.vendor ?? "—");
       const enabled = pkg?.enabled ?? true;
       const enabledBadge = `<span class="badge badge-${enabled ? "enabled" : "disabled"}">${enabled ? "enabled" : "disabled"}</span>`;
+      if (viewer) {
+        // A viewer sees freshness, not job internals: no status badge, no job link.
+        const synced = lastJob
+          ? `<span style="color:#9ca3af;font-size:0.78rem">${fmtAge(lastJob.started_at)}</span>`
+          : `<span style="color:#9ca3af;font-size:0.78rem">never</span>`;
+        return `<tr data-initial="${initialOf(name)}">
+        <td><a href="${detailBase}${esc(name)}">${displayName}</a></td>
+        <td>${vendor}</td>
+        <td>${synced}</td>
+      </tr>`;
+      }
       const jobHtml = lastJob
-        ? `<a href="/admin/v1/jobs/${lastJob.id}" class="badge badge-${esc(lastJob.status)}">${esc(lastJob.status)}</a> <span style="color:#9ca3af;font-size:0.78rem">${fmtAge(lastJob.started_at)}</span>`
+        ? `<a href="${withBase(basePath, "/admin/v1/jobs/")}${lastJob.id}" class="badge badge-${esc(lastJob.status)}">${esc(lastJob.status)}</a> <span style="color:#9ca3af;font-size:0.78rem">${fmtAge(lastJob.started_at)}</span>`
         : `<span style="color:#9ca3af;font-size:0.78rem">never</span>`;
       const isRunning = lastJob?.status === "running";
       const syncBtn = isRunning
         ? `<span class="btn btn-sm btn-secondary" style="cursor:default;opacity:0.6">running…</span>`
         : `<button class="btn btn-sm btn-primary" onclick="syncPkg('${esc(name)}')">Sync</button>`;
       const toggleBtn = `<button class="btn btn-sm btn-secondary" onclick="toggleEnabled('${esc(name)}',${enabled})">${enabled ? "Disable" : "Enable"}</button>`;
-      return `<tr>
-        <td><a href="/admin/v1/packages/${esc(name)}">${displayName}</a></td>
+      return `<tr data-initial="${initialOf(name)}">
+        <td><a href="${detailBase}${esc(name)}">${displayName}</a></td>
         <td>${vendor}</td>
         <td>${enabledBadge}</td>
         <td>${jobHtml}</td>
@@ -1236,11 +1657,26 @@ function renderDashboardPage(
     })
     .join("");
 
+  const initials = [...new Set(configuredPackages.map(initialOf))].sort((a, b) =>
+    a === "#" ? 1 : b === "#" ? -1 : a.localeCompare(b),
+  );
+  const filterBar =
+    configuredPackages.length === 0
+      ? ""
+      : `<div class="filter-bar">
+        <button class="filter-btn active" data-filter="all" onclick="filterRows('all')">All</button>
+        ${initials.map((i) => `<button class="filter-btn" data-filter="${i}" onclick="filterRows('${i}')">${i}</button>`).join("")}
+      </div>`;
+
   const tableHtml =
     configuredPackages.length === 0
       ? `<p class="empty">No packages configured.</p>`
       : `<table>
-        <thead><tr><th>Package</th><th>Vendor</th><th>Status</th><th>Last Sync</th><th>Actions</th></tr></thead>
+        <thead><tr>${
+          viewer
+            ? "<th>Package</th><th>Vendor</th><th>Last synced</th>"
+            : "<th>Package</th><th>Vendor</th><th>Status</th><th>Last Sync</th><th>Actions</th>"
+        }</tr></thead>
         <tbody>${rows}</tbody>
       </table>`;
 
@@ -1249,18 +1685,40 @@ function renderDashboardPage(
   const body = `
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
       <h1 style="margin-bottom:0">Packages</h1>
-      <button class="btn btn-primary" onclick="syncAll()">Sync All</button>
+      ${viewer ? "" : `<button class="btn btn-primary" onclick="syncAll()">Sync All</button>`}
     </div>
+    ${filterBar}
     ${tableHtml}
     <div id="msg"></div>`;
+
+  const filterScript = `
+    function filterRows(initial) {
+      document.querySelectorAll('.filter-btn').forEach((b) => {
+        b.classList.toggle('active', b.dataset.filter === initial);
+      });
+      document.querySelectorAll('tbody tr[data-initial]').forEach((tr) => {
+        tr.style.display = (initial === 'all' || tr.dataset.initial === initial) ? '' : 'none';
+      });
+    }`;
+
+  const styleTail = `<style>
+    .filter-bar { display:flex; flex-wrap:wrap; gap:4px; margin-top:12px; }
+    .filter-btn { padding:4px 9px; border-radius:6px; border:1px solid #e5e7eb; background:#fff; color:#374151; font-size:0.8rem; font-weight:600; cursor:pointer; font-family:inherit; }
+    .filter-btn:hover { background:#f3f4f6; }
+    .filter-btn.active { background:#1d4ed8; border-color:#1d4ed8; color:#fff; }
+  </style>`;
+
+  if (viewer) {
+    return renderViewerHtml("Packages", "packages", body, basePath, filterScript, styleTail);
+  }
 
   const scripts = `
     async function syncPkg(name) {
       document.getElementById('msg').textContent = 'Starting sync for ' + name + '…';
       try {
-        const r = await fetch('/admin/v1/sync/' + name, {method: 'POST'});
+        const r = await fetch('${withBase(basePath, "/admin/v1/sync/")}' + name, {method: 'POST'});
         const d = await r.json();
-        if (r.ok) window.location = '/admin/v1/jobs/' + d.job_id;
+        if (r.ok) window.location = '${withBase(basePath, "/admin/v1/jobs/")}' + d.job_id;
         else document.getElementById('msg').textContent = 'Error: ' + (d.error || r.status);
       } catch(e) { document.getElementById('msg').textContent = 'Error: ' + e.message; }
     }
@@ -1268,15 +1726,15 @@ function renderDashboardPage(
       if (!confirm('Sync all packages?')) return;
       document.getElementById('msg').textContent = 'Starting sync for all packages…';
       try {
-        const r = await fetch('/admin/v1/sync', {method: 'POST'});
-        if (r.ok) window.location = '/admin/v1/jobs';
+        const r = await fetch('${withBase(basePath, "/admin/v1/sync")}', {method: 'POST'});
+        if (r.ok) window.location = '${withBase(basePath, "/admin/v1/jobs")}';
         else { const d = await r.json(); document.getElementById('msg').textContent = 'Error: ' + (d.error || r.status); }
       } catch(e) { document.getElementById('msg').textContent = 'Error: ' + e.message; }
     }
     async function toggleEnabled(name, enabled) {
       if (!confirm((enabled ? 'Disable' : 'Enable') + ' ' + name + '?')) return;
       try {
-        const r = await fetch('/admin/v1/packages/' + name, {
+        const r = await fetch('${withBase(basePath, "/admin/v1/packages/")}' + name, {
           method: 'PATCH', headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({enabled: !enabled})
         });
@@ -1284,38 +1742,65 @@ function renderDashboardPage(
         else { const d = await r.json(); alert('Error: ' + (d.error || r.status)); }
       } catch(e) { alert('Error: ' + e.message); }
     }
-    ${hasRunning ? "setInterval(() => location.reload(), 5000);" : ""}`;
+    ${hasRunning ? "setInterval(() => location.reload(), 5000);" : ""}
+    ${filterScript}`;
 
-  return renderSharedHtml("Packages", "packages", body, scripts);
+  return renderSharedHtml("Packages", "packages", body, basePath, scripts, styleTail);
 }
 
-function renderPackageDetailPage(
+export function renderPackageDetailPage(
   packageName: string,
   pkg: PackageRow | null,
   lastJob: SyncJobRow | null,
   groups: GroupDetail[],
   vulnBadges: { tracked: boolean; byVersion: Record<string, VersionVulnBadge> },
+  waivers: CoolingOffWaiverRow[] | null,
+  basePath: string,
+  mode: PageMode = "admin",
 ): string {
   const esc = escHtml;
+  const viewer = mode === "viewer";
   const displayName = pkg ? esc(pkg.display_name) : esc(packageName);
   const vendor = pkg ? esc(pkg.vendor) : "—";
   const enabled = pkg?.enabled ?? true;
   const isRunning = lastJob?.status === "running";
 
-  const lastSyncHtml = lastJob
-    ? `Last sync: <a href="/admin/v1/jobs/${lastJob.id}"><span class="badge badge-${esc(lastJob.status)}">${esc(lastJob.status)}</span></a> ${fmtAge(lastJob.started_at)}`
-    : "Never synced";
+  const lastSyncHtml = viewer
+    ? lastJob
+      ? `Last synced ${fmtAge(lastJob.started_at)}`
+      : "Not synced yet"
+    : lastJob
+      ? `Last sync: <a href="${withBase(basePath, "/admin/v1/jobs/")}${lastJob.id}"><span class="badge badge-${esc(lastJob.status)}">${esc(lastJob.status)}</span></a> ${fmtAge(lastJob.started_at)}`
+      : "Never synced";
+
+  const websiteHtml = pkg?.website
+    ? ` · <a href="${esc(pkg.website)}" target="_blank" rel="noopener">${esc(pkg.website)}</a>`
+    : "";
+
+  if (viewer) {
+    const groupsHtml =
+      groups.length === 0
+        ? `<p class="empty">No versions are available yet.</p>`
+        : groups
+            .map((g) => renderGroupSection(packageName, g, vulnBadges, false, basePath, "viewer"))
+            .join("");
+    const viewerBody = `
+    <div style="margin-bottom:16px"><a href="${withBase(basePath, "/packages")}">← Back to packages</a></div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+      <h1 style="margin-bottom:0">${displayName}</h1>
+    </div>
+    <p class="meta">Vendor: <strong>${vendor}</strong>${websiteHtml} · ${lastSyncHtml}</p>
+    ${groupsHtml}`;
+    return renderViewerHtml(displayName, "packages", viewerBody, basePath);
+  }
 
   const headerHtml = `
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
       <h1 style="margin-bottom:0">${displayName}</h1>
       <span class="badge badge-${enabled ? "enabled" : "disabled"}">${enabled ? "enabled" : "disabled"}</span>
+      <a class="meta" style="margin-bottom:0" href="${withBase(basePath, "/packages/")}${esc(packageName)}">Public view</a>
     </div>
-    <p class="meta">Vendor: <strong>${vendor}</strong>${
-      pkg?.website
-        ? ` · <a href="${esc(pkg.website)}" target="_blank" rel="noopener">${esc(pkg.website)}</a>`
-        : ""
-    } · ${lastSyncHtml}</p>
+    <p class="meta">Vendor: <strong>${vendor}</strong>${websiteHtml} · ${lastSyncHtml}</p>
     <div class="actions">
       ${
         isRunning
@@ -1329,28 +1814,56 @@ function renderPackageDetailPage(
   const groupsHtml =
     groups.length === 0
       ? `<p class="empty">No versions synced yet. Run a sync to discover versions.</p>`
-      : groups.map((g) => renderGroupSection(packageName, g, vulnBadges)).join("");
+      : groups
+          .map((g) => renderGroupSection(packageName, g, vulnBadges, waivers !== null, basePath))
+          .join("");
 
   const body = `
-    <div style="margin-bottom:16px"><a href="/admin/v1/">← Back to packages</a></div>
+    <div style="margin-bottom:16px"><a href="${withBase(basePath, "/admin/v1/")}">← Back to packages</a></div>
     ${headerHtml}
     <div id="msg"></div>
+    ${renderWaiversPanel(waivers ?? [])}
     ${groupsHtml}`;
 
   const scripts = `
     async function syncPkg(name) {
       document.getElementById('msg').textContent = 'Starting sync…';
       try {
-        const r = await fetch('/admin/v1/sync/' + name, {method: 'POST'});
+        const r = await fetch('${withBase(basePath, "/admin/v1/sync/")}' + name, {method: 'POST'});
         const d = await r.json();
-        if (r.ok) window.location = '/admin/v1/jobs/' + d.job_id;
+        if (r.ok) window.location = '${withBase(basePath, "/admin/v1/jobs/")}' + d.job_id;
         else document.getElementById('msg').textContent = 'Error: ' + (d.error || r.status);
       } catch(e) { document.getElementById('msg').textContent = 'Error: ' + e.message; }
+    }
+    // Waivers are audited, so a reason is required: an empty or cancelled prompt does nothing.
+    async function waiverRequest(url, body, pending) {
+      document.getElementById('msg').textContent = pending;
+      try {
+        const r = await fetch(url, {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(body)
+        });
+        const d = await r.json();
+        if (r.ok) location.reload();
+        else { document.getElementById('msg').textContent = ''; alert('Error: ' + (d.error || r.status)); }
+      } catch(e) { document.getElementById('msg').textContent = ''; alert('Error: ' + e.message); }
+    }
+    function releaseNow(pkg, version) {
+      const reason = prompt('Release ' + version + ' from its cooling-off period now.\\nReason (recorded in the audit trail):');
+      if (reason === null || reason.trim() === '') return;
+      waiverRequest('${withBase(basePath, "/admin/v1/cooling-off-waivers")}',
+        {package: pkg, version: version, reason: reason}, 'Releasing ' + version + '…');
+    }
+    function revokeWaiver(id, version) {
+      const reason = prompt('Revoke the waiver for ' + version + '.\\nReason (recorded in the audit trail):');
+      if (reason === null || reason.trim() === '') return;
+      waiverRequest('${withBase(basePath, "/admin/v1/cooling-off-waivers/")}' + id + '/revoke',
+        {reason: reason}, 'Revoking waiver…');
     }
     async function toggleEnabled(name, enabled) {
       if (!confirm((enabled ? 'Disable' : 'Enable') + ' ' + name + '?')) return;
       try {
-        const r = await fetch('/admin/v1/packages/' + name, {
+        const r = await fetch('${withBase(basePath, "/admin/v1/packages/")}' + name, {
           method: 'PATCH', headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({enabled: !enabled})
         });
@@ -1362,7 +1875,7 @@ function renderPackageDetailPage(
       if (!confirm('Delete all versions in group "' + group + '" for ' + pkg + '? This cannot be undone.')) return;
       document.getElementById('msg').textContent = 'Deleting group ' + group + '…';
       try {
-        const r = await fetch('/admin/v1/groups/' + pkg + '/' + encodeURIComponent(group), {method: 'DELETE'});
+        const r = await fetch('${withBase(basePath, "/admin/v1/groups/")}' + pkg + '/' + encodeURIComponent(group), {method: 'DELETE'});
         if (r.ok) location.reload();
         else { const d = await r.json(); alert('Error: ' + (d.error || r.status)); }
       } catch(e) { alert('Error: ' + e.message); }
@@ -1371,7 +1884,7 @@ function renderPackageDetailPage(
       if (!confirm('Delete ALL versions and artifacts for ' + pkg + '? This cannot be undone.')) return;
       document.getElementById('msg').textContent = 'Deleting all data for ' + pkg + '…';
       try {
-        const r = await fetch('/admin/v1/groups/' + pkg, {method: 'DELETE'});
+        const r = await fetch('${withBase(basePath, "/admin/v1/groups/")}' + pkg, {method: 'DELETE'});
         if (r.ok) location.reload();
         else { const d = await r.json(); alert('Error: ' + (d.error || r.status)); }
       } catch(e) { alert('Error: ' + e.message); }
@@ -1380,24 +1893,32 @@ function renderPackageDetailPage(
       if (!confirm('Re-download ' + version + ' ' + os + '/' + arch + '?')) return;
       document.getElementById('msg').textContent = 'Re-downloading…';
       try {
-        const r = await fetch('/admin/v1/redownload/' + pkg + '/' + version + '/' + os + '/' + arch, {method: 'POST'});
+        const r = await fetch('${withBase(basePath, "/admin/v1/redownload/")}' + pkg + '/' + version + '/' + os + '/' + arch, {method: 'POST'});
         const d = await r.json();
         if (r.ok) { document.getElementById('msg').textContent = 'Done: ' + d.status; location.reload(); }
         else { alert('Error: ' + (d.error || r.status)); }
       } catch(e) { alert('Error: ' + e.message); }
     }`;
 
-  return renderSharedHtml(displayName, "packages", body, scripts);
+  return renderSharedHtml(displayName, "packages", body, basePath, scripts);
 }
 
-function vulnsHref(packageName: string, version: string): string {
-  return `/admin/v1/vulns?product=${encodeURIComponent(packageName)}&version=${encodeURIComponent(version)}`;
+function vulnsHref(
+  packageName: string,
+  version: string,
+  basePath: string,
+  mode: PageMode = "admin",
+): string {
+  const path = mode === "viewer" ? "/vulns" : "/admin/v1/vulns";
+  return `${withBase(basePath, path)}?product=${encodeURIComponent(packageName)}&version=${encodeURIComponent(version)}`;
 }
 
 function renderVulnBadge(
   packageName: string,
   version: string,
   counts: VersionVulnBadge | undefined,
+  basePath: string,
+  mode: PageMode = "admin",
 ): string {
   if (!counts || counts.total === 0) return "";
   const cls =
@@ -1407,7 +1928,7 @@ function renderVulnBadge(
         ? "badge-vuln-high"
         : "badge-vuln-none";
   const label = counts.kev > 0 ? `${counts.total} CVE · KEV` : `${counts.total} CVE`;
-  return ` <a href="${vulnsHref(packageName, version)}" title="${counts.critical} critical, ${counts.high} high${counts.kev > 0 ? `, ${counts.kev} KEV` : ""}" class="badge ${cls}" style="text-decoration:none">${label}</a>`;
+  return ` <a href="${vulnsHref(packageName, version, basePath, mode)}" title="${counts.critical} critical, ${counts.high} high${counts.kev > 0 ? `, ${counts.kev} KEV` : ""}" class="badge ${cls}" style="text-decoration:none">${label}</a>`;
 }
 
 /**
@@ -1418,17 +1939,51 @@ function renderBlockedBadge(
   packageName: string,
   version: string,
   badge: VersionVulnBadge | undefined,
+  basePath: string,
+  mode: PageMode = "admin",
 ): string {
   if (!badge?.blocked) return "";
-  return ` <a href="${vulnsHref(packageName, version)}" title="Downloads return 403 — critical CVE affects this version" class="badge badge-blocked" style="text-decoration:none">blocked</a>`;
+  return ` <a href="${vulnsHref(packageName, version, basePath, mode)}" title="Downloads return 403 — critical CVE affects this version" class="badge badge-blocked" style="text-decoration:none">blocked</a>`;
+}
+
+/**
+ * Active cooling-off waivers for a package. Shown only when there is one: a waiver stays
+ * recorded after the embargo it released has elapsed (it is inert, not deleted), and this is the
+ * only place an operator can see who released what, and why, without querying the audit trail.
+ */
+function renderWaiversPanel(waivers: CoolingOffWaiverRow[]): string {
+  if (waivers.length === 0) return "";
+  const esc = escHtml;
+  const rows = waivers
+    .map(
+      (w) => `<tr>
+        <td><strong>${esc(w.version)}</strong></td>
+        <td>${esc(w.reason)}</td>
+        <td>${esc(w.created_by)}</td>
+        <td style="color:#9ca3af;font-size:0.78rem;white-space:nowrap">${fmtAge(w.created_at)}</td>
+        <td><button class="btn btn-sm btn-danger" onclick="revokeWaiver(${w.id},'${esc(w.version)}')">Revoke</button></td>
+      </tr>`,
+    )
+    .join("");
+  return `<div class="group-section">
+    <div class="group-header"><h2>Cooling-off waivers</h2></div>
+    <table>
+      <thead><tr><th>Version</th><th>Reason</th><th>Released by</th><th>When</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
 }
 
 function renderGroupSection(
   packageName: string,
   g: GroupDetail,
   vulnBadges: { tracked: boolean; byVersion: Record<string, VersionVulnBadge> },
+  canWaive: boolean,
+  basePath: string,
+  mode: PageMode = "admin",
 ): string {
   const esc = escHtml;
+  const viewer = mode === "viewer";
   const hasLts = g.versions.some((v) => v.isLts);
   const platforms = [
     ...new Set(g.versions.flatMap((v) => v.artifacts.map((a) => `${a.os}/${a.arch}`))),
@@ -1438,7 +1993,7 @@ function renderGroupSection(
     <div class="group-header">
       <h2>${esc(g.name)}</h2>
       ${hasLts ? `<span class="badge badge-lts">LTS</span>` : ""}
-      <button class="btn btn-sm btn-danger" style="margin-left:auto" onclick="deleteGroup('${esc(packageName)}','${esc(g.name)}')">Delete Group</button>
+      ${viewer ? "" : `<button class="btn btn-sm btn-danger" style="margin-left:auto" onclick="deleteGroup('${esc(packageName)}','${esc(g.name)}')">Delete Group</button>`}
     </div>`;
 
   if (g.versions.length === 0) {
@@ -1447,14 +2002,26 @@ function renderGroupSection(
 
   const platHeaders = platforms.map((p) => `<th>${esc(p)}</th>`).join("");
   const rows = g.versions
-    .map((v) => {
+    .map((v, idx) => {
       const vuln = vulnBadges.tracked ? vulnBadges.byVersion[v.version] : undefined;
       const blocked = vuln?.blocked ?? false;
       const byPlatform = new Map(v.artifacts.map((a) => [`${a.os}/${a.arch}`, a]));
       const cells = platforms
         .map((p) => {
           const a = byPlatform.get(p);
-          if (!a) return `<td style="color:#d1d5db">—</td>`;
+          if (!a) {
+            // Upstream can publish platforms at different times; say which older version
+            // /latest serves for this platform so the gap doesn't read as a sync failure.
+            const fallback = g.versions
+              .slice(idx + 1)
+              .find((o) =>
+                o.artifacts.some((x) => `${x.os}/${x.arch}` === p && x.status === "available"),
+              );
+            const hint = fallback
+              ? ` title="${esc(`not published upstream — /latest serves ${fallback.version} for this platform`)}"`
+              : "";
+            return `<td style="color:#d1d5db"${hint}>—</td>`;
+          }
           const icon: Record<string, string> = {
             available: "✓",
             failed: "✗",
@@ -1476,17 +2043,32 @@ function renderGroupSection(
           const title = notes.length > 0 ? ` title="${esc(notes.join(" · "))}"` : "";
           const cls = gated ? `status-${display} cell-gated` : `status-${display}`;
           const [os, arch] = p.split("/");
+          const label = `${icon[display] ?? "?"} ${esc(display)}`;
+          if (viewer) {
+            // Link only what GET /download would actually serve: a gated or cooling-off cell is
+            // visibly not a link, and its tooltip says why.
+            const servable = display === "available" && !gated;
+            const href = `${withBase(basePath, "/download/")}${encodeURIComponent(packageName)}/${encodeURIComponent(v.version)}/${encodeURIComponent(os)}/${encodeURIComponent(arch)}`;
+            return servable
+              ? `<td><a class="${cls}" href="${href}"${title}>${label}</a></td>`
+              : `<td><span class="${cls}"${title}>${label}</span></td>`;
+          }
           const redownloadBtn =
             a.status === "failed" || a.status === "available"
               ? ` <button class="btn btn-sm btn-secondary" title="Re-download" onclick="redownload('${esc(packageName)}','${esc(v.version)}','${esc(os)}','${esc(arch)}')">↺</button>`
               : "";
-          return `<td><span class="${cls}"${title}>${icon[display] ?? "?"} ${esc(display)}</span>${redownloadBtn}</td>`;
+          return `<td><span class="${cls}"${title}>${label}</span>${redownloadBtn}</td>`;
         })
         .join("");
       const badges =
-        renderBlockedBadge(packageName, v.version, vuln) +
-        renderVulnBadge(packageName, v.version, vuln);
-      return `<tr><td><strong>${esc(v.version)}</strong>${badges}</td>${cells}</tr>`;
+        renderBlockedBadge(packageName, v.version, vuln, basePath, mode) +
+        renderVulnBadge(packageName, v.version, vuln, basePath, mode);
+      // The waiver is per version, not per platform, so one button covers every cooling-off cell.
+      const releaseBtn =
+        !viewer && canWaive && v.artifacts.some((a) => coolingOffUntil(a) !== null)
+          ? ` <button class="btn btn-sm btn-secondary" title="Release from cooling-off now" onclick="releaseNow('${esc(packageName)}','${esc(v.version)}')">Release now</button>`
+          : "";
+      return `<tr><td><strong>${esc(v.version)}</strong>${badges}${releaseBtn}</td>${cells}</tr>`;
     })
     .join("");
 
@@ -1499,23 +2081,39 @@ function renderGroupSection(
   </div>`;
 }
 
-function renderJobsListPage(jobs: SyncJobRow[]): string {
+function renderJobsListPage(
+  jobs: SyncJobRow[],
+  paging: { page: number; pageSize: number; packageName?: string; status?: string },
+  basePath: string,
+): string {
   const esc = escHtml;
   const rows = jobs
     .map((j) => {
-      const elapsed = (j.completed_at ?? new Date()).getTime() - j.started_at.getTime();
+      // A launched Cloud Run Job execution can sit cold-starting for tens of seconds before
+      // container_started_at is ever set. Showing "queued" there instead of a growing duration
+      // — and the actual transfer time, not time-since-created, once it has started — keeps this
+      // column answering "how long has the sync itself taken" rather than "how long ago did an
+      // operator click the button". A row from before migration 0017 has no container_started_at
+      // to fall back on even once terminal; total elapsed is the best available answer there.
+      const endMs = (j.completed_at ?? new Date()).getTime();
+      const elapsedCell =
+        j.container_started_at != null
+          ? fmtMs(endMs - j.container_started_at.getTime())
+          : j.status === "running"
+            ? "queued"
+            : fmtMs(endMs - j.started_at.getTime());
       const failedCell =
         j.artifacts_failed > 0 ? `<span class="status-failed">${j.artifacts_failed}</span>` : "0";
       return `<tr>
-        <td><a href="/admin/v1/jobs/${j.id}">#${j.id}</a></td>
-        <td><a href="/admin/v1/packages/${esc(j.package_name)}">${esc(j.package_name)}</a></td>
+        <td><a href="${withBase(basePath, "/admin/v1/jobs/")}${j.id}">#${j.id}</a></td>
+        <td><a href="${withBase(basePath, "/admin/v1/packages/")}${esc(j.package_name)}">${esc(j.package_name)}</a></td>
         <td>${esc(j.trigger_type)}</td>
         <td><span class="badge badge-${esc(j.status)}">${esc(j.status)}</span></td>
         <td>${j.versions_found}</td>
         <td>${j.artifacts_downloaded}</td>
         <td>${failedCell}</td>
         <td style="color:#9ca3af;font-size:0.78rem;white-space:nowrap">${fmtAge(j.started_at)}</td>
-        <td style="color:#9ca3af;font-size:0.78rem">${fmtMs(elapsed)}</td>
+        <td style="color:#9ca3af;font-size:0.78rem">${esc(elapsedCell)}</td>
       </tr>`;
     })
     .join("");
@@ -1533,16 +2131,42 @@ function renderJobsListPage(jobs: SyncJobRow[]): string {
 
   const hasRunning = jobs.some((j) => j.status === "running");
 
+  // Page links preserve package/status filters. "Next" always renders (the last page
+  // links to an empty page one past the end, which is harmless and simpler than a
+  // count query per render); "Previous" only appears past page 1.
+  const pageUrl = (p: number) => {
+    const params = new URLSearchParams({ page: String(p) });
+    if (paging.packageName) params.set("package", paging.packageName);
+    if (paging.status) params.set("status", paging.status);
+    return `${withBase(basePath, "/admin/v1/jobs")}?${params.toString()}`;
+  };
+  const pager =
+    jobs.length === 0 && paging.page === 1
+      ? ""
+      : `<div class="pager">
+          ${paging.page > 1 ? `<a href="${pageUrl(paging.page - 1)}">&larr; Previous</a>` : `<span class="pager-off">&larr; Previous</span>`}
+          <span class="pager-state">Page ${paging.page} · ${jobs.length} job(s)</span>
+          ${jobs.length >= paging.pageSize ? `<a href="${pageUrl(paging.page + 1)}">Next &rarr;</a>` : `<span class="pager-off">Next &rarr;</span>`}
+        </div>`;
+
   const body = `
-    <h1>Sync Jobs</h1>
+    <h1>Package Sync Jobs</h1>
     ${tableHtml}
+    ${pager}
     <div id="ts" style="font-size:0.75rem;color:#9ca3af;margin-top:12px"></div>`;
 
   const scripts = `
     document.getElementById('ts').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
     ${hasRunning ? "setInterval(() => location.reload(), 3000);" : ""}`;
 
-  return renderSharedHtml("Sync Jobs", "jobs", body, scripts);
+  const styleTail = `<style>
+    .pager { display:flex; gap:16px; align-items:center; margin-top:12px; font-size:0.85rem; }
+    .pager a { text-decoration:none; }
+    .pager-off { color:#d1d5db; }
+    .pager-state { color:#6b7280; font-size:0.8rem; }
+  </style>`;
+
+  return renderSharedHtml("Package Sync Jobs", "jobs", body, basePath, scripts, styleTail);
 }
 
 export function escHtml(str: string): string {
@@ -1620,5 +2244,72 @@ export function buildRedownloadPath(
   });
 }
 
+/**
+ * Raised when an artifact's recorded provenance and the live config disagree about whether a
+ * transform exists, so a redownload cannot faithfully rebuild the artifact.
+ */
+export class RedownloadTransformUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RedownloadTransformUnavailableError";
+  }
+}
+
+/**
+ * The download request an admin redownload issues.
+ *
+ * A transformed artifact must be rebuilt through its transform and verified against the SOURCE
+ * digest — the stored `checksum` describes the transformed bytes and would fail against the
+ * tar.bz2 upstream sends (WAL-56/58).
+ *
+ * If the row records a transform but the live config resolves none for that platform — the
+ * `[platforms.transform]` block removed, the platform's os/arch renamed — nothing downstream
+ * would notice: the pipeline stores the raw source bytes under the served `.zip` name and path,
+ * and `expectedChecksum` falls back to `source_checksum`, which is the digest of exactly those
+ * bytes, so the transfer passes. `checksum`/`file_size` are then overwritten with the tar.bz2's
+ * values while `source_checksum`/`transform` keep their stale ones, leaving a row that claims
+ * `tar-bz2-to-zip@1` while serving a tar.bz2 under a `.zip` name. Refuse loudly instead
+ * (WAL-73 finding 4).
+ */
+export function buildRedownloadRequest(
+  packageName: string,
+  version: string,
+  artifact: ArtifactRow,
+  packageConfig: PackageConfig | undefined,
+): DownloadRequest {
+  const platform = packageConfig?.platforms.find(
+    (p) => p.os === artifact.os && p.arch === artifact.arch,
+  );
+
+  if (artifact.transform && !platform?.transform) {
+    throw new RedownloadTransformUnavailableError(
+      `Artifact ${artifact.id} was stored by transform '${artifact.transform}', but ` +
+        `${packageName} ${artifact.os}/${artifact.arch} declares no transform in the current ` +
+        `config — a redownload would store unrepackaged source bytes as ${artifact.filename}. ` +
+        `Restore the transform block or remove the artifact.`,
+    );
+  }
+
+  return {
+    artifactId: artifact.id,
+    upstreamUrl: artifact.upstream_url,
+    storagePath: buildRedownloadPath(packageName, version, artifact),
+    expectedChecksum: (artifact.source_checksum ?? artifact.checksum) || undefined,
+    checksumType: normalizeChecksumType(artifact.checksum_type),
+    transform: platform?.transform,
+  };
+}
+
+function normalizeChecksumType(type: string | null): ChecksumAlgorithm | undefined {
+  if (type === "sha256" || type === "sha1" || type === "sha512" || type === "md5") {
+    return type;
+  }
+  return undefined;
+}
+
 // Re-export for use in main.ts
 export type { SyncRunOptions };
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}

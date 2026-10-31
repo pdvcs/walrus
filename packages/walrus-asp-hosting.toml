@@ -1,0 +1,70 @@
+# ASP.NET Core Windows Hosting Bundle — `asp-hosting`. Windows/x86-64 only.
+#
+# The hosting bundle installs the ASP.NET Core runtime, the .NET runtime and the IIS
+# ASP.NET Core Module (ANCM). Its version tracks the ASP.NET Core runtime directly
+# (8.0.31 and 10.0.12 at time of writing), so unlike the SDK there is no normalisation
+# step: the served version is exactly what NVD names.
+#
+# Source and strategy are shared with `walrus-dotnetsdk.toml`: each channel document carries
+# an `aspnetcore-runtime` object per release, whose `files[]` includes the single
+# `dotnet-hosting-<version>-win.exe` entry (with an empty `rid`). The `.exe` is an
+# installer, and it is the artifact this package serves. .NET publishes one document per
+# channel (not one index), so `url` names both the LTS lines this package supports.
+
+name = "asp-hosting"
+display_name = "ASP.NET Core Hosting Bundle"
+vendor = "Microsoft"
+website = "https://dotnet.microsoft.com"
+description = "ASP.NET Core Windows Hosting Bundle (runtime + IIS ASP.NET Core Module)"
+
+[discovery]
+type = "dotnet-releases"
+# .NET 10 (current LTS) and .NET 8 (maintenance LTS). 9.0 is STS and deliberately not served.
+url = [
+  "https://raw.githubusercontent.com/dotnet/core/main/release-notes/10.0/releases.json",
+  "https://raw.githubusercontent.com/dotnet/core/main/release-notes/8.0/releases.json",
+]
+# One version per release from `release["aspnetcore-runtime"]`; the bundle version equals the
+# ASP.NET Core runtime version, so no per-version CVE mapping is needed.
+component = "aspnetcore-runtime"
+
+[versioning]
+type = "semver"
+# The ASP.NET Core runtime series. CVE ranges name 8.0.x / 10.0.x, so grouping on major.minor
+# keeps a same-series fallback while retention prunes older patches.
+version_group_extract = "^(\\d+\\.\\d+)"
+min_version = "8.0"
+lts_support = false
+
+[retention]
+# The newest two patches of each served series (10.0.12/10.0.11 and 8.0.31/8.0.30).
+versions_per_group = 2
+# One group per served channel: 10.0 and 8.0. Both must be kept, so this is 2 rather than 1.
+groups_to_keep = 2
+cooling_off_days = 3
+
+# No [checksum] section: the SHA-512 comes inline from the channel document.
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+# The hosting bundle file carries rid "" upstream; matched literally.
+os_upstream = ""
+arch_upstream = "x64"
+extension = "exe"
+# Several runtime files share the empty rid; this selects the hosting bundle among them.
+name_must_contain = "hosting"
+
+[vulnerabilities]
+# The bundle embeds the base .NET runtime as well as ASP.NET Core, so both products are
+# declared. If microsoft:asp.net_core alone proves sufficient (and microsoft:.net over-blocks),
+# drop the second entry.
+cpes = ["microsoft:asp.net_core", "microsoft:.net"]
+aliases = [
+  "asp.net core",
+  "aspnet core",
+  "hosting bundle",
+  "aspnet hosting bundle",
+  "dotnet hosting bundle",
+  ".net hosting bundle",
+]

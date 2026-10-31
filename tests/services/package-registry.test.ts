@@ -304,6 +304,51 @@ aliases = ["  Adopt OpenJDK ", "JDK"]`),
     expect(input.aliases).toContain("eclipse temurin openjdk"); // from display_name
   });
 
+  it("carries cve_version_extract from the TOML through to the reconciliation input", () => {
+    // The TOML -> computeVulnInput hop (WAL-78, ADR-008). The DB tests start from a
+    // VulnConfigInput and the unit tests start from affects rows, so without this nothing
+    // asserts that a rule written in a config file ever reaches the database at all.
+    const filePath = path.join(FIXTURES_DIR, "vuln-cve-version.toml");
+    fs.writeFileSync(
+      filePath,
+      withVuln(`[vulnerabilities]
+cpes = ["git-scm:git"]
+cve_version_extract = "^(\\\\d+\\\\.\\\\d+\\\\.\\\\d+)"`),
+    );
+    const config = loadPackageConfig(filePath);
+    expect(config.vulnerabilities?.cve_version_extract).toBe("^(\\d+\\.\\d+\\.\\d+)");
+    expect(computeVulnInput(config)!.cveVersionExtract).toBe("^(\\d+\\.\\d+\\.\\d+)");
+  });
+
+  it("omitting cve_version_extract yields null, not undefined", () => {
+    // reconcilePackageVuln writes this straight into a nullable column; undefined would be a
+    // parameter-count error at the driver rather than "this package has no rule".
+    const filePath = path.join(FIXTURES_DIR, "vuln-no-cve-version.toml");
+    fs.writeFileSync(filePath, withVuln(`[vulnerabilities]\ncpes = ["git-scm:git"]`));
+    const config = loadPackageConfig(filePath);
+    expect(computeVulnInput(config)!.cveVersionExtract).toBeNull();
+  });
+
+  it("rejects a cve_version_extract that cannot compile or has no capture group", () => {
+    // A silently-ignored bad rule would return the package to under-gating with no signal,
+    // so the schema refuses it at load rather than deriveCveVersion shrugging at runtime.
+    for (const bad of ['"^(unclosed"', '"^\\\\d+"']) {
+      const filePath = path.join(FIXTURES_DIR, "vuln-bad-cve-version.toml");
+      fs.writeFileSync(
+        filePath,
+        withVuln(`[vulnerabilities]\ncpes = ["git-scm:git"]\ncve_version_extract = ${bad}`),
+      );
+      expect(() => loadPackageConfig(filePath), bad).toThrow();
+    }
+  });
+
+  it("the shipped gitwindows config still declares its rule", () => {
+    // Pins the real file: deleting the line is a silent return to under-gating, and this is
+    // the only test that would notice.
+    const shipped = loadPackageConfig(path.join(process.cwd(), "packages/walrus-gitwindows.toml"));
+    expect(computeVulnInput(shipped)!.cveVersionExtract).toBe("^(\\d+\\.\\d+\\.\\d+)");
+  });
+
   it("computeVulnInput returns null when the section is absent", () => {
     const config = loadPackageConfig(path.join(FIXTURES_DIR, "uv-test.toml"));
     expect(computeVulnInput(config)).toBeNull();
@@ -340,5 +385,103 @@ describe("loadAllPackages", () => {
     const result = loadAllPackages("/non/existent/path");
     expect(result.configs).toHaveLength(0);
     expect(result.errors).toHaveLength(0);
+  });
+});
+
+describe("json-api platform-map sub-mode (WAL-65)", () => {
+  function toml(discoveryExtras: string): string {
+    return `
+name = "intellij"
+display_name = "IntelliJ IDEA Ultimate"
+vendor = "JetBrains"
+
+[discovery]
+type = "json-api"
+url = "https://data.services.jetbrains.com/products/releases?code=IIU"
+releases_path = "$.IIU[*]"
+release_version_field = "version"
+files_field = "downloads"
+${discoveryExtras}
+
+[versioning]
+type = "calver"
+version_group_extract = "^(\\\\d+\\\\.\\\\d+)"
+lts_support = false
+
+[retention]
+versions_per_group = 2
+
+[checksum]
+type = "separate-file"
+algorithm = "sha256"
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "windowsZip"
+arch_upstream = "x86-64"
+extension = "zip"
+`;
+  }
+
+  function load(name: string, discoveryExtras: string) {
+    const filePath = path.join(FIXTURES_DIR, `${name}.toml`);
+    fs.writeFileSync(filePath, toml(discoveryExtras));
+    return () => loadPackageConfig(filePath);
+  }
+
+  it("accepts a complete platform-map config", () => {
+    const config = load(
+      "pm-valid",
+      `files_shape = "platform-map"
+file_url_field = "link"
+file_checksum_url_field = "checksumLink"
+file_size_field = "size"`,
+    )();
+
+    expect(config.discovery.type).toBe("json-api");
+    if (config.discovery.type === "json-api") {
+      expect(config.discovery.files_shape).toBe("platform-map");
+      expect(config.discovery.file_url_field).toBe("link");
+    }
+  });
+
+  it("requires file_url_field, since the filename comes from the URL", () => {
+    expect(load("pm-no-url", 'files_shape = "platform-map"')).toThrow(/file_url_field/);
+  });
+
+  it("rejects array-shape fields that would be silently ignored", () => {
+    // The whole point of naming the sub-mode: a leftover file_os_field in a platform-map config
+    // does nothing, and doing nothing quietly is how a config looks right and yields no
+    // artifacts.
+    expect(
+      load(
+        "pm-array-field",
+        `files_shape = "platform-map"
+file_url_field = "link"
+file_os_field = "os"`,
+      ),
+    ).toThrow(/file_os_field has no meaning/);
+  });
+
+  it("rejects platform-map fields without the sub-mode that reads them", () => {
+    expect(load("pm-orphan-field", 'file_url_field = "link"')).toThrow(
+      /file_url_field requires files_shape/,
+    );
+  });
+
+  it("leaves the array shape valid and unchanged", () => {
+    const config = load(
+      "pm-array-mode",
+      `file_os_field = "os"
+file_arch_field = "arch"
+file_filename_field = "filename"
+file_url_base = "https://example.test/"`,
+    )();
+
+    if (config.discovery.type === "json-api") {
+      expect(config.discovery.files_shape).toBeUndefined();
+      expect(config.discovery.file_os_field).toBe("os");
+    }
   });
 });

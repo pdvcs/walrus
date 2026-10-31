@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { CveDetailResponseSchema, VULN_DISCLAIMER } from "./schemas.js";
 import { CveRow, AffectedPackageRow } from "../db/queries/cves.js";
-import { describeRange } from "../vuln/version-ranges.js";
+import { describeAffectedRange } from "../vuln/version-ranges.js";
 import { DataFreshness } from "./vulns.js";
 
 const CVE_ID_RE = /^CVE-\d{4}-\d{4,}$/i;
@@ -47,6 +47,8 @@ export function createCvesRouter(deps: CvesRouteDeps): Router {
           severity_source: cve.severity_source,
           cvss_v3_score: cve.cvss_v3_score !== null ? Number(cve.cvss_v3_score) : null,
           cvss_v3_vector: cve.cvss_v3_vector,
+          cvss_v4_score: cve.cvss_v4_score == null ? null : Number(cve.cvss_v4_score),
+          cvss_v4_vector: cve.cvss_v4_vector,
           cvss_v2_score: cve.cvss_v2_score == null ? null : Number(cve.cvss_v2_score),
           cvss_v2_vector: cve.cvss_v2_vector,
           description: cve.description,
@@ -55,13 +57,16 @@ export function createCvesRouter(deps: CvesRouteDeps): Router {
           affected_products: affected.map((r) => ({
             slug: r.package_name,
             display_name: r.display_name,
-            range: describeRange({
-              versionStart: r.version_start,
-              versionStartExcl: r.version_start_excl,
-              versionEnd: r.version_end,
-              versionEndExcl: r.version_end_excl,
-              exactVersion: r.exact_version,
-            }),
+            range: describeAffectedRange(
+              {
+                versionStart: r.version_start,
+                versionStartExcl: r.version_start_excl,
+                versionEnd: r.version_end,
+                versionEndExcl: r.version_end_excl,
+                exactVersion: r.exact_version,
+              },
+              r.version_na,
+            ),
             fixed_in: r.fixed_in,
             source: r.source,
           })),

@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { Pool } from "pg";
 import { mapWithConcurrency } from "../common/async-utils.js";
 import { generateSortKey } from "../common/version-utils.js";
+import { AdvisoryLockUnavailableError, withAdvisoryLock } from "../common/advisory-lock.js";
 import { computeCoolingOffUntil, selectRetentionWindow } from "../common/retention-window.js";
 import { log } from "../common/log.js";
 import { getStrategy } from "../discovery/index.js";
@@ -9,18 +10,37 @@ import { DiscoveredVersion, DiscoveryOptions } from "../discovery/types.js";
 import { SyncJobTrigger } from "../types/db.js";
 import { insertArtifact, updateArtifactStatus } from "../db/queries/artifacts.js";
 import { upsertPackage } from "../db/queries/packages.js";
-import { createSyncJob, incrementJobCounters, updateSyncJob } from "../db/queries/sync-jobs.js";
+import {
+  createSyncJob,
+  getSyncJob,
+  incrementJobCounters,
+  updateSyncJob,
+} from "../db/queries/sync-jobs.js";
 import { getMaxAvailableVersionSort, insertVersion } from "../db/queries/versions.js";
+import { listWaivedVersions } from "../db/queries/cooling-off-waivers.js";
 import { buildArtifactPath } from "../storage/types.js";
 import { PackageConfig } from "../types/package-config.js";
+import { renderServedFilename } from "../transform/index.js";
 import { SyncJobRow } from "../types/db.js";
-import { DownloadRequest, DownloadResult, DownloadService } from "./download-service.js";
+import {
+  ChecksumAlgorithm,
+  DownloadRequest,
+  DownloadResult,
+  DownloadService,
+} from "./download-service.js";
 import { RetentionResult, RetentionService } from "./retention-service.js";
 
 export interface SyncRunOptions {
   triggerType?: SyncJobTrigger;
   dryRun?: boolean;
   discovery?: DiscoveryOptions;
+  /**
+   * Resume a job row a launcher already created, instead of creating a new one. Used by
+   * `sync-job.ts` when it was handed `--job-id` by a `SyncLauncher` that needed the row to
+   * exist (and its id to return to the caller) before the run itself could start — a Cloud
+   * Run Job execution has startup latency the caller shouldn't have to wait through.
+   */
+  existingJobId?: number;
 }
 
 export interface SyncRunResult {
@@ -40,6 +60,7 @@ interface SyncDeps {
   ) => Promise<DiscoveredVersion[]>;
   upsertPackage: typeof upsertPackage;
   createSyncJob: typeof createSyncJob;
+  getSyncJob: typeof getSyncJob;
   updateSyncJob: typeof updateSyncJob;
   incrementJobCounters: typeof incrementJobCounters;
   insertVersion: typeof insertVersion;
@@ -53,12 +74,27 @@ interface SyncDeps {
     groupsToKeep?: number,
   ) => Promise<RetentionResult>;
   getMaxAvailableVersionSort: typeof getMaxAvailableVersionSort;
+  listWaivedVersions: typeof listWaivedVersions;
 }
 
 export interface SyncServiceOptions {
   syncConcurrency?: number;
   downloadConcurrency?: number;
   deps?: Partial<SyncDeps>;
+}
+
+const SYNC_LOCK_NAMESPACE = "walrus:package-sync";
+
+/**
+ * Raised when a sync for this package is already in flight. Locking is per package, not
+ * global: two different packages never touch the same rows, so serialising them would only
+ * make a full run slower. Two runs of the *same* package race on its versions and artifacts.
+ */
+export class SyncAlreadyRunningError extends Error {
+  constructor(readonly packageName: string) {
+    super(`sync for package '${packageName}' is already running`);
+    this.name = "SyncAlreadyRunningError";
+  }
 }
 
 export class SyncService {
@@ -79,6 +115,7 @@ export class SyncService {
       discoverVersions: (config, options) => getStrategy(config).discoverVersions(config, options),
       upsertPackage,
       createSyncJob,
+      getSyncJob,
       updateSyncJob,
       incrementJobCounters,
       insertVersion,
@@ -88,6 +125,7 @@ export class SyncService {
       enforceRetention: (packageName, keep, dryRun, groupsToKeep) =>
         this.retentionService.enforceRetention(packageName, keep, dryRun, groupsToKeep),
       getMaxAvailableVersionSort,
+      listWaivedVersions,
       ...opts.deps,
     };
   }
@@ -111,13 +149,49 @@ export class SyncService {
       };
     }
 
-    const job = await this._setupJob(options);
-    return this._doSync(job, options);
+    return this.withLock(async () => {
+      const job = await this._setupJob(options);
+      return this._doSync(job, options);
+    });
+  }
+
+  /**
+   * Create this package's sync-job row without running it — for a `SyncLauncher` that starts
+   * the actual work somewhere else (a Cloud Run Job execution) and needs the row's id to hand
+   * back to its caller before that execution has even started, let alone finished setup itself.
+   * The launched run is then given the same id via `existingJobId` so it resumes this row
+   * instead of creating a second one.
+   */
+  async prepareJob(triggerType: SyncJobTrigger): Promise<SyncJobRow> {
+    return this._setupJob({ triggerType });
+  }
+
+  /**
+   * Hold the package's sync lock for the whole run. The lock is a session advisory lock, so
+   * a crashed process releases it rather than stranding the next scheduled run.
+   */
+  private async withLock<T>(fn: () => Promise<T>): Promise<T> {
+    const key = this.packageConfig.name;
+    try {
+      return await withAdvisoryLock(this.pool, SYNC_LOCK_NAMESPACE, key, fn);
+    } catch (err) {
+      if (
+        err instanceof AdvisoryLockUnavailableError &&
+        err.namespace === SYNC_LOCK_NAMESPACE &&
+        err.key === key
+      ) {
+        throw new SyncAlreadyRunningError(key);
+      }
+      throw err;
+    }
   }
 
   async startAsync(options: SyncRunOptions = {}): Promise<number> {
     const job = await this._setupJob(options);
-    this._doSync(job, options).catch(async (err) => {
+    // The lock is taken *inside* the detached chain so it is held for the whole background
+    // run, not just until this function returns. Contention marks the job failed with a
+    // clear reason rather than silently running a second, racing sync.
+    this.withLock(() => this._doSync(job, options)).catch(async (err) => {
       log.error({ jobId: job.id, err }, "Background sync crashed");
       await this.deps
         .updateSyncJob(this.pool, job.id, {
@@ -142,12 +216,24 @@ export class SyncService {
       config_hash: configHash,
       enabled: true,
     });
+    if (options.existingJobId !== undefined) {
+      const job = await this.deps.getSyncJob(this.pool, options.existingJobId);
+      if (!job) throw new Error(`Sync job ${options.existingJobId} not found`);
+      return job;
+    }
     return this.deps.createSyncJob(this.pool, this.packageConfig.name, triggerType);
   }
 
   private async _doSync(job: SyncJobRow, options: SyncRunOptions): Promise<SyncRunResult> {
     const triggerType = options.triggerType ?? "scheduled";
     try {
+      // A launcher can create the row well before this ever runs — a Cloud Run Job execution
+      // has no warm pool, so the gap between `prepareJob` and reaching here can be tens of
+      // seconds with nothing to show for it. This is the signal the admin job page uses to tell
+      // "queued, cold-starting" apart from "running": stamped once, unconditionally, so its
+      // meaning stays the same whether this run was launched, resumed locally, or started
+      // in-process the old way.
+      await this.deps.updateSyncJob(this.pool, job.id, { container_started_at: new Date() });
       log.info(
         {
           package: this.packageConfig.name,
@@ -166,11 +252,15 @@ export class SyncService {
         this.packageConfig.name,
       );
 
+      // Operator waivers (cooling_off_waivers) release a specific version from its embargo. Loaded
+      // once per run: the embargo is persisted per artifact below, so it must be decided here.
+      const waivedVersions = await this.deps.listWaivedVersions(this.pool, this.packageConfig.name);
+
       const allDiscovered = await this.deps.discoverVersions(this.packageConfig, options.discovery);
       const aboveMin = this.applyMinVersion(allDiscovered);
       const discovered = options.discovery?.historical
         ? aboveMin
-        : this.applyRetentionWindow(aboveMin, coolingOffThreshold);
+        : this.applyRetentionWindow(aboveMin, coolingOffThreshold, waivedVersions);
       await this.deps.updateSyncJob(this.pool, job.id, {
         versions_found: discovered.length,
       });
@@ -189,7 +279,7 @@ export class SyncService {
       const queued: DownloadRequest[] = [];
 
       await mapWithConcurrency(discovered, this.syncConcurrency, async (version) => {
-        await this.processVersion(version, queued, job.id, coolingOffThreshold);
+        await this.processVersion(version, queued, job.id, coolingOffThreshold, waivedVersions);
       });
 
       await this.deps.updateSyncJob(this.pool, job.id, {
@@ -306,7 +396,7 @@ export class SyncService {
         {
           package: this.packageConfig.name,
           jobId: job.id,
-          error: message,
+          reason: message,
         },
         "Package sync failed",
       );
@@ -324,8 +414,14 @@ export class SyncService {
   private applyRetentionWindow(
     versions: DiscoveredVersion[],
     coolingOffThreshold: string | null = null,
+    waivedVersions: ReadonlySet<string> = new Set(),
   ): DiscoveredVersion[] {
-    return selectRetentionWindow(versions, this.packageConfig.retention, coolingOffThreshold);
+    return selectRetentionWindow(
+      versions,
+      this.packageConfig.retention,
+      coolingOffThreshold,
+      waivedVersions,
+    );
   }
 
   private async processVersion(
@@ -333,6 +429,7 @@ export class SyncService {
     queued: DownloadRequest[],
     jobId: number,
     coolingOffThreshold: string | null,
+    waivedVersions: ReadonlySet<string>,
   ): Promise<void> {
     const versionRow = await this.deps.insertVersion(this.pool, {
       package_name: this.packageConfig.name,
@@ -340,12 +437,17 @@ export class SyncService {
       version_group: version.versionGroup,
       is_lts: version.isLts,
       version_sort: generateSortKey(version.version),
+      cve_version: version.cveVersion ?? null,
     });
 
+    // versionRow.discovered_at, not the clock: this is the one call site whose result is persisted,
+    // and it is recomputed on every sync for as long as the artifact stays pending (WAL-91).
     const coolingOffUntil = computeCoolingOffUntil(
       version,
       this.packageConfig.retention,
       coolingOffThreshold,
+      versionRow.discovered_at,
+      waivedVersions.has(version.version),
     );
 
     for (const [platform, artifact] of version.artifacts) {
@@ -353,25 +455,102 @@ export class SyncService {
       if (!os || !arch) {
         continue;
       }
+      // A transform changes what walrus serves: the row's filename and storage path describe
+      // the transformed output, while upstream_url below keeps pointing at the source bytes.
+      const platformConfig = this.packageConfig.platforms.find(
+        (p) => p.os === os && p.arch === arch,
+      );
+      const filename = platformConfig?.transform
+        ? renderServedFilename(
+            platformConfig.transform,
+            platformConfig,
+            version.version,
+            artifact.filename,
+          )
+        : artifact.filename;
       const artifactRow = await this.deps.insertArtifact(this.pool, {
         version_id: versionRow.id,
         os,
         arch,
-        filename: artifact.filename,
+        filename,
         upstream_url: artifact.url,
         sync_job_id: jobId,
         cooling_off_until: coolingOffUntil,
       });
 
-      if (artifact.checksum || artifact.checksumType) {
-        await this.deps.updateArtifactStatus(this.pool, artifactRow.id, {
+      // Record what *discovery* learned, and only that (WAL-102).
+      //
+      // Two rules, both learned the hard way. First, `artifacts.checksum` describes the bytes
+      // walrus has stored, so once an artifact is available its digest is a fact about those
+      // bytes and discovery has nothing to say about it — re-running discovery must not touch
+      // it. Second, a field discovery did not resolve must be left alone rather than written
+      // as NULL: for a package whose config gives a checksum *URL* rather than a value, the
+      // digest is not known until `DownloadService` fetches it, and `checksum ?? null` here
+      // erased the stored digest of an already-cached artifact on every subsequent sync. It
+      // could not self-heal, because an available artifact is never queued for download.
+      if (artifactRow.status !== "available") {
+        const discovered: Parameters<typeof updateArtifactStatus>[2] = {
           status: artifactRow.status,
-          checksum: artifact.checksum ?? null,
-          checksum_type: normalizeChecksumType(artifact.checksumType),
-        });
+        };
+        if (artifact.checksum) discovered.checksum = artifact.checksum;
+        const checksumType = normalizeChecksumType(artifact.checksumType);
+        if (checksumType) discovered.checksum_type = checksumType;
+
+        // `updateArtifactStatus` only writes the keys present on the update, so an omitted
+        // field keeps whatever the column already holds.
+        if (discovered.checksum !== undefined || discovered.checksum_type !== undefined) {
+          await this.deps.updateArtifactStatus(this.pool, artifactRow.id, discovered);
+        }
       }
 
-      if (artifactRow.status === "pending") {
+      // An artifact that is serving but carries no digest is the residue of WAL-102: its
+      // checksum was erased by a discovery-time write and cannot be recovered in place,
+      // because the digest describes the stored bytes and only a download recomputes it.
+      // Re-fetching also re-verifies against upstream on the way through, which is the
+      // stronger of the two repairs available (PO decision, 2026-08-31) — the alternative,
+      // hashing whatever is already in the bucket, would bless bytes that have been served
+      // without a published digest rather than check them.
+      //
+      // `checksum_type IS NOT NULL` keeps this to artifacts that are *meant* to have a digest,
+      // so a package deliberately configured without checksums is not re-fetched forever.
+      // Self-healing rather than a migration: it repairs the estate on the next sync and stays
+      // correct if the state ever reappears.
+      const missingChecksum =
+        artifactRow.status === "available" &&
+        artifactRow.checksum === null &&
+        artifactRow.checksum_type !== null;
+
+      // The same defect's other face, and the worse of the two. Where discovery supplies a
+      // checksum *value* rather than a URL, the old write did not null the digest — it replaced
+      // it with **upstream's**. For an untransformed artifact those are the same number and
+      // nothing is visibly wrong. For a transformed one the served bytes are walrus's own, so
+      // the published digest becomes a digest of bytes walrus does not serve, and every client
+      // that verifies its download fails on a good file. A null digest is at least honest;
+      // this one lies. `checksum === source_checksum` on a transformed artifact is exactly that
+      // state — WAL-58's provenance split means they must differ.
+      const upstreamDigestOverwroteServed =
+        artifactRow.status === "available" &&
+        artifactRow.transform !== null &&
+        artifactRow.source_checksum !== null &&
+        artifactRow.checksum === artifactRow.source_checksum;
+
+      const needsChecksumRepair = missingChecksum || upstreamDigestOverwroteServed;
+
+      if (needsChecksumRepair) {
+        log.warn(
+          {
+            package: this.packageConfig.name,
+            artifactId: artifactRow.id,
+            version: version.version,
+            reason: missingChecksum
+              ? "no stored checksum"
+              : "served digest overwritten by upstream's",
+          },
+          "Artifact digest does not describe the bytes served; re-downloading to repair it",
+        );
+      }
+
+      if (artifactRow.status === "pending" || needsChecksumRepair) {
         if (artifactRow.cooling_off_until !== null && artifactRow.cooling_off_until > new Date()) {
           continue; // still in cooling off period — leave as pending, download on next sync
         }
@@ -383,11 +562,14 @@ export class SyncService {
             version: version.version,
             os,
             arch,
-            filename: artifact.filename,
+            filename,
           }),
           expectedChecksum: artifact.checksum,
           checksumUrl: artifact.checksumUrl,
           checksumType: normalizeChecksumType(artifact.checksumType),
+          checksumFormat: artifact.checksumFormat,
+          expectedSize: artifact.size,
+          transform: platformConfig?.transform,
         });
       }
     }
@@ -398,8 +580,8 @@ function hashConfig(config: PackageConfig): string {
   return crypto.createHash("sha256").update(JSON.stringify(config)).digest("hex");
 }
 
-function normalizeChecksumType(type?: string): "sha256" | "sha1" | undefined {
+function normalizeChecksumType(type?: string): ChecksumAlgorithm | undefined {
   if (!type) return undefined;
-  if (type === "sha1" || type === "sha256") return type;
+  if (type === "sha1" || type === "sha256" || type === "sha512" || type === "md5") return type;
   return undefined;
 }

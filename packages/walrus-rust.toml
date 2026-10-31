@@ -1,0 +1,83 @@
+# Rust toolchain — the rustup `rust` component (rustc, cargo, rust-std, rust-docs).
+#
+# Why this config needs a dedicated discovery strategy: Rust attaches no binary assets to its
+# GitHub Releases and publishes no JSON manifest. The authoritative source is the TOML channel
+# manifest (`channel-rust-stable.toml`, archived per version as `channel-rust-{version}.toml`),
+# which carries, for each target, a gzip artifact (`url`/`hash`) and an xz artifact
+# (`xz_url`/`xz_hash`) with an inline SHA256, plus a top-level release `date`.
+#
+# `rust-channel` enumerates archived manifests from the bucket's S3 list API, fetches the newest
+# `max_versions`, and builds each platform's Rust target triple as arch_upstream + "-" +
+# os_upstream (arch first: "x86_64" + "unknown-linux-gnu" -> "x86_64-unknown-linux-gnu").
+# `extension` selects gzip vs xz; walrus streams the bytes either way and never decompresses.
+
+name = "rust"
+display_name = "Rust"
+vendor = "The Rust Project"
+website = "https://www.rust-lang.org"
+description = "Rust programming language toolchain (rustc, cargo, std)"
+
+[discovery]
+type = "rust-channel"
+# S3 ListObjectsV2; keyed by the manifest names, not a browsable HTML index.
+listing_url = "https://static.rust-lang.org/?list-type=2&prefix=dist/channel-rust-"
+manifest_url_template = "https://static.rust-lang.org/dist/channel-rust-{version}.toml"
+# Each manifest is ~0.9 MB; 10 bounds a sync to ~9 MB of discovery while covering the retention
+# window (2 versions x 3 groups) with headroom for a missed week.
+max_versions = 10
+# [pkg.rust] is the full toolchain component, not [pkg.rustc] / [pkg.cargo] separately.
+package = "rust"
+
+[versioning]
+type = "semver"
+# Rust's release series is major.minor (1.98.x), the same granularity as Go.
+version_group_extract = "^(\\d+\\.\\d+)"
+# Rust has no LTS; old releases are EOL. This only bounds the discovery walk — retention prunes
+# the rest.
+min_version = "1.80"
+lts_support = false
+
+[retention]
+# A minor series normally ships one .0 plus at most a patch, so 2 keeps a same-series fallback.
+versions_per_group = 1 # 2 usually -- for demo purposes we'll keep 1
+# The three newest minors: ~4.5 months at Rust's six-week cadence.
+groups_to_keep = 2 # 3 usually -- for demo purposes we'll keep 2
+# Date-anchored on the manifest's top-level `date`, which is a real per-release timestamp.
+cooling_off_days = 3
+
+# No [checksum] section: the manifest hash is captured inline during discovery.
+
+# gzip is the default served format. Switch a platform's `extension` to "tar.xz" to serve the
+# xz artifact instead (roughly half the bytes); the manifest carries both hashes.
+
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "unknown-linux-gnu"
+arch_upstream = "x86_64"
+extension = "tar.gz"
+
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "apple-darwin"
+arch_upstream = "aarch64"
+extension = "tar.gz"
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "pc-windows-msvc"
+arch_upstream = "x86_64"
+extension = "tar.gz"
+
+[vulnerabilities]
+# rust-lang:rust 110 entries (verified 2026-09-10). NVD also has rust-lang:cargo, but its CPE
+# versions are cargo's own (0.64.0, ...), not the Rust version the artifact serves, so a range
+# comparison against this package's version would match nothing useful. Cargo coverage is a
+# separate question; this package declares the compiler product only.
+#
+# No OSV mapping: crates.io advisories (RustSec) are per-crate, and there is no OSV package for
+# the toolchain or std. No cve_version_extract: the served version is exactly what NVD names.
+cpes = ["rust-lang:rust"]
+aliases = ["rust", "rustc", "rust sdk", "rust toolchain", "rustup", "rust lang"]

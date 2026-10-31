@@ -1,0 +1,145 @@
+import { describe, expect, it, vi } from "vitest";
+import type { Pool } from "pg";
+import { backfillNvd, incrementalNvdSync } from "../../../src/vuln/sync/nvd-sync.js";
+import type { NvdClient, NvdCveItem, NvdCvePage } from "../../../src/vuln/sync/nvd-client.js";
+
+/**
+ * WAL-95. The incremental sync used to call `cvesModifiedSince` (since deleted), which
+ * concatenated every page of a lastMod window into one array. On a fresh database there is no cursor, so the first sync
+ * of any new environment requests the full 119-day window — and on the first real GCP deployment
+ * that aborted the service with `FATAL ERROR: Reached heap limit`, signal 6, about two minutes in.
+ *
+ * These tests pin the shape of the fix rather than a byte count: ingestion must happen per page,
+ * so peak memory is flat in the window's size. A revert to accumulate-then-ingest collapses the
+ * transaction count to one and fails here.
+ */
+
+const PAGE_SIZE = 3;
+const PAGES = 5;
+
+function page(startIndex: number, total: number): NvdCvePage {
+  return {
+    resultsPerPage: PAGE_SIZE,
+    startIndex,
+    totalResults: total,
+    vulnerabilities: Array.from({ length: PAGE_SIZE }, (_, i) => ({
+      cve: { id: `CVE-2026-${String(startIndex + i).padStart(4, "0")}` },
+    })) as NvdCveItem[],
+  };
+}
+
+/** Records the transaction boundaries and per-transaction write volume that ingestion produces. */
+function fakePool() {
+  const transactions: number[] = [];
+  let open: number | null = null;
+
+  const record = (sql: string) => {
+    if (sql.startsWith("BEGIN")) open = 0;
+    else if (sql.startsWith("COMMIT")) {
+      transactions.push(open ?? 0);
+      open = null;
+    } else if (open !== null && sql.includes("INSERT INTO cves")) open++;
+  };
+
+  const query = vi.fn(async (sql: string, params?: unknown[]) => {
+    record(sql);
+    // Everything in the window counts as already-known, so every item is relevant and reaches
+    // ingestion — otherwise the filter would empty each page and prove nothing.
+    if (sql.includes("SELECT id FROM cves WHERE id = ANY")) {
+      return { rows: ((params?.[0] as string[]) ?? []).map((id) => ({ id })), rowCount: 0 };
+    }
+    if (sql.includes("FROM package_cpes")) {
+      return { rows: [{ cpe_vendor: "acme", cpe_product: "gadget" }], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 1 };
+  });
+
+  const pool = {
+    query,
+    connect: async () => ({ query, release: () => {} }),
+  } as unknown as Pool;
+
+  return { pool, transactions, query };
+}
+
+function fakeNvd(pageCount: number) {
+  const total = pageCount * PAGE_SIZE;
+  return {
+    async *cvePages(): AsyncGenerator<NvdCvePage> {
+      for (let i = 0; i < pageCount; i++) yield page(i * PAGE_SIZE, total);
+    },
+  } as unknown as NvdClient;
+}
+
+describe("incremental NVD sync streams pages (WAL-95)", () => {
+  it("ingests once per page instead of once for the whole window", async () => {
+    const { pool, transactions } = fakePool();
+    const nvd = fakeNvd(PAGES);
+
+    await incrementalNvdSync(pool, nvd, { now: new Date("2026-08-30T12:00:00Z") });
+
+    // One transaction per page — the property that bounds peak memory.
+    expect(transactions).toHaveLength(PAGES);
+    // And each one carries only that page's rows, never the accumulated window.
+    for (const writes of transactions) expect(writes).toBe(PAGE_SIZE);
+  });
+
+  // There used to be a test here asserting `cvesModifiedSince` was never called. It was deleted
+  // on 2026-09-01 along with the method itself: an assertion that a non-existent method went
+  // uncalled cannot fail, and a test that cannot fail is worse than no test — it reads like
+  // coverage. The property is now held two better ways: the accumulating method does not exist,
+  // and `tests/infra/accumulating-helpers.test.ts` fails if `src/` ever grows a call to one.
+
+  it("still ingests every CVE in the window, and counts them once", async () => {
+    const { pool, transactions } = fakePool();
+    const counts = await incrementalNvdSync(pool, fakeNvd(PAGES), {
+      now: new Date("2026-08-30T12:00:00Z"),
+    });
+
+    expect(counts.cves).toBe(PAGES * PAGE_SIZE);
+    expect(transactions.reduce((a, b) => a + b, 0)).toBe(PAGES * PAGE_SIZE);
+  });
+
+  it("advances the cursor only after the last page", async () => {
+    const { pool, query } = fakePool();
+    await incrementalNvdSync(pool, fakeNvd(PAGES), { now: new Date("2026-08-30T12:00:00Z") });
+
+    const calls = query.mock.calls.map((c) => String(c[0]));
+    const lastIngest = calls.lastIndexOf("COMMIT");
+    const cursorWrite = calls.findIndex((sql) => sql.includes("INSERT INTO vuln_sync_state"));
+    expect(cursorWrite).toBeGreaterThan(lastIngest);
+  });
+});
+
+/**
+ * WAL-97. `backfillNvd` had the same defect on the other path: `cvesForCpe` concatenated every
+ * page for a CPE pair before writing. A broad pair over a 119-day publication window is unbounded,
+ * and `walrus-vuln-backfill` runs with no resource pin at all, so the heap it could ask for was
+ * unbounded on a container taking Cloud Run's default memory.
+ */
+describe("backfill NVD sync streams pages (WAL-97)", () => {
+  it("ingests once per page instead of once per CPE pair", async () => {
+    const { pool, transactions } = fakePool();
+    const nvd = fakeNvd(PAGES);
+
+    await backfillNvd(pool, nvd, { now: new Date("2026-08-30T12:00:00Z") });
+
+    expect(transactions).toHaveLength(PAGES);
+    for (const writes of transactions) expect(writes).toBe(PAGE_SIZE);
+  });
+
+  // Its `cvesForCpe` twin was deleted for the same reason — see the note in the WAL-95 block
+  // above. What still matters here is the transaction-per-page assertion, which is a statement
+  // about memory rather than about which method was called, and holds whatever the client offers.
+
+  it("queries NVD by the pair's virtualMatchString", async () => {
+    const { pool } = fakePool();
+    const pages = vi.fn(async function* () {});
+    await backfillNvd(pool, { cvePages: pages } as unknown as NvdClient, {
+      now: new Date("2026-08-30T12:00:00Z"),
+    });
+    expect((pages.mock.calls[0][0] as { virtualMatchString: string }).virtualMatchString).toBe(
+      "cpe:2.3:a:acme:gadget",
+    );
+  });
+});

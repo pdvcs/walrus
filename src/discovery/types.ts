@@ -8,6 +8,14 @@ export interface ArtifactInfo {
   checksum?: string; // actual hex digest (known at discovery time, e.g. inline-api)
   checksumUrl?: string; // URL to fetch the digest from (e.g. github-asset .sha256 file)
   checksumType?: string;
+  /** How to read the document at `checksumUrl`; absent = "text". */
+  checksumFormat?: "text" | "gcs-object-metadata";
+  /**
+   * Byte count the upstream API publishes for this artifact, where it publishes one. Carried
+   * so the download can reject a truncated transfer against an independent number rather than
+   * only the response's own `Content-Length`.
+   */
+  size?: number;
 }
 
 export interface DiscoveredVersion {
@@ -16,6 +24,13 @@ export interface DiscoveredVersion {
   isLts: boolean;
   artifacts: Map<PlatformKey, ArtifactInfo>;
   releasedAt?: Date; // Upstream publish timestamp, when known
+  /**
+   * The version CVE ranges should be evaluated against, when the served version embeds one
+   * and upstream publishes the mapping per release (ADR-008 generalised). The .NET SDK serves
+   * 10.0.401 while its bundled runtime — the thing NVD files CVEs against — is 10.0.12.
+   * Absent = compare the served version directly, or derive it from `cve_version_extract`.
+   */
+  cveVersion?: string;
 }
 
 export interface DiscoveryStrategy {

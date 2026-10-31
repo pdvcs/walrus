@@ -1,3 +1,4 @@
+import { JSONPath } from "jsonpath-plus";
 import { PackageConfig, Platform } from "../types/package-config.js";
 import {
   DiscoveryStrategy,
@@ -7,10 +8,16 @@ import {
   PlatformKey,
   platformKey,
 } from "./types.js";
-import { applyTagPattern, parseVersion, extractVersionGroup } from "../common/version-utils.js";
+import {
+  applyTagPattern,
+  parseVersion,
+  extractVersionGroup,
+  generateSortKey,
+} from "../common/version-utils.js";
 import { RetainableVersion, selectRetentionWindow } from "../common/retention-window.js";
 import { log } from "../common/log.js";
 import { fetchJsonWithRetry } from "../common/http.js";
+import { config as appConfig } from "../config/index.js";
 
 interface GitHubRelease {
   tag_name: string;
@@ -28,7 +35,6 @@ interface GitHubAsset {
 }
 
 const GITHUB_API_BASE = "https://api.github.com";
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 
 export class GitHubReleasesStrategy implements DiscoveryStrategy {
   async discoverVersions(
@@ -46,7 +52,8 @@ export class GitHubReleasesStrategy implements DiscoveryStrategy {
       options.maxReleases ?? max_releases,
       options.releasePage,
     );
-    const ltsGroups = this.extractLtsGroups(config, releases);
+    const ltsGroups = await this.extractLtsGroups(config, tag_pattern);
+    const minVersion = config.versioning.min_version;
 
     if (asset_version_pattern) {
       return this.discoverByAssetVersion(
@@ -84,6 +91,16 @@ export class GitHubReleasesStrategy implements DiscoveryStrategy {
         version = extracted;
       } else {
         version = parseVersion(version);
+      }
+
+      // min_version is a *discovery* floor, applied before retention: a version below it is
+      // never a candidate, so it cannot occupy a retention slot or have artifacts resolved.
+      // This is what lets a config exclude releases that are structurally unservable — an
+      // upstream that published no assets, or one predating the per-asset digests a package
+      // relies on for checksums — rather than only trimming the tail of a healthy history.
+      if (minVersion && generateSortKey(version) < generateSortKey(minVersion)) {
+        log.debug({ version, minVersion }, "Version below min_version, skipping");
+        continue;
       }
 
       const versionGroup = extractVersionGroup(version, config.versioning.version_group_extract);
@@ -164,12 +181,11 @@ export class GitHubReleasesStrategy implements DiscoveryStrategy {
         if (!m || !m[1]) continue;
         const version = m[1];
 
-        // Apply min_version filter
-        if (minVersion) {
-          const parsed = parseVersion(version);
-          const parsedMin = parseVersion(minVersion);
-          if (parsed < parsedMin) continue;
-        }
+        // Apply min_version filter. Sort keys, not raw strings: a byte-wise compare of
+        // "3.9.1" against "3.11" says 3.9.1 is the greater of the two and lets it past a
+        // 3.11 floor, because "9" > "1". Zero-padding each numeric segment is what makes the
+        // comparison agree with version order.
+        if (minVersion && generateSortKey(version) < generateSortKey(minVersion)) continue;
 
         if (!versionToRelease.has(version)) {
           versionToRelease.set(version, release);
@@ -261,8 +277,10 @@ export class GitHubReleasesStrategy implements DiscoveryStrategy {
       Accept: "application/vnd.github.v3+json",
       "User-Agent": "walrus/1.0",
     };
-    if (GITHUB_TOKEN) {
-      headers["Authorization"] = `Bearer ${GITHUB_TOKEN}`;
+    // Read per request, not captured at module load: the schema normalises an empty secret to
+    // undefined, and a value fixed at import time cannot be exercised by a test.
+    if (appConfig.GITHUB_TOKEN) {
+      headers["Authorization"] = `Bearer ${appConfig.GITHUB_TOKEN}`;
     }
 
     const perPage = Math.min(maxReleases ?? 100, 100);
@@ -271,20 +289,75 @@ export class GitHubReleasesStrategy implements DiscoveryStrategy {
     return fetchJsonWithRetry<GitHubRelease[]>(url, { headers });
   }
 
-  private extractLtsGroups(config: PackageConfig, _releases: GitHubRelease[]): Set<string> {
-    // GitHub releases strategy doesn't typically carry LTS data in the API response
-    // This would be handled by 'even_major' or 'explicit' lts_source
-    const { lts_support, lts_source, lts_groups } = config.versioning;
+  /**
+   * The version groups to mark LTS.
+   *
+   * A GitHub release carries no LTS field of its own — the API has nowhere to put one — so
+   * unlike `json-api` this strategy cannot read LTS off the release it is already looking at.
+   * `lts_source = "api"` therefore names a separate document that says which lines are
+   * long-term: for PowerShell that is the repo's own `tools/metadata.json`, whose
+   * `LTSReleaseTag` Microsoft updates with every release.
+   *
+   * A failed LTS fetch propagates rather than degrading to "nothing is LTS". Silently
+   * clearing the flag would persist a wrong answer — `is_lts` is written to the version row —
+   * and a sync that loudly fails is recoverable in a way a quietly mislabelled estate is not.
+   */
+  private async extractLtsGroups(
+    config: PackageConfig,
+    tagPattern: string | undefined,
+  ): Promise<Set<string>> {
+    const { lts_support, lts_source, lts_groups, lts_api_url, lts_api_path, lts_api_shape } =
+      config.versioning;
     if (!lts_support) return new Set();
+
     if (lts_source === "explicit" && lts_groups) return new Set(lts_groups);
-    if (lts_source === "even_major") {
-      // We don't know which versions exist yet without more context;
-      // mark LTS at group-resolution time via version_group_extract
-      // For now return a predicate-based approach via a special class
-      // Actually we need all groups — caller handles this post-discovery
-      return new Set();
+
+    if (lts_source === "api" && lts_api_url && lts_api_path) {
+      const data = await fetchJsonWithRetry<Record<string, unknown>>(lts_api_url, {
+        headers: { "User-Agent": "walrus/1.0" },
+      });
+      const raw: unknown = JSONPath({ path: lts_api_path, json: data });
+      const values = Array.isArray(raw) ? (raw as unknown[]).flat() : [];
+
+      const groups = new Set<string>();
+      for (const value of values) {
+        const group =
+          lts_api_shape === "tags"
+            ? this.tagToVersionGroup(config, String(value), tagPattern)
+            : String(value);
+        if (group === null) {
+          // One unparseable entry should not decide the LTS status of the whole package, but it
+          // must not pass unremarked either: an upstream that changed its tag style would
+          // otherwise just stop reporting LTS.
+          log.warn(
+            { value, lts_api_url, tagPattern },
+            "LTS tag did not reduce to a version group, skipping",
+          );
+          continue;
+        }
+        groups.add(group);
+      }
+      return groups;
     }
+
+    // "even_major" is declared in the schema but not implemented for this strategy; it would
+    // need a predicate over groups rather than a set, since the groups are not known until
+    // discovery has run. Nothing configures it today.
     return new Set();
+  }
+
+  /**
+   * Reduce a release tag to a version group by the same two steps a discovered release takes,
+   * so an LTS document and the discovery loop cannot disagree about what "7.6" means.
+   */
+  private tagToVersionGroup(
+    config: PackageConfig,
+    tag: string,
+    tagPattern: string | undefined,
+  ): string | null {
+    const version = tagPattern ? applyTagPattern(tag, tagPattern) : parseVersion(tag);
+    if (version === null) return null;
+    return extractVersionGroup(version, config.versioning.version_group_extract);
   }
 
   private resolveArtifacts(
@@ -308,6 +381,9 @@ export class GitHubReleasesStrategy implements DiscoveryStrategy {
       const info: ArtifactInfo = {
         url: asset.browser_download_url,
         filename: asset.name,
+        // The API's own byte count, preferred over the response's Content-Length when the
+        // download checks for truncation (WAL-67).
+        size: asset.size,
       };
 
       if (config.checksum?.type === "github-asset" && config.checksum.asset_suffix) {

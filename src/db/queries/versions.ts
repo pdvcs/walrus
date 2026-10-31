@@ -1,16 +1,17 @@
 import { Pool } from "pg";
 import { VersionRow } from "../../types/db.js";
+import { generateSortKey } from "../../common/version-utils.js";
 
 export async function insertVersion(
   pool: Pool,
-  v: Omit<VersionRow, "id" | "discovered_at">,
+  v: Omit<VersionRow, "id" | "discovered_at" | "cve_version"> & { cve_version?: string | null },
 ): Promise<VersionRow> {
   const { rows } = await pool.query<VersionRow>(
-    `INSERT INTO versions (package_name, version, version_group, is_lts, version_sort)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO versions (package_name, version, version_group, is_lts, version_sort, cve_version)
+     VALUES ($1, $2, $3, $4, $5, $6)
      ON CONFLICT (package_name, version) DO NOTHING
      RETURNING *`,
-    [v.package_name, v.version, v.version_group, v.is_lts, v.version_sort],
+    [v.package_name, v.version, v.version_group, v.is_lts, v.version_sort, v.cve_version ?? null],
   );
   if (rows[0]) return rows[0];
   // Already exists — fetch and return it
@@ -113,10 +114,71 @@ export async function listVersionGroups(pool: Pool, packageName: string): Promis
   return rows.map((r) => r.version_group);
 }
 
+export interface VersionGroupWithLts {
+  version_group: string;
+  is_lts: boolean;
+}
+
+/**
+ * Every group for a package, newest first, regardless of whether anything in it is servable.
+ *
+ * The groups endpoint pairs this with the available-only candidate list so a group whose versions
+ * are all embargoed or CVE-blocked still appears, carrying `latest_available: null`, rather than
+ * vanishing from the listing entirely.
+ */
+export async function listVersionGroupsWithLts(
+  pool: Pool,
+  packageName: string,
+): Promise<VersionGroupWithLts[]> {
+  const { rows } = await pool.query<{ version_group: string; is_lts: boolean }>(
+    `SELECT version_group, bool_or(is_lts) AS is_lts, MAX(version_sort) AS max_sort
+     FROM versions
+     WHERE package_name = $1
+     GROUP BY version_group
+     ORDER BY max_sort DESC`,
+    [packageName],
+  );
+  return rows.map((r) => ({ version_group: r.version_group, is_lts: r.is_lts }));
+}
+
+/**
+ * The soonest moment a currently-embargoed artifact in this group becomes servable, or null when
+ * the group has none. Lets the latest endpoint answer "temporarily withheld, come back at X"
+ * instead of reporting an embargo as a plain 404.
+ */
+export async function getEarliestCoolingOffInGroup(
+  pool: Pool,
+  packageName: string,
+  group: string,
+  opts: { os?: string; arch?: string } = {},
+): Promise<Date | null> {
+  const params: unknown[] = [packageName, group];
+  const conditions: string[] = ["a.cooling_off_until > now()"];
+
+  if (opts.os) {
+    params.push(opts.os);
+    conditions.push(`a.os = $${params.length}`);
+  }
+  if (opts.arch) {
+    params.push(opts.arch);
+    conditions.push(`a.arch = $${params.length}`);
+  }
+
+  const { rows } = await pool.query<{ earliest: Date | null }>(
+    `SELECT MIN(a.cooling_off_until) AS earliest
+     FROM artifacts a
+     JOIN versions v ON v.id = a.version_id
+     WHERE v.package_name = $1 AND v.version_group = $2 AND ${conditions.join(" AND ")}`,
+    params,
+  );
+  return rows[0]?.earliest ?? null;
+}
+
 export interface GroupVersionRow {
   version: string;
   version_group: string;
   is_lts: boolean;
+  cve_version: string | null;
 }
 
 /**
@@ -145,7 +207,7 @@ export async function listAvailableVersionsByGroup(
   }
 
   const { rows } = await pool.query<GroupVersionRow>(
-    `SELECT v.version, v.version_group, v.is_lts
+    `SELECT v.version, v.version_group, v.is_lts, v.cve_version
      FROM versions v
      WHERE v.package_name = $1
        AND EXISTS (
@@ -273,6 +335,34 @@ export async function deleteAllVersionsForPackage(
 }
 
 /**
+ * Ids of versions in a group that are among the `keepCount` newest *for some platform*.
+ *
+ * Upstreams publish platforms at different times (Temurin's Windows builds trail Linux/macOS), so
+ * the newest versions overall may have no artifact for a platform whose latest servable version is
+ * older. Pruning by version count alone would delete that fallback and leave the platform with
+ * nothing to serve. Retention exempts these ids so each platform keeps its own newest `keepCount`.
+ */
+export async function listVersionIdsNewestPerPlatformInGroup(
+  pool: Pool,
+  packageName: string,
+  group: string,
+  keepCount: number,
+): Promise<number[]> {
+  const { rows } = await pool.query<{ id: number }>(
+    `SELECT DISTINCT id FROM (
+       SELECT v.id,
+              ROW_NUMBER() OVER (PARTITION BY a.os, a.arch ORDER BY v.version_sort DESC) AS rn
+       FROM versions v
+       JOIN artifacts a ON a.version_id = v.id AND a.status = 'available'
+       WHERE v.package_name = $1 AND v.version_group = $2
+     ) ranked
+     WHERE rn <= $3`,
+    [packageName, group, keepCount],
+  );
+  return rows.map((r) => r.id);
+}
+
+/**
  * Versions in a group beyond the newest `keepCount`, i.e. the ones retention should prune.
  *
  * With `exemptEmbargoed` (the default), versions still inside their release embargo are neither
@@ -303,4 +393,41 @@ export async function listVersionsOlderThanInGroup(
     [packageName, group, keepCount],
   );
   return rows;
+}
+
+/**
+ * Reassert `version_sort` from `version` for every row, using the current sort-key algorithm.
+ *
+ * `version_sort` is derived data, but `insertVersion` is `ON CONFLICT DO NOTHING`, so a row is
+ * keyed once at discovery and never re-keyed. A change to `generateSortKey` would therefore
+ * leave existing rows ordered by the retired scheme indefinitely — and production has no shell
+ * to run a fixup script from. Recomputing at boot keeps the stored column honest without a
+ * hand-written SQL copy of the padding rules, which would only drift from the real one.
+ *
+ * Returns the number of rows corrected. Steady state is 0; a non-zero count means the algorithm
+ * moved under existing data and is worth a log line.
+ */
+export async function resyncVersionSortKeys(pool: Pool): Promise<number> {
+  const { rows } = await pool.query<{ id: number; version: string; version_sort: string }>(
+    "SELECT id, version, version_sort FROM versions",
+  );
+
+  const ids: number[] = [];
+  const sorts: string[] = [];
+  for (const row of rows) {
+    const expected = generateSortKey(row.version);
+    if (expected !== row.version_sort) {
+      ids.push(row.id);
+      sorts.push(expected);
+    }
+  }
+  if (ids.length === 0) return 0;
+
+  await pool.query(
+    `UPDATE versions AS v SET version_sort = u.version_sort
+     FROM unnest($1::int[], $2::text[]) AS u(id, version_sort)
+     WHERE v.id = u.id`,
+    [ids, sorts],
+  );
+  return ids.length;
 }

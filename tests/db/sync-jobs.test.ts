@@ -7,6 +7,7 @@ import {
   updateSyncJob,
   getSyncJob,
   getRecentSyncJob,
+  getJobWithArtifacts,
   listSyncJobs,
 } from "../../src/db/queries/sync-jobs.js";
 
@@ -102,6 +103,38 @@ describe("sync-jobs queries", () => {
     const recent = await getRecentSyncJob(pool, PKG, 30);
     expect(recent).not.toBeNull();
     expect(recent!.id).toBe(job.id);
+  });
+
+  it("getJobWithArtifacts splits elapsed into queued and transfer around container_started_at", async () => {
+    const job = await createSyncJob(pool, PKG, "admin");
+
+    // Still queued: no heartbeat yet, so there is no transfer time to report.
+    let detail = await getJobWithArtifacts(pool, job.id);
+    expect(detail!.transfer_ms).toBeNull();
+    expect(detail!.queued_ms).toBeGreaterThanOrEqual(0);
+
+    // Heartbeat lands: transfer time starts accruing from here.
+    await updateSyncJob(pool, job.id, { container_started_at: new Date() });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    detail = await getJobWithArtifacts(pool, job.id);
+    expect(detail!.transfer_ms).not.toBeNull();
+    expect(detail!.transfer_ms!).toBeGreaterThanOrEqual(20);
+
+    // Completed: queued + transfer accounts for the whole of elapsed, exactly, since both are
+    // now measured against the same fixed completed_at rather than two separate Date.now() calls.
+    const completedAt = new Date();
+    await updateSyncJob(pool, job.id, { status: "completed", completed_at: completedAt });
+    detail = await getJobWithArtifacts(pool, job.id);
+    expect(detail!.queued_ms + detail!.transfer_ms!).toBe(detail!.elapsed_ms);
+  });
+
+  it("getJobWithArtifacts falls back to whole-elapsed queued_ms when container_started_at was never recorded", async () => {
+    const job = await createSyncJob(pool, PKG, "scheduled");
+    await updateSyncJob(pool, job.id, { status: "completed", completed_at: new Date() });
+
+    const detail = await getJobWithArtifacts(pool, job.id);
+    expect(detail!.transfer_ms).toBeNull();
+    expect(detail!.queued_ms).toBe(detail!.elapsed_ms);
   });
 
   it("listSyncJobs filters by package and status", async () => {

@@ -3,15 +3,12 @@ import express from "express";
 import request from "supertest";
 import { createInternalRouter } from "../../src/routes/internal.js";
 import { VulnSyncAlreadyRunningError } from "../../src/vuln/sync/lock.js";
-import type { VulnBackfillJobRow } from "../../src/db/queries/vuln-backfill-jobs.js";
+import type { VulnSyncImpls } from "../../src/vuln/sync/index.js";
 
 function appWith(
-  vulnSync: Record<string, () => Promise<Record<string, number>>>,
+  vulnSync: VulnSyncImpls,
   vulnHints?: () => Promise<string[]>,
-  backfill?: {
-    start: (since?: string) => Promise<{ job: VulnBackfillJobRow; alreadyRunning?: boolean }>;
-    get: (id: string) => Promise<VulnBackfillJobRow | null>;
-  },
+  logAdminAction?: (details: Record<string, unknown>) => Promise<void>,
 ) {
   const app = express();
   app.use(express.json());
@@ -24,8 +21,7 @@ function appWith(
       runSyncAll: async () => [],
       vulnSync,
       vulnHints,
-      startVulnBackfill: backfill?.start,
-      getVulnBackfill: backfill?.get,
+      logAdminAction,
     }),
   );
   return app;
@@ -72,7 +68,9 @@ describe("POST /internal/vuln-sync/:source", () => {
   it("reports a not-available source as not-ok without throwing", async () => {
     const app = appWith({ nvd: async () => ({}) }); // no kev/osv provided
     const res = await request(app).post("/internal/vuln-sync/kev");
-    expect(res.status).toBe(207);
+    // 502, not 207: one named source has one outcome, and reporting its total failure as a
+    // partial success let Cloud Scheduler record the attempt as fine and skip the retry (WAL-108).
+    expect(res.status).toBe(502);
     expect(res.body.outcomes[0].ok).toBe(false);
   });
 
@@ -114,59 +112,316 @@ describe("POST /internal/vuln-sync/:source", () => {
   });
 });
 
-const backfillJob = (status: VulnBackfillJobRow["status"] = "queued"): VulnBackfillJobRow => ({
-  id: "42",
-  status,
-  since_date: "2020-01-01",
-  cpe_pairs_total: 3,
-  cpe_pairs_done: 1,
-  error_message: null,
-  execution_name: "operations/abc",
-  started_at: null,
-  finished_at: null,
-  created_at: new Date("2026-07-11T12:00:00Z"),
+describe("retired internal backfill endpoints", () => {
+  it("leaves operator-initiated backfill to /admin/v1", async () => {
+    const app = appWith({});
+    await request(app).post("/internal/vuln-backfill").expect(404);
+    await request(app).get("/internal/vuln-backfill/42").expect(404);
+  });
 });
 
-describe("NVD backfill HTTP jobs", () => {
-  it("returns 202 with a durable job reference", async () => {
-    const start = async () => ({ job: backfillJob() });
-    const app = appWith({}, undefined, { start, get: async () => null });
-    const res = await request(app).post("/internal/vuln-backfill").send({ since: "2020-01-01" });
-    expect(res.status).toBe(202);
-    expect(res.body).toMatchObject({
-      job: { id: "42", status: "queued" },
-      status_url: "/internal/vuln-backfill/42",
+describe("POST /internal/vuln-sync/cvss dry runs", () => {
+  const proposal = {
+    cve_id: "CVE-2026-1111",
+    severity: "CRITICAL",
+    severity_source: "nvd-cvss-v3",
+    cvss_v3_score: 9.8,
+    cvss_v4_score: null,
+    cvss_v2_score: null,
+    crosses_critical_gate: true,
+  };
+
+  it("previews without applying, reporting the versions that would become blocked", async () => {
+    let applied = false;
+    const app = appWith({
+      cvss: async () => {
+        applied = true;
+        return { updated: 7 };
+      },
+      cvssPreview: async () => ({
+        candidates: 3,
+        fetched: 3,
+        proposals: [proposal],
+        newly_blocked: [{ package_name: "golang", newly_blocked: ["1.26.4"] }],
+      }),
     });
+
+    const res = await request(app).post("/internal/vuln-sync/cvss").send({ dry_run: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body.dry_run).toBe(true);
+    expect(res.body.preview.proposals).toEqual([proposal]);
+    expect(res.body.preview.newly_blocked).toEqual([
+      { package_name: "golang", newly_blocked: ["1.26.4"] },
+    ]);
+    // The whole point: a preview must never reach the writing path.
+    expect(applied).toBe(false);
   });
 
-  it("returns 409 when a backfill is active", async () => {
-    const start = async () => ({ job: backfillJob("running"), alreadyRunning: true });
-    const res = await request(appWith({}, undefined, { start, get: async () => null }))
-      .post("/internal/vuln-backfill")
-      .send({});
+  it("rejects dry_run for a source that cannot honour it, without running it", async () => {
+    let ran = false;
+    const app = appWith({
+      nvd: async () => {
+        ran = true;
+        return { cves: 1 };
+      },
+    });
+
+    const res = await request(app).post("/internal/vuln-sync/nvd").send({ dry_run: true });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("only supported for the 'cvss' source");
+    // Silently ignoring the flag would run a live sync for someone who asked to preview.
+    expect(ran).toBe(false);
+  });
+
+  it("rejects limit for a source that cannot honour it", async () => {
+    const app = appWith({ nvd: async () => ({ cves: 1 }) });
+    const res = await request(app).post("/internal/vuln-sync/nvd").send({ limit: 10 });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("only supported for the 'cvss' source");
+  });
+
+  it("passes limit through to the cvss apply", async () => {
+    let seen: number | undefined;
+    const app = appWith({
+      cvss: async (opts) => {
+        seen = opts?.limit;
+        return { updated: 2 };
+      },
+    });
+
+    const res = await request(app).post("/internal/vuln-sync/cvss").send({ limit: 25 });
+
+    expect(res.status).toBe(200);
+    expect(seen).toBe(25);
+  });
+
+  it("rejects a non-positive or non-integer limit", async () => {
+    const app = appWith({ cvss: async () => ({ updated: 0 }) });
+    for (const limit of [0, -1, 2.5, "abc"]) {
+      const res = await request(app).post("/internal/vuln-sync/cvss").send({ limit });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain("positive integer");
+    }
+  });
+
+  it("returns 503 when no preview implementation is wired", async () => {
+    const app = appWith({ cvss: async () => ({ updated: 1 }) });
+    const res = await request(app).post("/internal/vuln-sync/cvss").send({ dry_run: true });
+    expect(res.status).toBe(503);
+  });
+
+  it("returns 409 when the shared nvd lock is held during a preview", async () => {
+    const app = appWith({
+      cvssPreview: async () => {
+        throw new VulnSyncAlreadyRunningError("nvd");
+      },
+    });
+    const res = await request(app).post("/internal/vuln-sync/cvss").send({ dry_run: true });
     expect(res.status).toBe(409);
     expect(res.body.code).toBe("already_running");
   });
+});
 
-  it("rejects invalid since dates", async () => {
-    const start = async () => ({ job: backfillJob() });
-    const res = await request(appWith({}, undefined, { start, get: async () => null }))
-      .post("/internal/vuln-backfill")
-      .send({ since: "2026-02-30" });
-    expect(res.status).toBe(400);
+describe("POST /internal/vuln-sync/:source auditing", () => {
+  it("records the outcome of a machine-triggered sync", async () => {
+    const audited: Record<string, unknown>[] = [];
+    const app = appWith(
+      { kev: async () => ({ flagged: 2 }) },
+      undefined,
+      async (d) => void audited.push(d),
+    );
+
+    const res = await request(app).post("/internal/vuln-sync/kev");
+
+    expect(res.status).toBe(200);
+    expect(audited).toHaveLength(1);
+    expect(audited[0].action).toBe("vuln-sync");
+    expect(audited[0].source).toBe("kev");
+    expect((audited[0].outcomes as { summary: Record<string, number> }[])[0].summary).toEqual({
+      flagged: 2,
+    });
   });
 
-  it("returns job lifecycle status", async () => {
-    const get = async () => backfillJob("succeeded");
-    const res = await request(
-      appWith({}, undefined, { start: async () => ({ job: backfillJob() }), get }),
-    ).get("/internal/vuln-backfill/42");
+  it("records a failed sync too, so a silent gap is not mistaken for no run", async () => {
+    const audited: Record<string, unknown>[] = [];
+    const app = appWith(
+      {
+        nvd: async () => {
+          throw new Error("nvd upstream down");
+        },
+      },
+      undefined,
+      async (d) => void audited.push(d),
+    );
+
+    const res = await request(app).post("/internal/vuln-sync/nvd");
+
+    expect(res.status).toBe(502);
+    expect(audited).toHaveLength(1);
+    expect((audited[0].outcomes as { ok: boolean }[])[0].ok).toBe(false);
+  });
+
+  it("records a cvss preview with the count of versions it would block", async () => {
+    const audited: Record<string, unknown>[] = [];
+    const app = appWith(
+      {
+        cvssPreview: async () => ({
+          candidates: 2,
+          fetched: 2,
+          proposals: [
+            {
+              cve_id: "CVE-2026-3333",
+              severity: "CRITICAL",
+              severity_source: "nvd-cvss-v3",
+              cvss_v3_score: 9.1,
+              cvss_v4_score: null,
+              cvss_v2_score: null,
+              crosses_critical_gate: true,
+            },
+          ],
+          newly_blocked: [{ package_name: "golang", newly_blocked: ["1.26.4", "1.26.5"] }],
+        }),
+      },
+      undefined,
+      async (d) => void audited.push(d),
+    );
+
+    const res = await request(app).post("/internal/vuln-sync/cvss").send({ dry_run: true });
+
     expect(res.status).toBe(200);
-    expect(res.body.job).toMatchObject({
-      id: "42",
-      status: "succeeded",
-      cpe_pairs_done: 1,
-      cpe_pairs_total: 3,
+    expect(audited[0].action).toBe("vuln-sync-preview");
+    expect(audited[0].newly_blocked).toBe(2);
+  });
+
+  it("does not audit a run rejected before it started", async () => {
+    const audited: Record<string, unknown>[] = [];
+    const app = appWith(
+      { nvd: async () => ({ cves: 1 }) },
+      undefined,
+      async (d) => void audited.push(d),
+    );
+
+    const res = await request(app).post("/internal/vuln-sync/nvd").send({ dry_run: true });
+
+    expect(res.status).toBe(400);
+    expect(audited).toHaveLength(0);
+  });
+
+  /**
+   * Regression, 2026-09-11. A Cloud SQL connection dropped mid-request, so the audit insert
+   * rejected with `Connection terminated unexpectedly` *after* the kev sync had already
+   * succeeded. The rejection escaped the handler, Express answered 500, Cloud Scheduler recorded
+   * the tick as failed, and two ERROR alert policies fired — for work that had completed and
+   * that `/app/status` never recorded as a failure at all.
+   *
+   * The audit row is a record of the run, not a part of it.
+   *
+   * Mutation check: restore the bare `await deps.logAdminAction?.(...)` in `internal.ts` and the
+   * first two cases below fail with 500.
+   */
+  it("answers 200 when the sync succeeded but recording the audit row failed", async () => {
+    const app = appWith({ kev: async () => ({ flagged: 2 }) }, undefined, async () => {
+      throw new Error("Connection terminated unexpectedly");
+    });
+
+    const res = await request(app).post("/internal/vuln-sync/kev");
+
+    expect(res.status).toBe(200);
+    expect(res.body.outcomes[0]).toMatchObject({ source: "kev", ok: true });
+  });
+
+  it("answers 200 when a cvss preview succeeded but its audit row failed", async () => {
+    const app = appWith(
+      {
+        cvssPreview: async () => ({ candidates: 0, fetched: 0, proposals: [], newly_blocked: [] }),
+      },
+      undefined,
+      async () => {
+        throw new Error("Connection terminated unexpectedly");
+      },
+    );
+
+    const res = await request(app).post("/internal/vuln-sync/cvss").send({ dry_run: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body.dry_run).toBe(true);
+  });
+
+  it("still reports the sync's own failure when the audit row also failed", async () => {
+    // Swallowing the audit failure must not upgrade a failed run to a success. 502 is what tells
+    // Cloud Scheduler to retry, so losing it here would reintroduce WAL-108's lost run by
+    // another route.
+    const app = appWith(
+      {
+        nvd: async () => {
+          throw new Error("nvd upstream down");
+        },
+      },
+      undefined,
+      async () => {
+        throw new Error("Connection terminated unexpectedly");
+      },
+    );
+
+    const res = await request(app).post("/internal/vuln-sync/nvd");
+
+    expect(res.status).toBe(502);
+  });
+
+  /**
+   * WAL-108. The status code is what Cloud Scheduler reads to decide whether a tick worked and
+   * whether to retry it, so the matrix is load-bearing rather than cosmetic. `207` on a single
+   * failed source meant the scheduler recorded success, never retried, and WAL-106's retry — added
+   * for precisely this sort of lost run — could not fire.
+   *
+   * Mutation check: restore `allOk ? 200 : alreadyRunning ? 409 : 207` in `internal.ts` and the
+   * single-source failure cases below fail while the `all` cases still pass.
+   */
+  describe("status matrix (WAL-108)", () => {
+    it("answers 502 when the only source of a named sync failed", async () => {
+      const app = appWith({
+        nvd: async () => {
+          throw new Error("nvd upstream down");
+        },
+      });
+      const res = await request(app).post("/internal/vuln-sync/nvd");
+      expect(res.status).toBe(502);
+      expect(res.body.outcomes[0].ok).toBe(false);
+    });
+
+    it("still answers 207 for all, where the set genuinely can be partial", async () => {
+      // The distinction the fix turns on: here one status code cannot describe three outcomes,
+      // so 207 is the honest answer and a retry of the whole set is not obviously right.
+      const app = appWith({
+        nvd: async () => ({ affects: 1 }),
+        kev: async () => {
+          throw new Error("kev upstream down");
+        },
+        osv: async () => ({ affectsUpserted: 1 }),
+      });
+      const res = await request(app).post("/internal/vuln-sync/all");
+      expect(res.status).toBe(207);
+    });
+
+    it("answers 200 for a named source that succeeded", async () => {
+      const app = appWith({ nvd: async () => ({ affects: 1 }) });
+      expect((await request(app).post("/internal/vuln-sync/nvd")).status).toBe(200);
+    });
+
+    it("keeps 409 for contention, which must not consume a retry", async () => {
+      // Contention is not a failure: something else is already doing the work. Answering 5xx here
+      // would spend the retry budget on a run that was never needed — the same rule
+      // `autoBackfillPendingPackages` follows when it refunds an attempt after `already_running`.
+      const app = appWith({
+        nvd: async () => {
+          throw new VulnSyncAlreadyRunningError("nvd");
+        },
+      });
+      const res = await request(app).post("/internal/vuln-sync/nvd");
+      expect(res.status).toBe(409);
+      expect(res.body.outcomes[0].code).toBe("already_running");
     });
   });
 });

@@ -1,0 +1,80 @@
+name = "eza"
+display_name = "eza"
+vendor = "eza-community"
+website = "https://github.com/eza-community/eza"
+description = "Modern replacement for ls"
+
+# GitHub Releases API capabilities:
+#   Release date: "published_at" field on each release (ISO 8601) — captured automatically
+#   Checksum:     per-asset "digest" field ("sha256:…") — configured below
+#
+# Windows and Linux only — eza publishes NO macOS binaries. Verified absent across
+# v0.23.0–v0.23.5 (2026-09-12): not one darwin/macos/apple asset in any of them.
+#
+# Homebrew's macOS eza is not a substitute, and walrus cannot reuse it. Homebrew does not
+# redistribute an upstream binary; it *compiles* one from the git source tarball
+# (github.com/eza-community/eza/archive/refs/tags/vX.Y.Z.tar.gz, build deps rust/pandoc/
+# pkgconf) and publishes its own bottles. Those bottles are unusable here for three
+# independent reasons:
+#   1. They live in an OCI registry (ghcr.io/v2/homebrew/core/eza/blobs/sha256:…) behind an
+#      "Authorization: Bearer QQ==" anonymous-pull token — no discovery strategy covers that.
+#   2. They are keyed by macOS *version* (arm64_sequoia, arm64_tahoe, arm64_sonoma, …) and
+#      walrus has one macos/arm64 platform slot with no OS-version dimension.
+#   3. The binary is not standalone. `otool -L` on the arm64_sequoia bottle reports
+#      "@@HOMEBREW_PREFIX@@/opt/libgit2/lib/libgit2.1.9.dylib" — a placeholder brew rewrites
+#      at install time — so it will not launch outside a Homebrew prefix with libgit2
+#      present (eza links it dynamically for --git). The bottle also unpacks as a cellar
+#      tree (eza/0.23.5/bin/eza, .brew/, sbom.spdx.json), not a usable archive.
+# Serving macOS eza would mean compiling it, which is outside what src/transform/ does:
+# transforms are deterministic repackaging, never builds. macOS users stay on brew.
+
+[discovery]
+type = "github-releases"
+repo = "eza-community/eza"
+include_prereleases = false
+tag_pattern = "^v(\\d+\\.\\d+\\.\\d+)$"
+
+[versioning]
+type = "semver"
+version_group_extract = "^(\\d+\\.\\d+)" # eza is pre-1.0; group by minor (0.22, 0.23, ...)
+# Digest floor: v0.21.5 (2025-06-20) is the oldest release whose assets carry a GitHub
+# per-asset digest.
+min_version = "0.21.5"
+lts_support = false
+
+[retention]
+versions_per_group = 2
+groups_to_keep = 2
+cooling_off_days = 7
+
+[checksum]
+type = "github-asset-digest"
+algorithm = "sha256"
+
+# Asset names carry no version, and the Windows asset has its own stem ("eza.exe_" rather
+# than "eza_"), so the two platforms need different templates. Both targets also ship a
+# .tar.gz and a .zip; the choice below follows the estate convention per OS.
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "pc-windows-gnu" # eza ships a gnu toolchain build for Windows, not msvc
+arch_upstream = "x86_64"
+extension = "zip"
+filename_template = "eza.exe_{arch}-{os}.{ext}"
+
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "unknown-linux-gnu"
+arch_upstream = "x86_64"
+extension = "tar.gz"
+filename_template = "eza_{arch}-{os}.{ext}"
+
+[vulnerabilities]
+# No NVD CPE presence for eza (verified absent 2026-09-12: "eza_project:eza" and
+# "eza-community:eza" both return zero dictionary entries, and a keyword search for "eza"
+# returns only unrelated ezautomation products) — OSV-only tracking.
+# OSV crates.io "eza" carries CVE-2024-25817 (GHSA-3qx3-6hxr-j2ch).
+osv = { ecosystem = "crates.io", name = "eza" }
+aliases = ["eza", "exa", "ls replacement"]

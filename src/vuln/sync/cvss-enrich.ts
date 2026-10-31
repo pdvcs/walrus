@@ -4,7 +4,7 @@
  * Most CVEs without a severity are OSV stubs: `upsertCveStub` never sets one,
  * and the CPE-keyed NVD paths cannot reach them because those CVEs sit in NVD
  * with `vulnStatus: "Deferred"` — full CVSS metrics, but no CPE configurations,
- * so `cvesForCpe`/`virtualMatchString` never returns them. A by-id lookup does.
+ * so a `virtualMatchString` query never returns them. A by-id lookup does.
  *
  * This walks `cves WHERE severity IS NULL`, fetches each from NVD by id, and
  * re-upserts through the shared `extractCvss` + `upsertCveFull` path, so it
@@ -23,7 +23,8 @@ import {
 } from "../../db/queries/cves.js";
 import { listVersions } from "../../db/queries/versions.js";
 import { listPackages } from "../../db/queries/packages.js";
-import { getVersionAvailabilityStatus } from "../../services/vuln-service.js";
+import { setSyncState } from "../../db/queries/vuln-sync-state.js";
+import { getVersionAvailabilityStatus, meetsCriticalGate } from "../../services/vuln-service.js";
 
 type Logger = (msg: string) => void;
 
@@ -33,6 +34,7 @@ export interface CvssProposal {
   severity: string;
   severity_source: string;
   cvss_v3_score: number | null;
+  cvss_v4_score: number | null;
   cvss_v2_score: number | null;
   /** True when this would newly satisfy the >= 9.0 download gate. */
   crosses_critical_gate: boolean;
@@ -52,12 +54,15 @@ export interface CvssEnrichResult extends Record<string, unknown> {
   proposals: CvssProposal[];
 }
 
-const CRITICAL_SCORE = 9.0;
-
 /**
  * Fetch missing-severity CVEs from NVD and apply (or, with `dryRun`, only
  * report) their CVSS. Failures on a single CVE are counted and skipped rather
  * than aborting the walk — one bad id should not strand the rest.
+ *
+ * Real runs record their lifecycle in vuln_sync_state (start marker → success,
+ * or failure on throw) so staleness degradations and /app/status can see this
+ * source like any other; it is the one scheduled trigger that can newly block
+ * downloads. A dry run writes nothing anywhere — that is its contract.
  */
 export async function enrichMissingCvss(
   pool: Pool,
@@ -76,7 +81,38 @@ export async function enrichMissingCvss(
     proposals: [],
   };
   log(`cvss-enrich: ${ids.length} CVE(s) with no severity${opts.dryRun ? " (dry run)" : ""}`);
+  // `null` marks an attempt begun without an outcome yet — see setSyncState.
+  if (!opts.dryRun) await setSyncState(pool, "cvss", null, null);
 
+  try {
+    await walkMissingSeverity(pool, nvd, ids, result, opts, log);
+  } catch (err) {
+    if (!opts.dryRun) await setSyncState(pool, "cvss", null, false);
+    throw err;
+  }
+  if (!opts.dryRun) await setSyncState(pool, "cvss", null, true);
+
+  log(
+    `cvss-enrich: fetched ${result.fetched}, ${opts.dryRun ? "would update" : "updated"} ` +
+      `${opts.dryRun ? result.proposals.length : result.updated}, ` +
+      `${result.not_found} not in NVD, ${result.no_metrics} without CVSS, ${result.errors} errored`,
+  );
+  return result;
+}
+
+/**
+ * The per-CVE walk itself, shared by real runs and dry-run previews. Counts and
+ * applies into `result`. Per-CVE fetch failures are counted and skipped, so only
+ * a systemic failure (a broken pool, a dead client) escapes to the caller.
+ */
+async function walkMissingSeverity(
+  pool: Pool,
+  nvd: NvdClient,
+  ids: string[],
+  result: CvssEnrichResult,
+  opts: { dryRun?: boolean },
+  log: Logger,
+): Promise<void> {
   for (const id of ids) {
     let item;
     try {
@@ -108,8 +144,16 @@ export async function enrichMissingCvss(
       severity: cvss.severity,
       severity_source: cvss.severitySource,
       cvss_v3_score: cvss.score,
+      cvss_v4_score: cvss.v4Score,
       cvss_v2_score: cvss.v2Score,
-      crosses_critical_gate: cvss.score !== null && cvss.score >= CRITICAL_SCORE,
+      // The gate predicate itself, so the preview cannot drift from what the
+      // download route will actually enforce once the proposal is applied.
+      crosses_critical_gate: meetsCriticalGate({
+        cvss_v3_score: cvss.score,
+        cvss_v4_score: cvss.v4Score,
+        cvss_v2_score: cvss.v2Score,
+        severity: cvss.severity,
+      }),
     });
 
     if (opts.dryRun) continue;
@@ -118,6 +162,8 @@ export async function enrichMissingCvss(
       id,
       cvss_v3_score: cvss.score,
       cvss_v3_vector: cvss.vector,
+      cvss_v4_score: cvss.v4Score,
+      cvss_v4_vector: cvss.v4Vector,
       cvss_v2_score: cvss.v2Score,
       cvss_v2_vector: cvss.v2Vector,
       severity: cvss.severity,
@@ -125,13 +171,6 @@ export async function enrichMissingCvss(
     });
     result.updated++;
   }
-
-  log(
-    `cvss-enrich: fetched ${result.fetched}, ${opts.dryRun ? "would update" : "updated"} ` +
-      `${opts.dryRun ? result.proposals.length : result.updated}, ` +
-      `${result.not_found} not in NVD, ${result.no_metrics} without CVSS, ${result.errors} errored`,
-  );
-  return result;
 }
 
 export interface GateDelta {
@@ -166,14 +205,15 @@ export async function previewGateDelta(
         severity: p.severity,
         severity_source: p.severity_source,
         cvss_v3_score: p.cvss_v3_score === null ? null : String(p.cvss_v3_score),
+        cvss_v4_score: p.cvss_v4_score === null ? null : String(p.cvss_v4_score),
         cvss_v2_score: p.cvss_v2_score === null ? null : String(p.cvss_v2_score),
       };
     });
 
     const newly: string[] = [];
     for (const v of await listVersions(pool, pkg.name, {})) {
-      const before = getVersionAvailabilityStatus(v.version, affects);
-      const after = getVersionAvailabilityStatus(v.version, patched);
+      const before = getVersionAvailabilityStatus(v.version, affects, v.cve_version);
+      const after = getVersionAvailabilityStatus(v.version, patched, v.cve_version);
       if (before !== "blocked" && after === "blocked") newly.push(v.version);
     }
     if (newly.length > 0) deltas.push({ package_name: pkg.name, newly_blocked: newly });

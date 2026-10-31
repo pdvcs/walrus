@@ -5,7 +5,7 @@ import { createPackagesRouter, PackagesRouteDeps } from "../../src/routes/packag
 
 function createTestApp(deps: Parameters<typeof createPackagesRouter>[0]): express.Express {
   const app = express();
-  app.use("/api/v1/packages", createPackagesRouter(deps));
+  app.use("/api/v1/packages", createPackagesRouter(deps, ""));
   return app;
 }
 
@@ -14,6 +14,8 @@ function baseDeps(): PackagesRouteDeps {
     listEnabledPackages: vi.fn().mockResolvedValue([]),
     getPackage: vi.fn().mockResolvedValue(null),
     listVersionGroups: vi.fn().mockResolvedValue([]),
+    listVersionGroupsWithLts: vi.fn().mockResolvedValue([]),
+    getEarliestCoolingOffInGroup: vi.fn().mockResolvedValue(null),
     listAvailableVersionsByGroup: vi.fn().mockResolvedValue([]),
     listAffectsForPackage: vi.fn().mockResolvedValue([]),
     listVersions: vi.fn().mockResolvedValue([]),
@@ -209,6 +211,7 @@ describe("packages routes", () => {
       os: "linux",
       arch: "x86-64",
       status: "available",
+      available_at: null,
     });
   });
 
@@ -293,6 +296,208 @@ describe("packages routes", () => {
     expect(body.artifact.download_url).toBe("/download/uv/0.6.2/linux/x86-64");
   });
 
+  describe("platform lag", () => {
+    function lagDeps() {
+      const deps = baseDeps();
+      deps.getPackage = vi.fn().mockResolvedValue({
+        name: "openjdk",
+        display_name: "OpenJDK",
+        vendor: "Eclipse",
+        description: null,
+        website: null,
+        config_hash: "x",
+        enabled: true,
+        created_at: new Date(),
+        updated_at: new Date(),
+      });
+      const row = (id: number, version: string, sort: string) => ({
+        id,
+        package_name: "openjdk",
+        version,
+        version_group: "21",
+        is_lts: true,
+        discovered_at: new Date(),
+        version_sort: sort,
+      });
+      const art = (versionId: number, os: string, arch: string) => ({
+        id: versionId * 10,
+        version_id: versionId,
+        os,
+        arch,
+        filename: `jdk-${os}`,
+        gcs_path: `openjdk/${versionId}/${os}/${arch}/jdk`,
+        file_size: 1,
+        checksum: "abc",
+        checksum_type: "sha256",
+        upstream_url: "https://example.test/jdk",
+        status: "available",
+        error_message: null,
+        download_started_at: null,
+        download_completed_at: null,
+        removed_at: null,
+        created_at: new Date(),
+      });
+      const byVersion: Record<number, unknown[]> = {
+        2: [art(2, "linux", "x86-64")],
+        1: [art(1, "linux", "x86-64"), art(1, "windows", "x86-64")],
+      };
+      deps.listAvailableVersionsInGroup = vi
+        .fn()
+        .mockImplementation((_name: string, _group: string, opts: { os?: string; arch?: string }) =>
+          Promise.resolve(
+            [row(2, "21.0.13+9", "0021.0000.0013"), row(1, "21.0.12.1+1", "0021.0000.0012")].filter(
+              (v) =>
+                (byVersion[v.id] as Array<{ os: string; arch: string }>).some(
+                  (a) => (!opts.os || a.os === opts.os) && (!opts.arch || a.arch === opts.arch),
+                ),
+            ),
+          ),
+        );
+      deps.listAffectsForPackage = vi.fn().mockResolvedValue([]);
+      deps.listArtifactsForVersion = vi
+        .fn()
+        .mockImplementation((id: number) => Promise.resolve(byVersion[id]));
+      return deps;
+    }
+
+    it("falls back to the older version for a platform the newest lacks", async () => {
+      const response = await request(createTestApp(lagDeps())).get(
+        "/api/v1/packages/openjdk/versions/21/latest?os=windows&arch=x86-64",
+      );
+      const body = response.body as { version: string; artifact: { os: string } };
+
+      expect(response.status).toBe(200);
+      expect(body.version).toBe("21.0.12.1+1");
+      expect(body.artifact.os).toBe("windows");
+    });
+
+    it("honours os alone when no arch is given", async () => {
+      const response = await request(createTestApp(lagDeps())).get(
+        "/api/v1/packages/openjdk/versions/21/latest?os=windows",
+      );
+      const body = response.body as { version: string; artifact: { os: string } };
+
+      expect(response.status).toBe(200);
+      expect(body.version).toBe("21.0.12.1+1");
+      expect(body.artifact.os).toBe("windows");
+    });
+  });
+
+  describe("artifact provenance (WAL-58)", () => {
+    function provenanceDeps(artifact: Record<string, unknown>) {
+      const deps = baseDeps();
+      deps.getPackage = vi.fn().mockResolvedValue({
+        name: "gitwindows",
+        display_name: "Git for Windows",
+        vendor: "Git for Windows project",
+        description: null,
+        website: null,
+        config_hash: "x",
+        enabled: true,
+        created_at: new Date(),
+        updated_at: new Date(),
+      });
+      deps.listAvailableVersionsInGroup = vi.fn().mockResolvedValue([
+        {
+          id: 7,
+          package_name: "gitwindows",
+          version: "2.55.0.5",
+          version_group: "2.55",
+          is_lts: false,
+          discovered_at: new Date(),
+          version_sort: "000002.000055.000000~000005~",
+        },
+      ]);
+      deps.listAffectsForPackage = vi.fn().mockResolvedValue([]);
+      deps.listArtifactsForVersion = vi.fn().mockResolvedValue([artifact]);
+      return deps;
+    }
+
+    it("exposes the provenance chain for a transformed artifact", async () => {
+      const deps = provenanceDeps({
+        id: 30,
+        version_id: 7,
+        os: "windows",
+        arch: "x86-64",
+        filename: "Git-2.55.0.5-windows-x86-64.zip",
+        gcs_path: "gitwindows/2.55.0.5/windows/x86-64/Git-2.55.0.5-windows-x86-64.zip",
+        file_size: 125_000_000,
+        checksum: "zipdigest",
+        checksum_type: "sha256",
+        upstream_url: "https://github.com/.../Git-2.55.0.5-64-bit.tar.bz2",
+        source_checksum: "tardigest",
+        source_file_size: 117_000_000,
+        transform: "tar-bz2-to-zip@1",
+        status: "available",
+        error_message: null,
+        download_started_at: null,
+        download_completed_at: null,
+        removed_at: null,
+        created_at: new Date(),
+      });
+      const app = createTestApp(deps);
+
+      const response = await request(app).get(
+        "/api/v1/packages/gitwindows/versions/2.55/latest?os=windows&arch=x86-64",
+      );
+      const body = response.body as { artifact: Record<string, unknown> };
+
+      expect(response.status).toBe(200);
+      expect(body.artifact).toMatchObject({
+        filename: "Git-2.55.0.5-windows-x86-64.zip",
+        // Served bytes:
+        checksum: "zipdigest",
+        file_size: 125_000_000,
+        // ...vs the chain that produced them:
+        upstream_url: "https://github.com/.../Git-2.55.0.5-64-bit.tar.bz2",
+        source_checksum: "tardigest",
+        source_file_size: 117_000_000,
+        transform: "tar-bz2-to-zip@1",
+      });
+    });
+
+    it("leaves an untransformed package's response unchanged apart from the new fields", async () => {
+      const deps = provenanceDeps({
+        id: 31,
+        version_id: 7,
+        os: "windows",
+        arch: "x86-64",
+        filename: "tool-1.0.zip",
+        gcs_path: "p/1/windows/x86-64/tool-1.0.zip",
+        file_size: 59_000_000,
+        checksum: "vendordigest",
+        checksum_type: "sha256",
+        upstream_url: "https://example.test/tool-1.0.zip",
+        source_checksum: null,
+        source_file_size: null,
+        transform: null,
+        status: "available",
+        error_message: null,
+        download_started_at: null,
+        download_completed_at: null,
+        removed_at: null,
+        created_at: new Date(),
+      });
+      const app = createTestApp(deps);
+
+      const response = await request(app).get(
+        "/api/v1/packages/gitwindows/versions/2.55/latest?os=windows&arch=x86-64",
+      );
+      const body = response.body as { artifact: Record<string, unknown> };
+
+      expect(response.status).toBe(200);
+      expect(body.artifact).toMatchObject({
+        checksum: "vendordigest",
+        file_size: 59_000_000,
+        upstream_url: "https://example.test/tool-1.0.zip",
+        // NULL provenance columns mean "not a repackaging".
+        source_checksum: null,
+        source_file_size: null,
+        transform: null,
+      });
+    });
+  });
+
   it("returns 404 when every available version in the group is blocked", async () => {
     const deps = baseDeps();
     deps.getPackage = vi.fn().mockResolvedValue({
@@ -368,5 +573,259 @@ describe("packages routes", () => {
     expect(response.status).toBe(202);
     expect(response.headers["retry-after"]).toBe("30");
     expect(triggerOnDemandSync).toHaveBeenCalledWith("uv");
+  });
+  describe("cooling off", () => {
+    function enabledPackage(name: string) {
+      return {
+        name,
+        display_name: name,
+        vendor: "Test",
+        description: null,
+        website: null,
+        config_hash: "x",
+        enabled: true,
+        created_at: new Date(),
+        updated_at: new Date(),
+      };
+    }
+
+    function artifact(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 10,
+        version_id: 1,
+        os: "linux",
+        arch: "x86-64",
+        filename: "go.tar.gz",
+        gcs_path: null,
+        file_size: null,
+        checksum: null,
+        checksum_type: null,
+        upstream_url: "https://example.test/go.tar.gz",
+        status: "pending",
+        error_message: null,
+        download_started_at: null,
+        download_completed_at: null,
+        removed_at: null,
+        created_at: new Date(),
+        cooling_off_until: null,
+        ...overrides,
+      };
+    }
+
+    function versionRow(version: string, group: string) {
+      return {
+        id: 1,
+        package_name: "golang",
+        version,
+        version_group: group,
+        is_lts: false,
+        discovered_at: new Date(),
+        version_sort: "0000.0027.0000",
+      };
+    }
+
+    it("reports an embargoed version as cooling_off with available_at, not available", async () => {
+      const until = new Date(Date.now() + 3 * 86_400_000);
+      const deps = baseDeps();
+      deps.getPackage = vi.fn().mockResolvedValue(enabledPackage("golang"));
+      deps.listVersionGroups = vi.fn().mockResolvedValue(["1.27"]);
+      deps.listVersions = vi.fn().mockResolvedValue([versionRow("1.27.0", "1.27")]);
+      deps.listArtifactsForVersion = vi
+        .fn()
+        .mockResolvedValue([artifact({ cooling_off_until: until })]);
+      const app = createTestApp(deps);
+
+      const response = await request(app).get("/api/v1/packages/golang/versions");
+      const body = response.body as {
+        versions: Array<{
+          status: string;
+          available_at: string | null;
+          platforms: Array<{ status: string; available_at: string | null }>;
+        }>;
+      };
+
+      expect(response.status).toBe(200);
+      expect(body.versions[0].status).toBe("cooling_off");
+      expect(body.versions[0].available_at).toBe(until.toISOString());
+      // The stored status is `pending`; reporting that verbatim is what made an embargo
+      // indistinguishable from a download the sync had simply not run yet.
+      expect(body.versions[0].platforms[0].status).toBe("cooling_off");
+      expect(body.versions[0].platforms[0].available_at).toBe(until.toISOString());
+    });
+
+    it("keeps a version available when only some platforms are embargoed", async () => {
+      const deps = baseDeps();
+      deps.getPackage = vi.fn().mockResolvedValue(enabledPackage("golang"));
+      deps.listVersionGroups = vi.fn().mockResolvedValue(["1.27"]);
+      deps.listVersions = vi.fn().mockResolvedValue([versionRow("1.27.0", "1.27")]);
+      deps.listArtifactsForVersion = vi
+        .fn()
+        .mockResolvedValue([
+          artifact({ id: 10, arch: "x86-64", status: "available", gcs_path: "x" }),
+          artifact({ id: 11, arch: "arm64", cooling_off_until: new Date(Date.now() + 86_400_000) }),
+        ]);
+      const app = createTestApp(deps);
+
+      const response = await request(app).get("/api/v1/packages/golang/versions");
+      const body = response.body as {
+        versions: Array<{
+          status: string;
+          available_at: string | null;
+          platforms: Array<{ status: string }>;
+        }>;
+      };
+
+      expect(body.versions[0].status).toBe("available");
+      expect(body.versions[0].available_at).toBeNull();
+      expect(body.versions[0].platforms.map((p) => p.status)).toEqual(["available", "cooling_off"]);
+    });
+
+    it("keeps a CVE-blocked version blocked even while embargoed", async () => {
+      const deps = baseDeps();
+      deps.getPackage = vi.fn().mockResolvedValue(enabledPackage("golang"));
+      deps.listVersionGroups = vi.fn().mockResolvedValue(["1.27"]);
+      deps.listVersions = vi.fn().mockResolvedValue([versionRow("1.27.0", "1.27")]);
+      deps.listArtifactsForVersion = vi
+        .fn()
+        .mockResolvedValue([artifact({ cooling_off_until: new Date(Date.now() + 86_400_000) })]);
+      deps.listAffectsForPackage = vi.fn().mockResolvedValue([
+        {
+          cve_id: "CVE-2026-9999",
+          version_start: null,
+          version_start_excl: false,
+          version_end: null,
+          version_end_excl: false,
+          exact_version: "1.27.0",
+          fixed_in: null,
+          source: "nvd",
+          severity: "CRITICAL",
+          cvss_v3_score: "9.8",
+          description: null,
+          is_kev: false,
+          raw: null,
+        },
+      ]);
+      const app = createTestApp(deps);
+
+      const response = await request(app).get("/api/v1/packages/golang/versions");
+      const body = response.body as { versions: Array<{ status: string }> };
+
+      expect(body.versions[0].status).toBe("blocked");
+    });
+
+    it("lists a group with nothing servable, carrying latest_available null", async () => {
+      const deps = baseDeps();
+      deps.getPackage = vi.fn().mockResolvedValue(enabledPackage("golang"));
+      deps.listVersionGroupsWithLts = vi.fn().mockResolvedValue([
+        { version_group: "1.27", is_lts: false },
+        { version_group: "1.25", is_lts: true },
+      ]);
+      // Only 1.25 has a servable artifact, so 1.27 never reaches the vuln-gate summary.
+      deps.listAvailableVersionsByGroup = vi
+        .fn()
+        .mockResolvedValue([{ version: "1.25.14", version_group: "1.25", is_lts: true }]);
+      const app = createTestApp(deps);
+
+      const response = await request(app).get("/api/v1/packages/golang/groups");
+      const body = response.body as {
+        groups: Array<{ group: string; is_lts: boolean; latest_available: string | null }>;
+      };
+
+      expect(response.status).toBe(200);
+      expect(body.groups).toEqual([
+        { group: "1.27", is_lts: false, latest_available: null },
+        { group: "1.25", is_lts: true, latest_available: "1.25.14" },
+      ]);
+    });
+
+    it("returns 423 with Retry-After when the group is only embargoed", async () => {
+      const until = new Date(Date.now() + 2 * 86_400_000);
+      const deps = baseDeps();
+      deps.getPackage = vi.fn().mockResolvedValue(enabledPackage("golang"));
+      deps.listAvailableVersionsInGroup = vi.fn().mockResolvedValue([]);
+      deps.getEarliestCoolingOffInGroup = vi.fn().mockResolvedValue(until);
+      const app = createTestApp(deps);
+
+      const response = await request(app).get(
+        "/api/v1/packages/golang/versions/1.27/latest?os=linux&arch=x86-64",
+      );
+      const body = response.body as { error: string; available_at: string };
+
+      expect(response.status).toBe(423);
+      expect(body.available_at).toBe(until.toISOString());
+      expect(Number(response.headers["retry-after"])).toBeGreaterThan(0);
+      // An embargo must not be reported as "not synced yet" -- that tells the caller to retry
+      // in 30s for something three days away.
+      expect(deps.triggerOnDemandSync).not.toHaveBeenCalled();
+      expect(deps.getEarliestCoolingOffInGroup).toHaveBeenCalledWith("golang", "1.27", {
+        os: "linux",
+        arch: "x86-64",
+      });
+    });
+
+    it("still returns 202 syncing when the group is empty and nothing is embargoed", async () => {
+      const deps = baseDeps();
+      deps.getPackage = vi.fn().mockResolvedValue(enabledPackage("golang"));
+      deps.listAvailableVersionsInGroup = vi.fn().mockResolvedValue([]);
+      deps.getEarliestCoolingOffInGroup = vi.fn().mockResolvedValue(null);
+      deps.getRecentSyncJob = vi.fn().mockResolvedValue(null);
+      const app = createTestApp(deps);
+
+      const response = await request(app).get("/api/v1/packages/golang/versions/9/latest");
+
+      expect(response.status).toBe(202);
+      expect(deps.triggerOnDemandSync).toHaveBeenCalledWith("golang");
+    });
+  });
+});
+
+describe("ranged-transfer metadata (WAL-66)", () => {
+  function depsWithArtifactSize(fileSize: number): PackagesRouteDeps {
+    const deps = baseDeps();
+    deps.getPackage = vi.fn().mockResolvedValue({ name: "idea", enabled: true });
+    deps.listAvailableVersionsInGroup = vi
+      .fn()
+      .mockResolvedValue([{ id: 2, version: "2026.2.1", version_group: "2026.2", is_lts: false }]);
+    deps.listArtifactsForVersion = vi.fn().mockResolvedValue([
+      {
+        id: 20,
+        version_id: 2,
+        os: "windows",
+        arch: "x86-64",
+        filename: "idea.win.zip",
+        gcs_path: "idea/2026.2.1/windows/x86-64/idea.win.zip",
+        file_size: fileSize,
+        checksum: "fff",
+        checksum_type: "sha256",
+        upstream_url: "https://example.test/idea.win.zip",
+        status: "available",
+        error_message: null,
+        download_started_at: null,
+        download_completed_at: null,
+        removed_at: null,
+        created_at: new Date(),
+      },
+    ]);
+    deps.transferLimits = { rangeRequiredBytes: 1_000, suggestedChunkBytes: 100 };
+    return deps;
+  }
+
+  async function requiresRange(fileSize: number): Promise<boolean> {
+    const app = createTestApp(depsWithArtifactSize(fileSize));
+    const response = await request(app).get(
+      "/api/v1/packages/idea/versions/2026.2/latest?os=windows&arch=x86-64",
+    );
+    expect(response.status).toBe(200);
+    return (response.body as { artifact: { requires_range: boolean } }).artifact.requires_range;
+  }
+
+  it("flags an artifact a plain GET could not finish", async () => {
+    // A client is meant to learn this before it starts. The refused GET is the backstop for
+    // clients that did not look, not the primary signal.
+    expect(await requiresRange(1_001)).toBe(true);
+  });
+
+  it("leaves an artifact at or below the threshold unflagged", async () => {
+    expect(await requiresRange(1_000)).toBe(false);
   });
 });

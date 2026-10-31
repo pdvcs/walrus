@@ -13,9 +13,9 @@ See also: [OpenAPI spec](/openapi.json)
 
 Useful for package-manager servers (to read metadata) and package-manager clients (to download binaries).
 
-### GET /api/v1/packages/
+### GET /api/v1/packages/ | List all enabled packages
 
-List all enabled packages. [Try it](/api/v1/packages/)
+List all enabled packages.
 
 **Response** `200`
 
@@ -35,16 +35,21 @@ List all enabled packages. [Try it](/api/v1/packages/)
 
 ---
 
-### GET /api/v1/packages/:name/groups
+### GET /api/v1/packages/:name/groups | Version groups for a package
 
-Version groups for a package, optionally filtered to groups that have artifacts for a given platform.
+Every version group for a package, newest first. A platform filter narrows which artifacts count
+as servable, not which groups are listed — a group with nothing servable still appears, carrying
+`latest_available: null`.
 Examples: [openjdk](/api/v1/packages/openjdk/groups), [golang](/api/v1/packages/golang/groups), [uv](/api/v1/packages/uv/groups)
 
 `latest_available` is the latest cached version in the group that is free of known
-critical CVEs (CVSS v3 score >= 9.0, or a score-less CVE labeled CRITICAL). When every
-cached version in a group carries a critical CVE it is `null` — meaning nothing safe to
-recommend, **not** nothing cached. Walrus never points this field at a version it knows
-to be critically vulnerable. Per-version CVE detail is available from
+critical CVEs (any CVSS base score — v3, v4, or v2 — >= 9.0, or a score-less CVE labeled CRITICAL). When every
+cached version in a group carries a critical CVE — or is still inside its cooling-off
+period — it is `null`, meaning nothing safe to recommend right now, **not** nothing cached.
+Walrus never points this field at a version it knows to be critically vulnerable, nor at one
+it would refuse to serve. Use
+[`/api/v1/packages/:name/versions`](#get-apiv1packagesnameversions) to tell the two apart:
+an embargoed version reports `cooling_off` with the timestamp it is released. Per-version CVE detail is available from
 [`/api/v1/packages/:name/vulns`](#get-apiv1packagesnamevulns).
 
 **Query parameters**
@@ -60,6 +65,7 @@ to be critically vulnerable. Per-version CVE detail is available from
 {
   "package": "openjdk",
   "groups": [
+    { "group": "22", "is_lts": false, "latest_available": null },
     { "group": "21", "is_lts": true, "latest_available": "21.0.3" },
     { "group": "17", "is_lts": true, "latest_available": "17.0.11" }
   ]
@@ -72,15 +78,22 @@ to be critically vulnerable. Per-version CVE detail is available from
 
 ---
 
-### GET /api/v1/packages/:name/versions
+### GET /api/v1/packages/:name/versions | All versions for a package
 
 All versions for a package, with platform availability and a version-level security status.
 Examples: [openjdk](/api/v1/packages/openjdk/versions), [golang](/api/v1/packages/golang/versions), [uv](/api/v1/packages/uv/versions)
 
-`status` is `blocked` when the version concretely matches a known critical CVE (CVSS v3
-score >= 9.0, or a score-less CVE labeled CRITICAL); otherwise it is `available`.
-Range-uncomparable matches remain visible through the package vulnerability endpoint but
-do not block the version.
+`status` is `blocked` when the version concretely matches a known critical CVE (any CVSS
+base score — v3, v4, or v2 — >= 9.0, or a score-less CVE labeled CRITICAL) — this takes precedence over everything
+else. It is `cooling_off` when no platform is servable yet because every candidate artifact is
+inside its release embargo; `available_at` then carries the moment the first one is released.
+Otherwise it is `available`. Range-uncomparable matches remain visible through the package
+vulnerability endpoint but do not block the version.
+
+Platform `status` is the artifact's lifecycle state — `pending`, `downloading`, `available`,
+`failed`, `removed` — except that an embargoed artifact reports `cooling_off` with its own
+`available_at`. Embargoed artifacts are stored as `pending`, so without this they would be
+indistinguishable from ones the sync has simply not fetched yet.
 
 **Query parameters**
 
@@ -100,9 +113,25 @@ do not block the version.
       "version_group": "21",
       "is_lts": true,
       "status": "available",
+      "available_at": null,
       "platforms": [
-        { "os": "linux", "arch": "x86-64", "status": "available" },
-        { "os": "mac", "arch": "aarch64", "status": "available" }
+        { "os": "linux", "arch": "x86-64", "status": "available", "available_at": null },
+        { "os": "mac", "arch": "aarch64", "status": "available", "available_at": null }
+      ]
+    },
+    {
+      "version": "21.0.4",
+      "version_group": "21",
+      "is_lts": true,
+      "status": "cooling_off",
+      "available_at": "2026-08-29T09:00:00.000Z",
+      "platforms": [
+        {
+          "os": "linux",
+          "arch": "x86-64",
+          "status": "cooling_off",
+          "available_at": "2026-08-29T09:00:00.000Z"
+        }
       ]
     }
   ]
@@ -115,12 +144,20 @@ do not block the version.
 
 ---
 
-### GET /api/v1/packages/:name/versions/:group/latest
+### GET /api/v1/packages/:name/versions/:group/latest | Latest safe version in a group
 
 Latest available artifact for a version group and platform, excluding versions with a
 concrete known-critical CVE match. If the newest version is blocked, Walrus returns the
 next safe version; if every compatible cached version is blocked, it returns `404` and no
-download URL.
+download URL. If nothing is servable only because the candidates are still inside their
+cooling-off period, it returns `423` with `Retry-After` and `available_at` instead — a dated,
+temporary withholding, distinct from the `202` that means "not synced yet, retry shortly".
+
+Selection is per platform. Upstreams sometimes publish platforms at different times (Temurin's
+Windows builds can trail Linux and macOS by days), so the newest version for `linux/x86-64` can
+be newer than the one returned for `windows/x86-64`. Always pass both `os` and `arch`; the
+platform's newest servable version is returned, and it moves forward on its own once the
+missing build is published and synced.
 Example: [openjdk group 21, linux/x86-64](/api/v1/packages/openjdk/versions/21/latest?os=linux&arch=x86-64)
 
 **Query parameters**
@@ -145,46 +182,215 @@ Example: [openjdk group 21, linux/x86-64](/api/v1/packages/openjdk/versions/21/l
     "file_size": 207109699,
     "checksum": "abc123...",
     "checksum_type": "sha256",
-    "download_url": "/download/openjdk/21.0.3/linux/x86-64"
+    "download_url": "/download/openjdk/21.0.3/linux/x86-64",
+    "requires_range": false
   }
 }
 ```
+
+`requires_range` is `true` when the artifact is too large to fetch in one request and an
+unranged `GET` of it will be refused — see [range requests](#range-requests). Check it before
+starting a download rather than discovering it from a `400`.
 
 **Status codes**
 
 - `202` + `Retry-After: 30` — no cached data; sync triggered, retry after 30 s
 - `404` — package, group, or artifact not found
+- `423` + `Retry-After` — nothing servable yet; every candidate is within its cooling-off
+  period. Body includes `available_at`
 
 ---
 
-### GET /download/:package/:version/:os/:arch
+### GET /download/:package/:version/:os/:arch | Download a binary
 
 Download a binary. Streams directly from storage.
 
 Downloads are refused when the requested version concretely matches a known critical CVE
-(CVSS v3 >= 9.0, or a score-less CVE labeled CRITICAL).
+(any CVSS base score — v3, v4, or v2 — >= 9.0, or a score-less CVE labeled CRITICAL).
+CVEs known to be exploited in the wild (CISA KEV) are flagged but do not block on their own.
 
-**Response headers** `200`
+**Response headers** `200` and `206`
 
-| Header              | Description                         |
-| ------------------- | ----------------------------------- |
-| Content-Disposition | `attachment; filename="<filename>"` |
-| X-Content-Length    | File size in bytes                  |
-| X-Checksum-Sha256   | SHA-256 checksum (when available)   |
-| X-Checksum-Sha1     | SHA-1 checksum (when available)     |
+| Header              | Description                                                      |
+| ------------------- | ---------------------------------------------------------------- |
+| Content-Disposition | `attachment; filename="<filename>"`                              |
+| Accept-Ranges       | `bytes`                                                          |
+| ETag                | Validator for `If-Range`; changes when the artifact is re-synced |
+| X-Content-Length    | Size of the **whole** artifact in bytes, on `206` as well        |
+| X-Checksum-Sha256   | SHA-256 of the **whole** artifact (when available)               |
+| X-Checksum-Sha1     | SHA-1 of the **whole** artifact (when available)                 |
+| X-Checksum-Sha512   | SHA-512 of the **whole** artifact (when available)               |
+| Content-Range       | `206` only: `bytes <start>-<end>/<total>`                        |
+
+Neither a `200` nor a `206` carries `Content-Length`. Cloud Run buffers a response that declares
+one and caps it at 32 MB, so declaring it would silently limit the chunk size a client may ask
+for. On a `206`, `Content-Range` already states exactly how many bytes the response carries.
+
+`X-Checksum-*` always describes the whole artifact, never the bytes of one chunk. **Verify after
+reassembly, not per chunk.**
 
 **Status codes**
 
 - `200` — binary stream
-- `403` — version is blocked due to a known critical vulnerability
-- `404` — artifact not found or not available
+- `206` — partial content, in response to a `Range` request
+- `400` — artifact is over the ranged-transfer threshold and the request was not ranged (see below)
+- `403` — version is blocked by the critical-CVE gate; the body names the advisory (see below)
+- `404` — artifact not found or not available; also when the package is disabled or removed (its TOML no longer exists)
+- `416` + `Content-Range: bytes */<size>` — the requested range lies outside the artifact
 - `423` + `Retry-After` — artifact is within the cooling-off period; body includes `available_at`
+
+Every one of these gates applies identically to a ranged request. There is no path that serves
+part of an artifact that a full `GET` would have refused.
+
+**A `403` says which CVE, and why**
+
+A refusal that names nothing leaves a developer with a failed build and no thread to pull: they
+cannot tell which advisory, whether it is plausibly a false positive worth raising, or which
+version to move to instead. So the gate reports the CVE it blocked on.
+
+```json
+{
+  "error": "Version 2.55.0.5 is blocked by CVE-2026-1234 (CVSS 9.8) — fixed in 2.56.0",
+  "blocked_by": {
+    "cve_id": "CVE-2026-1234",
+    "matched_because": "2.55.0 == 2.55.0 (2.55.0.5 evaluated as 2.55.0)",
+    "severity": "CRITICAL",
+    "severity_source": "nvd-cvss-v3",
+    "cvss_v3_score": 9.8,
+    "cvss_v4_score": null,
+    "cvss_v2_score": null,
+    "is_kev": false,
+    "fixed_in": "2.56.0"
+  }
+}
+```
+
+`error` stands alone — a build tool that surfaces one field surfaces that one, so it names the
+CVE and, when the advisory has one, the fixed version. `matched_because` is the comparison walrus
+actually made, and says so explicitly when the served version was normalised first (above, a
+four-component `2.55.0.5` compared as the upstream `2.55.0` it embeds). All three CVSS scores are
+reported because the gate thresholds any of them — naming only v3 would misdescribe a v4- or
+v2-caused refusal.
+
+Where several critical CVEs match, `blocked_by` is the highest-scoring one, and the same one on
+every request for the same data. The rest are listed by
+`GET /api/v1/packages/{name}/vulns`. A CVE under an active suppression does not block at all, so
+it never appears here.
+
+`blocked_by` is optional, and absent only when walrus cannot assemble the detail for a block it
+has already decided to make — the `403` and `error` still stand. Explaining a refusal is never
+allowed to prevent one, and a client must read a missing `blocked_by` as a block it has no
+detail for, never as a softer refusal.
+
+#### Range requests
+
+Standard `Range: bytes=…`, in the three single-range forms:
+
+| Request               | Meaning                     |
+| --------------------- | --------------------------- |
+| `bytes=<start>-<end>` | Those bytes, both inclusive |
+| `bytes=<start>-`      | From `start` to the end     |
+| `bytes=-<n>`          | The last `n` bytes          |
+
+A `<end>` past the end of the artifact is clamped rather than rejected. Only the requested bytes
+are read from storage.
+
+**Multi-range requests** (`bytes=0-1,8-9`) are **not** served as `multipart/byteranges`. Walrus
+answers them with the full representation, which RFC 9110 permits. A range unit other than
+`bytes` is ignored, likewise yielding the full representation.
+
+`If-Range` is honoured against the `ETag`. If it does not match — because the artifact was
+re-synced and the object at that key changed — walrus returns a full `200` instead of a `206`,
+so a resumed download can never splice two different builds into one corrupt archive. An
+`If-Range` in HTTP-date form is treated as a mismatch.
+
+The server is indifferent to chunk size. Nothing in this contract fixes one.
+
+#### Artifacts that require ranged transfer
+
+A request has a hard 3600s deadline that cannot be raised. Past a certain size a single-request
+download is not a slower path but one that cannot finish: a client sustaining 2 Mbps transfers
+about 900 MB before the request is killed, leaving nothing to resume from. Above a configured
+threshold (`RANGE_REQUIRED_BYTES`, 1 GB by default) walrus therefore **refuses** an unranged
+`GET` rather than serving an hour of doomed transfer:
+
+```http
+GET /download/intellij/2026.2.1/windows/x86-64
+```
+
+```json
+HTTP/1.1 400 Bad Request
+Accept-Ranges: bytes
+
+{
+  "error": "Artifact is too large to transfer in one request; retry with a Range header. A single request cannot complete inside the 3600s server deadline at this size.",
+  "code": "range_required",
+  "file_size": 1729000000,
+  "range_required_above_bytes": 1000000000,
+  "suggested_chunk_bytes": 33554432
+}
+```
+
+`400` is a deliberate choice: no status code means "you must use `Range`" — `416` is for a range
+that cannot be satisfied and `428` is about lost updates — so the requirement is carried by the
+`code` field, which will not change. `suggested_chunk_bytes` is a hint, not a constraint.
+
+##### A stale `If-Range` above the threshold
+
+Above the threshold the two rules above collide. An `If-Range` that no longer matches should be
+answered by ignoring the range and sending the whole representation — but the whole
+representation is exactly what walrus has just refused to send at this size. The mismatch is
+therefore reported as a refusal too, under its own code:
+
+```http
+GET /download/intellij/2026.2.1/windows/x86-64
+Range: bytes=1048576-34603007
+If-Range: "sha256-an-older-build"
+```
+
+```json
+HTTP/1.1 400 Bad Request
+Accept-Ranges: bytes
+ETag: "sha256-8aa16db629952300ab74d2d5e095150d1a534593e65bbbbd795b859759c00cbc"
+
+{
+  "error": "The artifact has changed since this download began, so the requested range belongs to a build walrus no longer holds. Discard any partial data and restart from byte 0 against the current ETag. This artifact is too large to be sent whole, which is why the mismatch is reported here rather than as a 200.",
+  "code": "stale_range_validator",
+  "file_size": 1614981679,
+  "range_required_above_bytes": 1000000000,
+  "suggested_chunk_bytes": 33554432
+}
+```
+
+The distinction matters because the two codes ask for different things. `range_required` means
+"send a `Range`"; `stale_range_validator` means "the bytes you already have are from a different
+build — throw them away". A client that saw only the first would repeat the identical request
+forever and never learn that its partial file is the problem. The current `ETag` rides on the
+refusal, so restarting needs no extra round trip.
+
+**Below** the threshold this case is unchanged and unremarkable: the range is ignored and the
+whole representation is sent with `200`, exactly as RFC 9110 asks.
+
+Below the threshold nothing changes: a plain `GET` behaves exactly as it always has, and ranged
+transfer is a pure optimisation. Today every package walrus serves is below it.
+
+Whether an artifact is above the threshold is published in its metadata as `requires_range` (see
+`GET /api/v1/packages/:name/versions/:group/latest`), so a client can decide before it starts
+downloading. The refusal is the backstop for clients that did not look.
+
+The requirement keys on the request, never on the client: there is no `User-Agent` allowlist and
+no privileged consumer.
 
 ---
 
 ## Admin API
 
 Interactive UI available at [/admin/v1/](/admin/v1/)
+
+All operator endpoints except `/admin/v1/login` require either the HttpOnly login cookie or an
+`Authorization: Bearer <token>` minted by JSON login or `POST /admin/v1/tokens`. The authenticated
+subject must also appear in the deployed `config/admins.toml` roster. Human-readable GETs redirect
+to login; unauthenticated API calls return `401` and authenticated non-admins return `403`.
 
 Endpoints under `/admin/v1/` provide:
 
@@ -193,6 +399,96 @@ Endpoints under `/admin/v1/` provide:
 - Artifact redownload and removal
 - Version group retention management
 - Sync job history
+- CVE suppression preview/create/revoke and its audit trail
+- Cooling-off waivers: release one embargoed version early
+- Gate-transition lookup across every package by time, for correlating an alert back to
+  what it blocked without already knowing which package
+
+### GET /admin/v1/vuln-suppressions/active-count | Active suppression count
+
+Returns `{"active_count": N}` — suppressions that are neither revoked nor expired. The admin nav
+polls this to badge every page while any exception to the critical-CVE gate is in force.
+
+```bash
+curl "$WALRUS_URL/admin/v1/vuln-suppressions/active-count"
+```
+
+### GET /admin/v1/vuln-suppressions/audit | Suppression audit trail
+
+Returns suppression creation and revocation audit entries newest-first. This is the supported
+production inspection path: Cloud Run has no shell or manual-SQL workflow. `limit` defaults to 50
+and must be between 1 and 100; pass `next_before_id` back as `before_id` for the next page. Optional
+`cve_id` filters the trail to one CVE.
+
+```bash
+curl "$WALRUS_URL/admin/v1/vuln-suppressions/audit?cve_id=CVE-2099-0001&limit=20"
+```
+
+### Cooling-off waivers
+
+`retention.cooling_off_days` holds a new release back (`423`, `cooling_off`) until its period ends.
+For an urgent upstream fix, a waiver releases **one version** of one package early. It is the
+embargo's counterpart to a CVE suppression, and it does not override the CVE gate: a waived version
+that is also CVE-blocked stays blocked.
+
+`POST /admin/v1/cooling-off-waivers` takes `{"package", "version", "reason"}` (`created_by` is taken
+from the authenticated subject). In one transaction it records the waiver, releases the version's
+embargoed artifacts, and writes an `admin_actions` row; it then starts a sync so the bytes are
+fetched now rather than at the next scheduled run. The waiver is durable — every later sync keeps
+the version released. Answers `201` with `{waiver, artifacts_released, sync_job_id}`; `404` for an
+unknown package or version, `409` if the version is not in a cooling-off period or already has an
+active waiver. `sync_job_id` is `null` if the waiver was recorded but the sync could not start.
+
+`POST /admin/v1/cooling-off-waivers/:id/revoke` takes `{"reason"}`. Bytes already downloaded stay
+stored; the next sync recomputes the embargo, so the version returns to `423` only if its period
+has not yet elapsed. `GET /admin/v1/cooling-off-waivers[?package=]` lists active waivers.
+
+```bash
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"package":"rust","version":"1.95.1","reason":"fixes CVE-2026-1234 in our build"}' \
+  "$WALRUS_URL/admin/v1/cooling-off-waivers"
+```
+
+### GET /admin/v1/transitions | Gate-transition history
+
+Gate transitions across **every** package since a point in time. `/api/v1/packages/:name/availability`
+above needs the package name up front, which is exactly what a "Walrus blocked a version" alert
+doesn't give you — this answers "what did it block?" from the timestamp alone. Required
+`?since=` (ISO 8601); optional `?limit=` (default 500).
+
+```bash
+curl -H "Authorization: Bearer $WALRUS_ADMIN_TOKEN" \
+  "$WALRUS_URL/admin/v1/transitions?since=2026-09-11T22:00:00Z"
+```
+
+```json
+{
+  "since": "2026-09-11T22:00:00.000Z",
+  "transitions": [
+    {
+      "package_name": "vscode",
+      "version": "1.136.0",
+      "status": "blocked",
+      "cve_id": "CVE-2026-81376",
+      "cvss_v3_score": 9.6,
+      "cvss_v4_score": null,
+      "cvss_v2_score": null,
+      "severity": "CRITICAL",
+      "severity_source": "nvd-cvss-v3",
+      "source": "nvd",
+      "trigger": "internal",
+      "at": "2026-09-11T22:20:29.946Z"
+    }
+  ]
+}
+```
+
+Same row shape as `/api/v1/packages/:name/availability`, plus `package_name` since results span
+every package.
+
+**Status codes**
+
+- `400` — missing or unparseable `since`
 
 ---
 
@@ -202,12 +498,12 @@ Walrus subsumes CVE-lookup for the packages it tracks (see
 [engineering/docs/design.md](../../engineering/docs/design.md) and ADR-001). Data comes from
 NVD (primary), CISA KEV (exploited-in-the-wild flag), and OSV (cross-check). Every response
 carries a standing `disclaimer` and a `data_freshness` object (`nvd_last_sync` / `kev_last_sync`
-/ `osv_last_sync`, nullable until the first sync).
+/ `osv_last_sync` / `cvss_last_sync`, nullable until the first sync).
 
 > **Disclaimer:** Absence of results does not imply a product/version is safe — the underlying
 > public sources may lag or be incomplete.
 
-### GET /api/v1/vulns?product=&version=&include_unmatched=
+### GET /api/v1/vulns?product=&version=&include_unmatched= | Look up CVEs for a product
 
 The flagship lookup. Resolves a product name/alias (fuzzy), then returns known CVEs, optionally
 range-checked against `version`.
@@ -237,11 +533,17 @@ curl 'http://localhost:8080/api/v1/vulns?product=openjdk&version=11.0.2'
       "fixed_in": "20",
       "is_kev": false,
       "sources": ["nvd"],
-      "references": ["https://nvd.nist.gov/vuln/detail/CVE-2023-XXXXX"]
+      "references": ["https://nvd.nist.gov/vuln/detail/CVE-2023-XXXXX"],
+      "suppression": null
     }
   ],
   "counts": { "total": 1, "critical": 0, "high": 1, "medium": 0, "low": 0, "kev": 0 },
-  "data_freshness": { "nvd_last_sync": "…", "kev_last_sync": "…", "osv_last_sync": "…" },
+  "data_freshness": {
+    "nvd_last_sync": "…",
+    "kev_last_sync": "…",
+    "osv_last_sync": "…",
+    "cvss_last_sync": "…"
+  },
   "disclaimer": "Absence of results does not imply…"
 }
 ```
@@ -262,7 +564,11 @@ The three **"no result"** cases are deliberately distinguishable:
 
 Missing `product` → **HTTP 400**.
 
-### GET /api/v1/vulns/products/search?q=
+An active operator suppression is returned as
+`{"reason":"…","expires_at":null}` instead of `null`.
+Suppression excludes the CVE from the download gate but never hides it from this response.
+
+### GET /api/v1/vulns/products/search?q= | Search products
 
 Autocomplete over product names/aliases (trigram + prefix boost, top 10). Powers the admin explorer.
 
@@ -271,7 +577,7 @@ curl 'http://localhost:8080/api/v1/vulns/products/search?q=openj'
 # { "query": "openj", "results": [ { "slug": "openjdk", "display_name": "…", "score": 100 } ] }
 ```
 
-### GET /api/v1/vulns/products/:name
+### GET /api/v1/vulns/products/:name | Product details
 
 Returns vulnerability product metadata for one Walrus package: aliases (including provenance),
 CPE vendor/product pairs, OSV mapping, tracking state, and a distinct CVE count. Unknown package
@@ -285,7 +591,7 @@ curl 'http://localhost:8080/api/v1/vulns/products/openjdk'
 > application CPEs. It does not fully evaluate `AND`, `OR`, or `negate` environment predicates, so
 > environment-dependent CVEs can be conservatively over-reported.
 
-### GET /api/v1/cves/:cveId
+### GET /api/v1/cves/:cveId | Look up a CVE
 
 CVE detail: metadata, KEV status, affected products (described ranges + provenance), references.
 Malformed id → **400**; unknown id → **404**.
@@ -294,7 +600,7 @@ Malformed id → **400**; unknown id → **404**.
 curl 'http://localhost:8080/api/v1/cves/CVE-2023-40031'
 ```
 
-### GET /api/v1/packages/:name/vulns
+### GET /api/v1/packages/:name/vulns | CVEs affecting a package
 
 **Walrus-native.** Cross-references CVEs against the package's **cached versions**. Optional
 `?version=` restricts to one. Packages with no `[vulnerabilities]` config return `tracked: false`
@@ -314,7 +620,14 @@ curl 'http://localhost:8080/api/v1/packages/openjdk/vulns'
       "version_group": "11",
       "counts": { "total": 12, "critical": 1, "high": 6, "medium": 5, "low": 0, "kev": 0 },
       "vulns": [
-        { "cve_id": "…", "severity": "…", "fixed_in": "…", "is_kev": false, "matched_because": "…" }
+        {
+          "cve_id": "…",
+          "severity": "…",
+          "fixed_in": "…",
+          "is_kev": false,
+          "matched_because": "…",
+          "suppression": null
+        }
       ]
     }
   ],
@@ -323,45 +636,250 @@ curl 'http://localhost:8080/api/v1/packages/openjdk/vulns'
 }
 ```
 
-### Ingestion triggers (internal / admin)
+Suppressed CVEs remain in each version's `vulns` array and carry the active assertion in
+`suppression`; they do not make that version's download status blocked.
 
-Vuln data is refreshed by external cron hitting `POST /internal/vuln-sync/:source`
-(`nvd | kev | osv | all`), or the sync-now buttons in the admin explorer
-(`POST /admin/v1/vuln-sync/:source`, audited in `admin_actions`). See the
-[ops runbook](../../engineering/docs/build-release.md) for cadence and the one-time backfill.
+### GET /api/v1/packages/:name/availability | Package availability history
 
----
+When a version became download-blocked, and which CVE caused it. Optional `?version=` limits
+it to one version's history; without it you get the package's recent changes, newest first.
 
-## Utility
+This is **history**, not a re-derivation of the current CVE rows — those only describe the
+present. Ingestion runs unattended (see the ops runbook), so a scheduled job can turn a served
+version into a `403` with no human watching; this endpoint is how you find out what happened
+and when.
 
-### GET /health
+Rows are written only when a version's gate status actually **changes**. A version that stays
+available forever produces none, and two-hourly ingestion does not append a row per run for a
+version whose status has not moved. Both directions are recorded: a version blocked and later
+unblocked — because its CVE was rescored below the gate, say — retains both transitions.
+
+**Retention:** unbounded by design. Growth is driven by real status changes rather than by run
+count, so the table stays small; rows are removed only when their package is deleted, via
+`ON DELETE CASCADE`.
 
 ```json
 {
-  "status": "ok",
-  "service": "walrus",
-  "vuln_data_freshness": { "nvd_last_sync": null, "kev_last_sync": null, "osv_last_sync": null },
-  "vuln_sync_status": {
-    "nvd": { "last_attempt": null, "last_success": null, "last_failure": null, "last_ok": null },
-    "kev": { "last_attempt": null, "last_success": null, "last_failure": null, "last_ok": null },
-    "osv": { "last_attempt": null, "last_success": null, "last_failure": null, "last_ok": null }
+  "package": "golang",
+  "version": "1.26.4",
+  "transitions": [
+    {
+      "version": "1.26.4",
+      "status": "blocked",
+      "cve_id": "CVE-2026-39821",
+      "cvss_v3_score": null,
+      "cvss_v4_score": 9.5,
+      "cvss_v2_score": null,
+      "severity": "CRITICAL",
+      "severity_source": "nvd-cvss-v4",
+      "source": "kev",
+      "trigger": "internal",
+      "at": "2026-08-26T18:49:47.733Z"
+    }
+  ]
+}
+```
+
+`source` is the ingestion that caused the change (`nvd | kev | osv | cvss | all | backfill`) —
+any source can block a version, not just CVSS enrichment. `trigger` is `internal` for a
+scheduled run or `admin` for an operator. `cve_id` is null on an `available` transition:
+nothing _causes_ a version to become servable except the absence of a blocking match.
+
+The gate blocks on any CVSS base score >= 9.0 (v3, v4, or v2), so each transition carries
+every score version the blocking CVE had at the time, plus `severity_source` saying which one
+produced `severity` (`nvd-cvss-v3 | nvd-cvss-v4 | nvd-cvss-v2`) — a block recorded with a
+sub-threshold v3 score and `severity_source: nvd-cvss-v4` was tripped by the v4 number.
+Events written before this provenance was recorded (August 2026 and earlier) carry scores
+only for v3, which may not state the full reason under today's policy.
+
+**Status codes**
+
+- `404` — package not found
+
+---
+
+### Ingestion triggers (internal / admin)
+
+Vuln data is refreshed by external cron hitting `POST /internal/vuln-sync/:source`
+(`nvd | kev | osv | cvss | all`), or the sync-now buttons in the admin explorer
+(`POST /admin/v1/vuln-sync/:source`, audited in `admin_actions`). See the
+[ops runbook](../../engineering/docs/build-release.md) for cadence and the one-time backfill.
+
+**`cvss` — preview before applying.** The `cvss` source is a repair pass that fills in
+severity for CVEs that have none (mostly OSV stubs NVD files as "Deferred"). Enrichment
+can newly satisfy the >= 9.0 download gate, so a version that serves today can start
+returning `403`. Both triggers accept a JSON body:
+
+| Field     | Type    | Description                                           |
+| --------- | ------- | ----------------------------------------------------- |
+| `dry_run` | boolean | Report what would change, write nothing. `cvss` only  |
+| `limit`   | integer | Bound the walk to N CVEs, in either mode. `cvss` only |
+
+Both are rejected with `400` for any other source rather than being ignored — a caller
+who asked for a preview must never get a live sync instead.
+
+```bash
+curl -XPOST .../internal/vuln-sync/cvss -H 'content-type: application/json' \
+  -d '{"dry_run": true, "limit": 50}'
+```
+
+```json
+{
+  "source": "cvss",
+  "dry_run": true,
+  "preview": {
+    "candidates": 3,
+    "fetched": 3,
+    "proposals": [
+      {
+        "cve_id": "CVE-2026-1111",
+        "severity": "CRITICAL",
+        "severity_source": "nvd-cvss-v3",
+        "cvss_v3_score": 9.8,
+        "cvss_v2_score": null,
+        "crosses_critical_gate": true
+      }
+    ],
+    "newly_blocked": [{ "package_name": "golang", "newly_blocked": ["1.26.4"] }]
   }
 }
 ```
 
-### GET /api
+`newly_blocked` is the list to read before applying: those versions would begin returning
+`403` from `/download`. A preview takes the same lock as the sync it models, so it returns
+`409` if NVD ingestion is already running.
+
+---
+
+## Web pages (view-only)
+
+Read-only HTML pages for people who want to see what walrus serves but are not operators. They
+need no login. They render the same data as the admin pages, minus every action: no sync, enable
+or disable, delete, re-download, waiver, or CVE-suppression control, and no sync-job detail.
+
+### GET /packages | Packages page
+
+The enabled packages walrus serves, with vendor and when each last synced. Disabled packages are
+not listed, matching `GET /api/v1/packages`.
+
+### GET /packages/:name | Package detail page
+
+The cached versions of one package, grouped as configured, with the state of each platform's
+artifact. An `available` artifact links to its `GET /download/...` URL. An artifact that download
+would refuse -- held back by a critical CVE, or still inside its cooling-off period -- is shown but
+not linked, and its tooltip says why. Version badges link to the vulnerability page below.
+Returns 404 for an unknown or disabled package.
+
+### GET /vulns?product=&version= | Vulnerabilities page
+
+The vulnerability lookup: CVEs affecting a product, optionally at a version, with a `blocks at N`
+badge on the ones that make `GET /download` return 403, and freshness chips for the NVD, KEV, OSV
+and CVSS feeds. A CVE suppressed by an operator shows a `suppressed` badge with its reason and
+expiry; who suppressed it is not shown. Backed by the same query as `GET /api/v1/vulns`.
+
+## Utility
+
+### GET /health | Health check
+
+```json
+{
+  "isAvailable": true,
+  "gitUrl": "https://github.com/pdvcs/walrus",
+  "ts": "2026-08-29T15:14:03.662Z",
+  "started": "2026-08-29T15:10:00.000Z",
+  "inGracePeriod": true,
+  "version": "0.2.0"
+}
+```
+
+The deployment availability check probes PostgreSQL. For 300 seconds after application startup it
+returns HTTP 200 with `isAvailable: true` even if the database is not ready. After that grace
+period, a database failure returns HTTP 503 with `isAvailable: false`. Successful and failed probe
+results are cached for 60 seconds, and concurrent requests share one probe. The same check is also
+available at `GET /app/health`.
+
+### GET /app/status | Service status
+
+Returns the health fields above plus detailed operational status:
+
+```json
+{
+  "isAvailable": true,
+  "gitUrl": "https://github.com/pdvcs/walrus",
+  "ts": "2026-08-29T15:14:03.662Z",
+  "started": "2026-08-29T15:10:00.000Z",
+  "inGracePeriod": true,
+  "version": "0.2.0",
+  "vuln_data_freshness": {
+    "nvd_last_sync": null,
+    "kev_last_sync": null,
+    "osv_last_sync": null,
+    "cvss_last_sync": null
+  },
+  "vuln_sync_status": {
+    "nvd": { "last_attempt": null, "last_success": null, "last_failure": null, "last_ok": null },
+    "kev": { "last_attempt": null, "last_success": null, "last_failure": null, "last_ok": null },
+    "osv": { "last_attempt": null, "last_success": null, "last_failure": null, "last_ok": null },
+    "cvss": { "last_attempt": null, "last_success": null, "last_failure": null, "last_ok": null }
+  },
+  "cve_suppressions": { "active_count": 0, "next_expiry": null },
+  "degradations": []
+}
+```
+
+`degradations` lists parts of unattended operation that currently need attention — stale or
+failing vulnerability ingestion, stuck or disabled autonomous backfills — as
+`{ "component", "reason" }` entries. Degradations do not change `isAvailable`; empty means
+self-healing is healthy. The same list is shown as a banner on the admin UI.
+
+`cve_suppressions` reports operator suppressions currently excluding a CVE from the critical-CVE
+gate: `active_count`, and `next_expiry` (the soonest expiry among those that have one, null when
+every active suppression stands until revoked). A suppression is a deliberate, audited decision
+rather than a fault, so it is reported in its own right and is never a degradation. The admin nav
+badges every page while `active_count` is non-zero.
+
+### GET /metrics | Prometheus metrics
+
+Prometheus text exposition for API traffic, downloads, the Node.js process, PostgreSQL pool,
+catalogue/artifact state, package syncs, vulnerability ingestion, backfills, blocked versions, and
+CVE suppressions. The endpoint is public and deliberately excludes raw request paths, package
+versions, CVE IDs, URLs, error messages, and user identities from labels.
+
+When `WALRUS_BASE_PATH` is set, metrics are served only at
+`<WALRUS_BASE_PATH>/metrics`; there is no unprefixed alias. The endpoint returns the last successful
+database snapshot without waiting for PostgreSQL and starts a background refresh when that snapshot
+is at least 60 seconds old. `walrus_metrics_collection_age_seconds{collector="database"}` reports
+its age and is `+Inf` before the first successful refresh. If a refresh fails, the prior database
+values remain available, with `walrus_database_available 0` and
+`walrus_metrics_collection_success{collector="database"} 0`.
+
+```yaml
+scrape_configs:
+  - job_name: walrus
+    metrics_path: /metrics # or /<base-path>/metrics
+    static_configs:
+      - targets: ["walrus.example.com"]
+```
+
+### GET / | Landing page
+
+Public HTML landing page showing the running Walrus package version and links to operator login,
+API documentation, deployment health, detailed application status, Prometheus metrics, and the
+OpenAPI contract.
+
+### GET /api | API docs
 
 This page. Returns raw Markdown by default; send `Accept: text/html` for rendered HTML.
 
-### GET /openapi.json
+### GET /openapi.json | OpenAPI spec
 
 OpenAPI 3.1.0 specification for this API. [View](/openapi.json)
 
 ### Start an NVD backfill (operator API)
 
-`POST /internal/vuln-backfill` accepts JSON `{ "since": "YYYY-MM-DD", "package": "<name>" }` (both
+`POST /admin/v1/vuln-backfill` accepts JSON `{ "since": "YYYY-MM-DD", "package": "<name>" }` (both
 optional) and returns `202 Accepted` with a durable job reference and status URL. Poll
-`GET /internal/vuln-backfill/:id` for lifecycle timestamps and CPE-pair progress. A currently
+`GET /admin/v1/vuln-backfill/:id` for lifecycle timestamps and CPE-pair progress. A currently
 queued/running backfill returns `409` with `code: "already_running"`.
 
 `package` restricts the walk to that package's CPE pairs — minutes instead of hours when you have

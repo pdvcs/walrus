@@ -13,6 +13,7 @@
 | `npm run db:reset`                            | Wipe and recreate the local schema (asks for confirmation)        |
 | `npm run validate`                            | Dry-run all `packages/*.toml` configs against real upstream APIs  |
 | `npm run validate -- packages/walrus-uv.toml` | Dry-run a single package config                                   |
+| `npm run validate -- --online <file>`         | As above, plus a CPE dictionary probe of each pair against NVD    |
 | `npm run fmt`                                 | Format source files                                               |
 | `npm run fmt:check`                           | Check formatting without writing                                  |
 | `npm run lint`                                | Run eslint + oxlint                                               |
@@ -108,8 +109,33 @@ Starts on `http://localhost:8080` with `tsx watch` (hot-reload on file changes).
 
 ```bash
 curl http://localhost:8080/health
-# {"status":"ok","service":"walrus"}
+# {"isAvailable":true,"gitUrl":"https://github.com/pdvcs/walrus","ts":"...","started":"...","inGracePeriod":true,"version":"0.2.0"}
+
+curl http://localhost:8080/app/status
+# The health fields plus vulnerability freshness, sync status, and degradations.
 ```
+
+`/app/health` is an alias of `/health`. PostgreSQL failures make the application unavailable
+after the 300-second startup grace period; operational degradations remain available separately
+under `/app/status` and do not fail the deployment health check. PostgreSQL probe results,
+including failures, are cached for 60 seconds across all three paths.
+
+### Prometheus metrics
+
+```bash
+curl http://localhost:8080/metrics
+# With WALRUS_BASE_PATH=/local-walrus:
+curl http://localhost:8080/local-walrus/metrics
+```
+
+The Prometheus endpoint includes low-cardinality HTTP request counts and latency/size histograms,
+download throughput, Node.js/process metrics, PostgreSQL pool state, and database-derived catalogue,
+sync, and vulnerability health. Scrapes return the last successful database snapshot immediately
+and trigger a refresh in the background when it is at least 60 seconds old. Before the first
+successful refresh, `walrus_metrics_collection_age_seconds{collector="database"}` is `+Inf`. A
+failed refresh retains the previous database series; check their age together with
+`walrus_database_available` and `walrus_metrics_collection_success{collector="database"}`. The
+endpoint follows `WALRUS_BASE_PATH` and, unlike the Cloud Run health probe, has no unprefixed alias.
 
 ### API documentation and OpenAPI spec
 
@@ -127,6 +153,52 @@ The OpenAPI spec is generated at startup from Zod schemas — it is never hand-e
 ## Common development scenarios
 
 These show how to exercise the full pipeline from discovery through to download. Run these against a local dev server (`npm run dev`).
+
+### Operator login and API tokens
+
+Set a local password of at least 16 bytes in gitignored `.env.secrets`:
+
+```dotenv
+WALRUS_ADMIN_PASSWORD=<your-local-password>
+```
+
+Browse to `http://localhost:8080/`, choose **Log in as admin**, and use `admin` with that password.
+Successful browser login opens `/admin/v1/`. The admin navigation exposes **API token**, which
+mints a new bearer credential and displays it once, and **Log out**, which clears the browser
+cookie. Browser sessions use an HttpOnly cookie scoped to `/admin/v1`. For curl, prompt without
+putting the password in shell history, request a non-renewing bearer credential, and then unset it:
+
+```bash
+read -rsp 'Walrus admin password: ' WALRUS_LOGIN_PASSWORD; echo
+export WALRUS_ADMIN_TOKEN="$(curl -fsS http://localhost:8080/admin/v1/login \
+  -H 'Content-Type: application/json' \
+  --data-binary "$(jq -nc --arg password "$WALRUS_LOGIN_PASSWORD" \
+    '{username:"admin", password:$password}')" | jq -r .token)"
+unset WALRUS_LOGIN_PASSWORD
+alias walrus-admin-curl='curl -H "Authorization: Bearer ${WALRUS_ADMIN_TOKEN}"'
+```
+
+Production has no auth-disable switch. It requires `WALRUS_ADMIN_PASSWORD`, a session secret of at
+least 32 bytes, a non-empty `config/admins.toml`, and the internal OIDC audience/principal settings.
+Session-key rotation accepts `WALRUS_SESSION_SECRET_PREVIOUS`; raise `WALRUS_SESSION_EPOCH` for a
+global logout. Browser cookies are HttpOnly, SameSite=Lax, Secure in production, and scoped to
+`/admin/v1`; they renew after half the two-hour TTL but never beyond the eight-hour login cap.
+Bearer tokens never renew. Logout only clears the browser cookie because sessions are stateless;
+remove the subject from the roster on redeploy or raise the epoch when revocation cannot wait for
+expiry.
+
+Adopters can set `WALRUS_AUTHN_PROVIDER=/app/ext/directory-authn.js` to load one external provider.
+The module exports an `AuthnProvider` (`apiVersion: 1`); its optional Zod `configSchema` receives the
+whole environment and `init()` runs during boot. A provider returning `unavailable` never falls
+back to the password provider. Deliver the compiled module and reviewed roster in a downstream
+image:
+
+```dockerfile
+FROM ghcr.io/example/walrus:0.3.0
+COPY ext /app/ext
+COPY config/admins.toml /app/config/admins.toml
+ENV WALRUS_AUTHN_PROVIDER=/app/ext/directory-authn.js
+```
 
 ### 1. Trigger a sync and watch it run
 
@@ -236,7 +308,8 @@ For a new production deployment:
 2. Start the full-history NVD backfill:
 
    ```bash
-   curl -fsS -X POST "$WALRUS_URL/internal/vuln-backfill" \
+   curl -fsS -X POST "$WALRUS_URL/admin/v1/vuln-backfill" \
+     -H "Authorization: Bearer $WALRUS_ADMIN_TOKEN" \
      -H 'Content-Type: application/json' \
      -d '{}' | tee /tmp/walrus-backfill.json | jq .
    ```
@@ -248,7 +321,8 @@ For a new production deployment:
 
    ```bash
    STATUS_URL=$(jq -r '.status_url' /tmp/walrus-backfill.json)
-   curl -fsS "$WALRUS_URL$STATUS_URL" | jq '.job | {
+   curl -fsS "$WALRUS_URL$STATUS_URL" \
+     -H "Authorization: Bearer $WALRUS_ADMIN_TOKEN" | jq '.job | {
      status, cpe_pairs_done, cpe_pairs_total, started_at, finished_at, error_message
    }'
    ```
@@ -270,6 +344,44 @@ npm run vuln:backfill
 # Or limit history:
 npm run vuln:backfill -- --since 2015-01-01
 ```
+
+### 9. Suppress a mis-attributed CVE
+
+Use the vulnerability explorer at `/admin/v1/vulns?product=<package>&version=<version>`. A gating
+CVE has a **Suppress** action; an active assertion stays visible with its reason and a **Revoke**
+action. The UI requires a preview of the exact fields before apply and shows every cached version
+that would become available or blocked.
+
+This is a production action, not a CLI/database procedure (ADR-004/ADR-007). Complete the team's
+six-eyes review and formal approval first. The operator identity and non-empty reason are required
+and stored in `admin_actions`; create and revoke use distinct action types.
+
+API clients use the same handlers:
+
+```bash
+# Preview (no write)
+curl -sS -X POST "$WALRUS_URL/admin/v1/vuln-suppressions/preview" \
+  -H 'Content-Type: application/json' -H "Authorization: Bearer $WALRUS_ADMIN_TOKEN" \
+  -d '{"cve_id":"CVE-2099-0001","package_name":"openjdk","reason":"Confirmed mis-attribution"}' | jq .
+
+# Apply the approved package-scoped assertion
+curl -sS -X POST "$WALRUS_URL/admin/v1/vuln-suppressions" \
+  -H 'Content-Type: application/json' -H "Authorization: Bearer $WALRUS_ADMIN_TOKEN" \
+  -d '{"cve_id":"CVE-2099-0001","package_name":"openjdk","reason":"Confirmed mis-attribution"}' | jq .
+
+# Preview revocation, then apply it with the same body
+curl -sS -X POST "$WALRUS_URL/admin/v1/vuln-suppressions/42/revoke/preview" \
+  -H 'Content-Type: application/json' -H "Authorization: Bearer $WALRUS_ADMIN_TOKEN" \
+  -d '{"reason":"Upstream attribution corrected"}' | jq .
+
+# Inspect the create/revoke audit trail; optionally filter by cve_id
+curl -sS "$WALRUS_URL/admin/v1/vuln-suppressions/audit?limit=50" | jq .
+```
+
+Omit `package_name` only for an explicitly approved CVE-wide assertion. Optional `expires_at`
+must be a future ISO-8601 timestamp; once it passes, the CVE gates again on read without a job.
+Audit responses are newest-first. Pass the returned `next_before_id` as `before_id` to fetch the
+next page; `limit` defaults to 50 and is capped at 100.
 
 ---
 
@@ -306,23 +418,17 @@ Discovery strategy selection order (use the highest that applies):
 
 1. `github-releases` — GitHub Releases API
 2. `json-api` — generic JSON API with JSONPath (two-step or inline)
-3. `directory-listing` — filename pattern matching on a directory listing
-4. `html-scrape` — regex extraction from HTML (last resort; not implemented yet)
+3. `xml-api` — XML metadata endpoint (e.g. Maven Central)
+4. `directory-listing` — versions from a browsable HTTP directory, artifact URLs from each platform's `url_template`
+5. `rust-channel` — Rust TOML channel manifests (Rust only)
+6. `html-scrape` — regex extraction from HTML (last resort; not implemented yet)
 
 ---
 
-## Environment variable reference
+## Environment variables
 
-| Variable               | Dev default                                     | Description                                   |
-| ---------------------- | ----------------------------------------------- | --------------------------------------------- |
-| `DATABASE_URL`         | `postgresql://walrus:...@localhost:5432/walrus` | Postgres connection string                    |
-| `STORAGE_BACKEND`      | `local`                                         | `local` or `gcs`                              |
-| `LOCAL_STORAGE_PATH`   | `./data/artifacts`                              | Root dir for local storage backend            |
-| `PORT`                 | `8080`                                          | HTTP listen port                              |
-| `NODE_ENV`             | `development`                                   | `development` or `production`                 |
-| `LOG_LEVEL`            | `debug`                                         | `debug`, `info`, `warn`, `error`              |
-| `SYNC_CONCURRENCY`     | `4`                                             | Parallel package syncs                        |
-| `DOWNLOAD_CONCURRENCY` | `2`                                             | Parallel downloads per package                |
-| `DEFAULT_RETENTION`    | `3`                                             | Default `versions_per_group` if unset in TOML |
-| `GCS_BUCKET`           | —                                               | GCS bucket name (prod only)                   |
-| `GCP_PROJECT`          | —                                               | GCP project ID (prod only)                    |
+Every variable, its default, and what fails at boot if it is wrong:
+[environment-variables.md](environment-variables.md).
+
+For local development the ones that matter are `DATABASE_URL`, `STORAGE_BACKEND=local`,
+`LOCAL_STORAGE_PATH`, `PORT`, and `LOG_LEVEL` — see `.env.local`.

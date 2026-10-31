@@ -5,6 +5,7 @@
  * lastModStartDate/lastModEndDate windows for incremental sync.
  */
 import { config } from "../../config/index.js";
+import { createEgressFetch } from "../../common/http.js";
 
 const BASE_CVES = "https://services.nvd.nist.gov/rest/json/cves/2.0";
 const BASE_CPES = "https://services.nvd.nist.gov/rest/json/cpes/2.0";
@@ -57,6 +58,8 @@ export interface NvdClientOptions {
   backoffBaseMs?: number;
   maxRetries?: number;
   requestTimeoutMs?: number;
+  /** Rows per page request. Defaults to config.VULN_NVD_PAGE_SIZE; see the note there. */
+  resultsPerPage?: number;
   logger?: { info: (msg: string) => void; warn: (msg: string) => void };
 }
 
@@ -86,12 +89,27 @@ class RateLimiter {
   }
 }
 
+/**
+ * Render an unknown throwable for a message.
+ *
+ * Not `String(err)`: the WAL-111 timeouts reached Cloud Logging as a DOMException serialized
+ * with every one of its legacy constants (`ABORT_ERR=20;DATA_CLONE_ERR=25;…`), burying the one
+ * line that mattered. Name and message are what a reader needs, and the retry wrapper is where
+ * they end up.
+ */
+function describeError(err: unknown): string {
+  if (err instanceof Error) return `${err.name}: ${err.message}`;
+  if (typeof err === "string") return err;
+  return JSON.stringify(err) ?? "unknown error";
+}
+
 export class NvdClient {
   private readonly apiKey: string | undefined;
   private readonly fetchFn: typeof fetch;
   private readonly backoffBaseMs: number;
   private readonly maxRetries: number;
   private readonly requestTimeoutMs: number;
+  private readonly pageSize: number;
   private readonly limiter: RateLimiter;
   private readonly log: NonNullable<NvdClientOptions["logger"]>;
   private readonly sleepFn: (ms: number) => Promise<void>;
@@ -100,10 +118,11 @@ export class NvdClient {
     // Respect an explicitly passed `apiKey: undefined` (forces keyless mode);
     // only fall back to the env key when the option is absent entirely.
     this.apiKey = Object.hasOwn(opts, "apiKey") ? opts.apiKey : config.NVD_API_KEY;
-    this.fetchFn = opts.fetchFn ?? fetch;
+    this.fetchFn = opts.fetchFn ?? createEgressFetch({ purpose: "vuln-feed" });
     this.backoffBaseMs = opts.backoffBaseMs ?? 2000;
     this.maxRetries = opts.maxRetries ?? 5;
-    this.requestTimeoutMs = opts.requestTimeoutMs ?? config.VULN_HTTP_TIMEOUT_MS;
+    this.requestTimeoutMs = opts.requestTimeoutMs ?? config.VULN_NVD_HTTP_TIMEOUT_MS;
+    this.pageSize = opts.resultsPerPage ?? config.VULN_NVD_PAGE_SIZE;
     this.log = opts.logger ?? { info: () => {}, warn: () => {} };
     this.sleepFn = sleepFn ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.limiter = new RateLimiter(this.apiKey ? 45 : 4, 30_000, this.sleepFn);
@@ -113,44 +132,91 @@ export class NvdClient {
   private async get(url: string): Promise<unknown> {
     let attempt = 0;
     for (;;) {
+      const waitStart = Date.now();
       await this.limiter.acquire();
+      const waitedMs = Date.now() - waitStart;
+      if (waitedMs > 5000) {
+        this.log.info(`NVD rate limiter held the request for ${Math.round(waitedMs / 1000)}s`);
+      }
+      const requestStart = Date.now();
       const headers: Record<string, string> = {};
       if (this.apiKey) headers["apiKey"] = this.apiKey;
 
       let res: Response | undefined;
-      let networkErr: unknown;
+      // Widened from `networkErr` (WAL-111): this now holds a body-phase failure too, which is
+      // not a network error in the usual sense but must be treated as one here.
+      let transportErr: unknown;
       try {
         res = await this.fetchFn(url, {
           headers,
           signal: AbortSignal.timeout(this.requestTimeoutMs),
         });
+        // The body read belongs INSIDE this guard, and the `await` is load-bearing — returning
+        // the promise unawaited would settle it outside the try and restore the bug.
+        //
+        // `AbortSignal.timeout` bounds the whole exchange, not the handshake: NVD sends headers
+        // promptly and then streams, so on a full page the deadline lands here. While this
+        // line sat outside the try, that abort rejected `res.json()` with a raw TimeoutError
+        // that bypassed the retry loop entirely — five lost ingestion windows between 31 Aug
+        // and 4 Sep 2026, every one of them recovered by Cloud Scheduler's retry rather than by
+        // `maxRetries`, which was never once consulted.
+        //
+        // Retrying here is necessary but was never sufficient: on 7, 9 and 10 Sep 2026 the same
+        // abort took every attempt, because each one re-fetched the same oversized body against
+        // the same deadline. That is what VULN_NVD_PAGE_SIZE and VULN_NVD_HTTP_TIMEOUT_MS
+        // address -- retries only help once a single attempt can plausibly succeed.
+        if (res.ok) {
+          const body = await res.json();
+          const tookMs = Date.now() - requestStart;
+          if (tookMs > 10_000) this.log.info(`NVD request slow: ${Math.round(tookMs / 1000)}s`);
+          return body;
+        }
       } catch (err) {
-        networkErr = err;
+        transportErr = err;
       }
-
-      if (res?.ok) return res.json();
 
       attempt++;
       if (attempt > this.maxRetries) {
         throw new Error(
-          `NVD request failed after ${this.maxRetries} retries: ${url} → ${res ? `HTTP ${res.status}` : String(networkErr)}`,
+          `NVD request failed after ${this.maxRetries} retries: ${url} → ${
+            transportErr !== undefined ? describeError(transportErr) : `HTTP ${res?.status}`
+          }`,
         );
       }
       const status = res?.status;
-      if (res && status !== 403 && status !== 503 && status !== 429 && (status ?? 0) < 500) {
+      // Only a *status* failure can be non-retryable. A transport failure carries a status
+      // incidentally — the headers arrived, the payload did not — so judging it by that status
+      // would turn an aborted 200 into a permanent "no retry for HTTP 200".
+      if (
+        res &&
+        transportErr === undefined &&
+        status !== 403 &&
+        status !== 503 &&
+        status !== 429 &&
+        (status ?? 0) < 500
+      ) {
         throw new Error(`NVD request failed (no retry for HTTP ${status}): ${url}`);
       }
       const delay = this.backoffBaseMs * 2 ** (attempt - 1) * (1 + Math.random() * 0.25);
       this.log.warn(
-        `NVD ${status ?? "network error"} on attempt ${attempt}, backing off ${Math.round(delay)}ms`,
+        `NVD ${transportErr !== undefined ? "transport error" : status} on attempt ${attempt}, backing off ${Math.round(delay)}ms`,
       );
       await this.sleepFn(delay);
     }
   }
 
-  /** Page through /cves/2.0, yielding each page. */
-  async *cvePages(params: Record<string, string>): AsyncGenerator<NvdCvePage> {
-    const pageSize = 2000;
+  /**
+   * Page through /cves/2.0, yielding each page.
+   *
+   * `opts.resultsPerPage` overrides the client default for one walk. The fresh-DB bootstrap
+   * needs it: its window is two orders of magnitude larger but its records are far smaller,
+   * so it wants few big pages where the incremental walk wants many small ones.
+   */
+  async *cvePages(
+    params: Record<string, string>,
+    opts: { resultsPerPage?: number } = {},
+  ): AsyncGenerator<NvdCvePage> {
+    const pageSize = opts.resultsPerPage ?? this.pageSize;
     let startIndex = 0;
     for (;;) {
       const qs = new URLSearchParams({
@@ -165,31 +231,21 @@ export class NvdClient {
     }
   }
 
-  /** All CVEs matching a virtual match string (per-product backfill). */
-  async cvesForCpe(
-    virtualMatchString: string,
-    extraParams: Record<string, string> = {},
-  ): Promise<NvdCveItem[]> {
-    const items: NvdCveItem[] = [];
-    for await (const page of this.cvePages({ virtualMatchString, ...extraParams })) {
-      items.push(...page.vulnerabilities);
-    }
-    return items;
-  }
-
-  /** CVEs modified in a window (incremental sync). */
-  async cvesModifiedSince(lastModStartDate: string, lastModEndDate: string): Promise<NvdCveItem[]> {
-    const items: NvdCveItem[] = [];
-    for await (const page of this.cvePages({ lastModStartDate, lastModEndDate })) {
-      items.push(...page.vulnerabilities);
-    }
-    return items;
-  }
+  // `cvesForCpe(virtualMatchString, extraParams)` and `cvesModifiedSince(from, to)` used to live
+  // here. Both were three lines draining `cvePages` into one array, and both became
+  // out-of-memory aborts in production: WAL-95 on the incremental path, which crashed
+  // `walrus-api` twice a day, and WAL-97 on the backfill path. Nothing bounded what NVD returned,
+  // so the array was as large as the query was broad.
+  //
+  // They are deleted rather than deprecated because the hazard was never the implementation — it
+  // was that the accumulating call was the obvious one to reach for, sitting in autocomplete next
+  // to the streaming one. Callers page with `cvePages` and ingest per page. A test that wants a
+  // finished list builds one itself from a fake transport; see `collect` in `nvd-client.test.ts`.
 
   /**
    * A single CVE by id. Used by the CVSS enrichment pass to reach CVEs that the
    * CPE-keyed paths never see: NVD "Deferred" records carry full CVSS metrics
-   * but no CPE configurations, so `cvesForCpe` cannot find them.
+   * but no CPE configurations, so a `virtualMatchString` query cannot find them.
    * Returns null when NVD does not know the id.
    */
   async cveById(cveId: string): Promise<NvdCveItem | null> {

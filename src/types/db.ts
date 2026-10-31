@@ -6,6 +6,14 @@ export interface PackageRow {
   website: string | null;
   config_hash: string;
   enabled: boolean;
+  /** Tombstone (WAL-53): set when the package's TOML disappeared. Null = never removed. */
+  removed_at: Date | null;
+  /**
+   * ADR-008: regex whose first capture yields the version used for CVE range evaluation.
+   * NULL = compare the served version directly. Only range evaluation sees the normalised
+   * form; the served version, version_sort, retention and downloads use the full version.
+   */
+  cve_version_extract: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -18,6 +26,12 @@ export interface VersionRow {
   is_lts: boolean;
   discovered_at: Date;
   version_sort: string;
+  /**
+   * The version CVE ranges are evaluated against when it differs from `version` (ADR-008
+   * generalised). NULL = derive it from the package's `cve_version_extract`, or compare the
+   * served version directly. Only range evaluation reads it.
+   */
+  cve_version: string | null;
 }
 
 export type ArtifactStatus = "pending" | "downloading" | "available" | "failed" | "removed";
@@ -33,6 +47,15 @@ export interface ArtifactRow {
   checksum: string | null;
   checksum_type: string | null;
   upstream_url: string;
+  /**
+   * Provenance split (WAL-58): checksum/file_size describe the served bytes; the source_*
+   * columns describe what upstream published and the transform produced it from. All three
+   * NULL = untransformed, where checksum already is the upstream digest and upstream_url the
+   * source URL.
+   */
+  source_checksum: string | null;
+  source_file_size: number | null;
+  transform: string | null;
   status: ArtifactStatus;
   error_message: string | null;
   download_started_at: Date | null;
@@ -57,6 +80,9 @@ export interface SyncJobRow {
   artifacts_failed: number;
   error_message: string | null;
   started_at: Date;
+  /** Set once _doSync begins, distinct from `started_at` (when the row was created) — see
+   *  migration 0017. NULL means the job is still queued: created, but not yet actually running. */
+  container_started_at: Date | null;
   completed_at: Date | null;
 }
 

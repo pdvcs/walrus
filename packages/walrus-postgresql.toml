@@ -1,0 +1,82 @@
+# PostgreSQL — standalone binary archives for Windows and macOS workstations, built by
+# EnterpriseDB. Not a server-install path: no Linux, no RPMs, no installers. Developers copy the
+# archive onto a workstation and unpack it.
+#
+# Discovery and download are deliberately split across two hosts. EnterpriseDB's download page
+# publishes only the current latest minor per major (opaque, non-derivable file IDs, no history),
+# so version discovery uses PostgreSQL's own FTP mirror — the authoritative release history — while
+# artifacts are fetched from EnterpriseDB's CDN. That split is why [discovery] is
+# `directory-listing` (version-list-only) and every platform carries its own url_template.
+#
+# Plan: engineering/plans/postgresql-onboarding.md
+
+name = "postgresql"
+display_name = "PostgreSQL"
+vendor = "PostgreSQL Global Development Group / EnterpriseDB"
+website = "https://www.postgresql.org"
+description = "PostgreSQL binary archives for Windows and macOS workstations (EnterpriseDB build)"
+
+[discovery]
+type = "directory-listing"
+# PostgreSQL's own FTP mirror, not EnterpriseDB's CDN: it holds every minor ever released and is
+# not pruned by a binary-distribution vendor.
+url = "https://ftp.postgresql.org/pub/source/"
+# One capture group yields the version from each directory href (`href="v18.6/"` -> `18.6`). The
+# href is only a source of version strings; the artifact URL is built from the platform templates
+# below, because the download host is different from the listing host.
+pattern = "href=\"v(\\d+\\.\\d+)/\""
+
+[versioning]
+type = "semver"
+version_group_extract = "^(\\d+)" # major is the series: 17, 18
+# Keep only the two majors in scope. The FTP listing reaches back to 6.3 (1998); this discards
+# everything below 17.0 before grouping, so only 17.x and 18.x reach retention.
+# NOTE: a hardcoded floor, not a computed "newest two majors". When PostgreSQL 19 ships, raise this
+# to "18.0" (groups_to_keep stays 2) — same posture as every other package's min_version.
+min_version = "17.0"
+lts_support = false
+
+[retention]
+versions_per_group = 2 # newest 2 minors within each major
+groups_to_keep = 2 # newest 2 majors
+# No release date is available from a plain directory listing, so cooling-off anchors to
+# versions.discovered_at via the existing fallback path (same as any date-less source).
+cooling_off_days = 3
+
+[checksum]
+# EnterpriseDB publishes no checksum for these archives in any form: no sidecar
+# (.sha256/.sha1/.md5/.asc all 403) and no API field to read one from. Verified 2026-09-10.
+# This is a real integrity gap for binaries served to developer workstations, acknowledged in the
+# onboarding plan (Open Question 3), and matches the azuljdk precedent.
+type = "none"
+
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "windows-x64"
+# arch_upstream is required by the schema but unused here: the OS token already identifies the
+# platform, and EDB names no separate architecture in its URL.
+arch_upstream = "x64"
+extension = "zip"
+# `-1-` is EnterpriseDB's build-revision segment, observed constant across every version tested
+# (18.6, 18.4, 18.0, 17.11, 17.10, 17.0) on 2026-09-10. If EDB ever ships a rebuild under `-2-`,
+# this template silently 404s until updated — plan Open Question 1.
+url_template = "https://get.enterprisedb.com/postgresql/postgresql-{version}-1-{os}-binaries.{ext}"
+
+[[platforms]]
+os = "macos"
+arch = "x86-64"
+# EnterpriseDB ships a single macOS build, x86-64 only — there is no native arm64 archive. Apple
+# Silicon users run this under Rosetta 2; not verified live as part of this onboarding.
+# Plan Open Question 4.
+os_upstream = "osx"
+arch_upstream = "x64"
+extension = "zip"
+url_template = "https://get.enterprisedb.com/postgresql/postgresql-{version}-1-{os}-binaries.{ext}"
+
+[vulnerabilities]
+# postgresql:postgresql — 600 entries in the NVD CPE dictionary (2026-09-10, plan).
+# No osv mapping: OSV ecosystems model language package managers, not a standalone C project's own
+# binary distribution; Postgres CVEs are NVD/CPE-tracked directly (same shape as gitwindows).
+cpes = ["postgresql:postgresql"]
+aliases = ["postgres", "postgresql", "postgres database", "postgres db", "pgsql"]

@@ -11,8 +11,11 @@ import {
   listVersionGroups,
   listAvailableVersionsByGroup,
   listVersionsOlderThanInGroup,
+  listVersionIdsNewestPerPlatformInGroup,
   getMaxAvailableVersionSort,
+  resyncVersionSortKeys,
 } from "../../src/db/queries/versions.js";
+import { generateSortKey, sortVersionsDesc } from "../../src/common/version-utils.js";
 import { insertArtifact, updateArtifactStatus } from "../../src/db/queries/artifacts.js";
 
 const TEST_DB_URL =
@@ -520,5 +523,109 @@ describe("versions queries", () => {
       const result = await getMaxAvailableVersionSort(pool, PKG);
       expect(result).toBe("0001.0000.0000");
     });
+  });
+
+  describe("version_sort ordering in SQL (WAL-63)", () => {
+    // AC4: the sort key is a stored column, so the ordering has to survive the database's
+    // collation — a JS-only comparator would pass the unit tests and still serve the wrong
+    // artifact. Mixed component counts and a pre-release in one set.
+    const versions = [
+      "2025.3.6",
+      "2025.3.6.1",
+      "2025.2.6.2",
+      "2025.2.6.3",
+      "2026.2",
+      "2026.2.0.1",
+      "2026.2.1",
+      "2026.2.1-eap",
+    ];
+
+    it("orders mixed component counts the same way the sorter does", async () => {
+      for (const version of versions) {
+        await insertVersion(pool, {
+          package_name: PKG,
+          version,
+          version_group: version.split(".").slice(0, 2).join("."),
+          is_lts: false,
+          version_sort: generateSortKey(version),
+        });
+      }
+
+      const { rows } = await pool.query<{ version: string }>(
+        "SELECT version FROM versions WHERE package_name = $1 ORDER BY version_sort DESC",
+        [PKG],
+      );
+
+      expect(rows.map((r) => r.version)).toEqual(sortVersionsDesc(versions));
+      expect(rows[0].version).toBe("2026.2.1");
+      // The build that WAL-63 was raised for: newer than the version it extends.
+      expect(rows.indexOf(rows.find((r) => r.version === "2025.3.6.1")!)).toBeLessThan(
+        rows.indexOf(rows.find((r) => r.version === "2025.3.6")!),
+      );
+    });
+  });
+
+  describe("resyncVersionSortKeys", () => {
+    it("rewrites keys left behind by an older algorithm, and is idempotent", async () => {
+      const stale = await insertVersion(pool, {
+        package_name: PKG,
+        version: "2025.3.6.1",
+        version_group: "2025.3",
+        is_lts: false,
+        version_sort: "002025.000003.000006.000001", // what the pre-WAL-63 sorter produced
+      });
+      const current = await insertVersion(pool, {
+        package_name: PKG,
+        version: "2025.3.6",
+        version_group: "2025.3",
+        is_lts: false,
+        version_sort: generateSortKey("2025.3.6"),
+      });
+
+      expect(await resyncVersionSortKeys(pool)).toBeGreaterThanOrEqual(1);
+
+      const repaired = await getVersion(pool, PKG, "2025.3.6.1");
+      expect(repaired!.version_sort).toBe(generateSortKey("2025.3.6.1"));
+      expect((await getVersion(pool, PKG, "2025.3.6"))!.version_sort).toBe(current.version_sort);
+      expect(repaired!.id).toBe(stale.id);
+
+      // Every row now matches the algorithm, so a second pass has nothing to do.
+      expect(await resyncVersionSortKeys(pool)).toBe(0);
+    });
+  });
+
+  it("listVersionIdsNewestPerPlatformInGroup keeps the fallback for a lagging platform", async () => {
+    // 1.2.3 has linux+windows; 1.2.4 and 1.2.5 are linux-only (upstream hasn't built windows yet).
+    const ids: Record<string, number> = {};
+    for (const [version, sort, oses] of [
+      ["1.2.3", "0001.0002.0003", ["linux", "windows"]],
+      ["1.2.4", "0001.0002.0004", ["linux"]],
+      ["1.2.5", "0001.0002.0005", ["linux"]],
+    ] as const) {
+      const row = await insertVersion(pool, {
+        package_name: PKG,
+        version,
+        version_group: "1.2",
+        is_lts: false,
+        version_sort: sort,
+      });
+      ids[version] = row.id;
+      for (const os of oses) {
+        const artifact = await insertArtifact(pool, {
+          version_id: row.id,
+          os,
+          arch: "x86-64",
+          filename: `${version}-${os}.bin`,
+          upstream_url: `https://example.test/${version}-${os}.bin`,
+        });
+        await updateArtifactStatus(pool, artifact.id, { status: "available" });
+      }
+    }
+
+    const kept = await listVersionIdsNewestPerPlatformInGroup(pool, PKG, "1.2", 1);
+    expect(kept.sort()).toEqual([ids["1.2.3"], ids["1.2.5"]].sort());
+
+    const keptTwo = await listVersionIdsNewestPerPlatformInGroup(pool, PKG, "1.2", 2);
+    expect(keptTwo.sort()).toEqual([ids["1.2.3"], ids["1.2.4"], ids["1.2.5"]].sort());
   });
 });
