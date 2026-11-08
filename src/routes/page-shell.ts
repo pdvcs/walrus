@@ -1,6 +1,6 @@
 import { withBase } from "../common/base-path.js";
 
-export type AdminNavItem = "packages" | "jobs" | "vuln-jobs" | "validate" | "vulns";
+export type AdminNavItem = "packages" | "jobs" | "vuln-jobs" | "validate" | "vulns" | "settings";
 
 export const BASE_PAGE_STYLES = `
   *, *::before, *::after { box-sizing: border-box; }
@@ -98,6 +98,7 @@ export function renderAdminNav(basePath: string, active?: AdminNavItem): string 
     </details>
     <a href="${withBase(basePath, "/admin/v1/validate")}"${active === "validate" ? ' class="active"' : ""}>Config</a>
     <a href="${withBase(basePath, "/admin/v1/vulns")}"${active === "vulns" ? ' class="active"' : ""}>Vulnerabilities</a>
+    <a href="${withBase(basePath, "/admin/v1/settings")}"${active === "settings" ? ' class="active"' : ""}>Settings</a>
     <a href="${withBase(basePath, "/api")}">API Docs</a>
     <span class="nav-status">
       <a href="${withBase(basePath, "/app/status")}">Status</a>

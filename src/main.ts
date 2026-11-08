@@ -30,6 +30,8 @@ import { createPackageVulnsRouter } from "./routes/package-vulns.js";
 import { getPosture, type PostureDeps } from "./services/posture.js";
 import { compareVersions } from "./common/version-utils.js";
 import { createAdminVulnsRouter } from "./routes/admin-vulns.js";
+import { createAdminSettingsRouter } from "./routes/admin-settings.js";
+import { deleteSetting, listSettings, upsertSetting } from "./db/queries/settings.js";
 import { createApiDocsRouter } from "./routes/api-docs.js";
 import {
   getPackageCpes,
@@ -496,6 +498,19 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
       searchAliases: (q) => searchAliases(pool, q),
       getProductMetadata: (name) => getVulnProductMetadata(pool, name),
     }),
+  );
+
+  operatorRouter.use(
+    createAdminSettingsRouter(
+      {
+        listSettings: () => listSettings(pool),
+        upsertSetting: (input) => upsertSetting(pool, input),
+        deleteSetting: (name) => deleteSetting(pool, name),
+        logAdminAction: (actionType, details, subject) =>
+          insertAdminAction(pool, { action_type: actionType, performed_by: subject, details }),
+      },
+      basePath,
+    ),
   );
 
   operatorRouter.use(
