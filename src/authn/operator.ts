@@ -7,6 +7,7 @@ import { escapeHtml, renderAdminNav, renderPage, renderPublicNav } from "../rout
 import { withBase } from "../common/base-path.js";
 
 export const SESSION_COOKIE = "walrus_session";
+export const AUTHENTICATED_TIER_PREFIX = "/auth";
 
 interface LoginFailureState {
   failures: number;
@@ -229,6 +230,43 @@ export function createOperatorGuard(
   };
 }
 
+/**
+ * Guard for the authenticated tier (`/auth`): a valid session is required, but the subject need
+ * not be an administrator. Authentication is decided here by path prefix (ADR-009 §4);
+ * authorization is each route's own permission check (see `permissions.ts`). Unlike the operator
+ * guard it does not renew or set cookies, so a session only ever lives as long as an operator
+ * request keeps it alive.
+ */
+export function createAuthenticatedGuard(
+  runtime: OperatorAuthRuntime,
+  basePath: string,
+): RequestHandler {
+  return (req, res, next) => {
+    const authorization = req.get("authorization");
+    const bearer = authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
+    const cookie = parseCookies(req.get("cookie"))[SESSION_COOKIE];
+    const token = bearer ?? cookie;
+    if (!token) {
+      sendUnauthenticated(req, res, runtime, basePath);
+      return;
+    }
+    const verified = verifySession(token, runtime.sessions, {
+      now: runtime.now?.() ?? new Date(),
+      expectedKind: bearer ? "bearer" : "cookie",
+    });
+    if (!verified.ok) {
+      sendUnauthenticated(req, res, runtime, basePath);
+      return;
+    }
+    req.auth = {
+      subject: verified.payload.sub,
+      kind: verified.payload.k,
+      payload: verified.payload,
+    };
+    next();
+  };
+}
+
 function createOriginGuard(): RequestHandler {
   return (req, res, next) => {
     if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return next();
@@ -320,6 +358,15 @@ function sendLoginFailure(
   res.status(status).json({ error: message });
 }
 
+/**
+ * The session cookie is path-scoped so public routes never receive it. Two scopes are issued:
+ * the operator tier (`/admin/v1`) and the authenticated tier (`/auth`), which admits any signed-in
+ * subject and leaves authorization to each route.
+ */
+function sessionCookiePaths(basePath: string): string[] {
+  return [withBase(basePath, "/admin/v1"), withBase(basePath, AUTHENTICATED_TIER_PREFIX)];
+}
+
 function setSessionCookie(
   res: Response,
   token: string,
@@ -327,22 +374,26 @@ function setSessionCookie(
   runtime: OperatorAuthRuntime,
   basePath: string,
 ): void {
-  res.cookie(SESSION_COOKIE, token, {
-    httpOnly: true,
-    secure: runtime.nodeEnv !== "development",
-    sameSite: "lax",
-    path: withBase(basePath, "/admin/v1"),
-    expires: new Date(payload.exp * 1000),
-  });
+  for (const path of sessionCookiePaths(basePath)) {
+    res.cookie(SESSION_COOKIE, token, {
+      httpOnly: true,
+      secure: runtime.nodeEnv !== "development",
+      sameSite: "lax",
+      path,
+      expires: new Date(payload.exp * 1000),
+    });
+  }
 }
 
 function clearSessionCookie(res: Response, runtime: OperatorAuthRuntime, basePath: string): void {
-  res.clearCookie(SESSION_COOKIE, {
-    httpOnly: true,
-    secure: runtime.nodeEnv !== "development",
-    sameSite: "lax",
-    path: withBase(basePath, "/admin/v1"),
-  });
+  for (const path of sessionCookiePaths(basePath)) {
+    res.clearCookie(SESSION_COOKIE, {
+      httpOnly: true,
+      secure: runtime.nodeEnv !== "development",
+      sameSite: "lax",
+      path,
+    });
+  }
 }
 
 function parseCookies(header: string | undefined): Record<string, string> {

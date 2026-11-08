@@ -1,6 +1,6 @@
 import { pipeline } from "stream/promises";
 import { Readable } from "stream";
-import { Response, Router } from "express";
+import { Request, Response, Router } from "express";
 import { log } from "../common/log.js";
 import { AffectsWithCveRow } from "../db/queries/cves.js";
 import {
@@ -33,6 +33,14 @@ export interface DownloadRouteDeps {
    * URL; the catalog listing routes already hide them. Optional so tests can omit it.
    */
   getPackageRow?: (packageName: string) => Promise<{ enabled: boolean } | null>;
+  /**
+   * Mounted behind authentication only: may this caller fetch an artifact that is still inside
+   * its cooling-off period? Unset on the public router, which never bypasses the embargo. The
+   * critical-CVE gate and every other check above still apply to a caller who may.
+   */
+  mayBypassCoolingOff?: (req: Request) => boolean;
+  /** Called when a bypass actually served (or began serving) embargoed bytes, for auditing. */
+  onCoolingOffBypass?: (req: Request, artifact: ArtifactRow) => void;
 }
 
 export function createDownloadRouter(deps: DownloadRouteDeps): Router {
@@ -79,14 +87,15 @@ export function createDownloadRouter(deps: DownloadRouteDeps): Router {
       // Policy checks run before the availability check: an artifact inside its release embargo is
       // deliberately left `pending` with no gcs_path (the sync service skips queueing its
       // download), so testing availability first would report every cooling-off artifact as a 404.
-      if (artifact.cooling_off_until !== null && artifact.cooling_off_until > new Date()) {
-        const retryAfterSecs = Math.ceil(
-          (artifact.cooling_off_until.getTime() - Date.now()) / 1000,
-        );
+      const coolingOffUntil = artifact.cooling_off_until;
+      const embargoed = coolingOffUntil !== null && coolingOffUntil > new Date();
+      const bypassing = embargoed && (deps.mayBypassCoolingOff?.(req) ?? false);
+      if (coolingOffUntil !== null && embargoed && !bypassing) {
+        const retryAfterSecs = Math.ceil((coolingOffUntil.getTime() - Date.now()) / 1000);
         res.setHeader("Retry-After", String(retryAfterSecs));
         res.status(423).json({
           error: "Artifact is in cooling off period",
-          available_at: artifact.cooling_off_until.toISOString(),
+          available_at: coolingOffUntil.toISOString(),
         });
         return;
       }
@@ -94,6 +103,12 @@ export function createDownloadRouter(deps: DownloadRouteDeps): Router {
       if (artifact.status !== "available" || !artifact.gcs_path) {
         res.status(404).json({ error: "Artifact not found" });
         return;
+      }
+
+      if (bypassing && coolingOffUntil !== null) {
+        // Tell the caller these are pre-release bytes the public cannot yet fetch.
+        res.setHeader("X-Walrus-Cooling-Off-Until", coolingOffUntil.toISOString());
+        deps.onCoolingOffBypass?.(req, artifact);
       }
 
       // Everything below here serves bytes, and everything above decided whether any bytes may

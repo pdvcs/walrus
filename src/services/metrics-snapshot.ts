@@ -85,16 +85,17 @@ export async function getMetricsSnapshot(
       `WITH classified AS (
          SELECT v.package_name,
                 CASE
-                  WHEN a.status = 'pending' AND a.cooling_off_until > now() THEN 'cooling_off'
+                  WHEN a.status IN ('pending', 'available') AND a.cooling_off_until > now() THEN 'cooling_off'
                   ELSE a.status
                 END AS status,
+                a.status AS stored_status,
                 a.file_size,
                 a.created_at
            FROM artifacts a
            JOIN versions v ON v.id = a.version_id
        )
        SELECT package_name, status, count(*)::int AS count,
-              coalesce(sum(file_size) FILTER (WHERE status = 'available'), 0)::float8
+              coalesce(sum(file_size) FILTER (WHERE stored_status = 'available'), 0)::float8
                 AS stored_bytes,
               min(created_at) FILTER (WHERE status IN ('pending', 'downloading', 'failed'))
                 AS oldest_at

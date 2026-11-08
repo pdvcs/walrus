@@ -36,6 +36,7 @@ groups_to_keep = 1
 # The version list carries no release dates, so the embargo anchors on the discovery watermark:
 # the first sync serves all three immediately, and each later release waits 3 days.
 cooling_off_days = 3
+prefetch_during_cooling_off = true
 
 [checksum]
 # The update API publishes sha256hash only for the current release

@@ -29,6 +29,7 @@ lts_support = false
 versions_per_group = 2
 groups_to_keep = 1
 cooling_off_days = 3
+prefetch_during_cooling_off = true
 
 [checksum]
 # Per-asset digest from the GitHub API ("sha256:…"). SHASUMS256.txt is not usable:

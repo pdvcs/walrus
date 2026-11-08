@@ -23,6 +23,7 @@ import {
 import { getEgressState, matchEgressRule } from "../common/egress-rules.js";
 import { withBase } from "../common/base-path.js";
 import { log } from "../common/log.js";
+import { isServableArtifact } from "../db/queries/servable.js";
 import type { CoolingOffWaiverRow } from "../db/queries/cooling-off-waivers.js";
 import { CoolingOffWaiverRejectedError } from "../services/cooling-off-waiver-service.js";
 
@@ -1026,6 +1027,10 @@ function buildJobResponse(detail: JobDetail): Record<string, unknown> {
   const artifacts_cooling_off = enrichedArtifacts.filter(
     (a) => a.cooling_off_until !== null,
   ).length;
+  // Held back from general release but already fetched (prefetch_during_cooling_off): the bytes exist.
+  const artifacts_cooling_off_cached = enrichedArtifacts.filter(
+    (a) => a.cooling_off_until !== null && a.status === "available",
+  ).length;
   return {
     id: job.id,
     package_name: job.package_name,
@@ -1036,6 +1041,7 @@ function buildJobResponse(detail: JobDetail): Record<string, unknown> {
     artifacts_downloaded: job.artifacts_downloaded,
     artifacts_failed: job.artifacts_failed,
     artifacts_cooling_off,
+    artifacts_cooling_off_cached,
     cooling_off_days: cooling_off_days ?? null,
     error_message: job.error_message,
     started_at: job.started_at,
@@ -1150,6 +1156,11 @@ function renderJobStatusPage(detail: JobDetail, basePath: string): string {
       ];
       if (data.cooling_off_days != null) {
         cardDefs.push(['Cooling Off (' + data.cooling_off_days + 'd)', data.artifacts_cooling_off]);
+        // Prefetch stores the bytes while general release is still held off, so "cooling off" alone
+        // would hide that they were downloaded.
+        if (data.artifacts_cooling_off_cached > 0) {
+          cardDefs.push(['…of which downloaded', data.artifacts_cooling_off_cached]);
+        }
       }
       // Split the one "how long has this taken" question into the three that actually matter
       // once a sync can spend a real, variable amount of time cold-starting: how long that wait
@@ -1169,11 +1180,15 @@ function renderJobStatusPage(detail: JobDetail, basePath: string): string {
       } else {
         const rows = arts.map(a => {
           const isCoolingOff = a.cooling_off_until != null;
+          // "cooling-off" means held back AND not fetched. A prefetched artifact is held back from
+          // general release but its bytes exist (or are arriving), so keep its real status visible.
+          const fetched = isCoolingOff && a.status !== 'pending';
           const rowClass = isCoolingOff ? 'cooling-off' : a.status;
-          const displayStatus = isCoolingOff ? 'cooling-off' : a.status;
+          const displayStatus = isCoolingOff && !fetched ? 'cooling-off' : a.status;
           const errHtml = a.error_message ? '<div class="error-msg">' + esc(a.error_message) + '</div>' : '';
           const coolingHtml = isCoolingOff
-            ? '<div class="cooling-off-until">available ' + esc(new Date(a.cooling_off_until).toLocaleString()) + '</div>'
+            ? '<div class="cooling-off-until">' + (fetched ? 'held back from general release until ' : 'available ')
+              + esc(new Date(a.cooling_off_until).toLocaleString()) + '</div>'
             : '';
           return '<tr class="row-' + esc(rowClass) + '">'
             + '<td>' + esc(a.version) + '</td>'
@@ -1823,6 +1838,7 @@ export function renderPackageDetailPage(
     ${headerHtml}
     <div id="msg"></div>
     ${renderWaiversPanel(waivers ?? [])}
+    ${renderCoolingOffHelp(groups)}
     ${groupsHtml}`;
 
   const scripts = `
@@ -1947,6 +1963,20 @@ function renderBlockedBadge(
 }
 
 /**
+ * A reminder of how the two cooling-off controls differ. Shown only when something on the page is
+ * actually cooling off, so it is not noise on a package with nothing held back.
+ */
+function renderCoolingOffHelp(groups: GroupDetail[]): string {
+  const coolingOff = groups.some((g) =>
+    g.versions.some((v) => v.artifacts.some((a) => coolingOffUntil(a) !== null)),
+  );
+  if (!coolingOff) return "";
+  return `<p class="meta cooling-off-help"><strong>Cooling-off:</strong>
+      <strong>Release now</strong> (⤒) ends the hold for everyone. The version goes into general release immediately; you give a reason and it is audited.
+      <strong>Download early</strong> (⤓) only gets you the file now (shown where the bytes are already cached) — everyone else still gets a 423 until the date passes.</p>`;
+}
+
+/**
  * Active cooling-off waivers for a package. Shown only when there is one: a waiver stays
  * recorded after the embargo it released has elapsed (it is inert, not deleted), and this is the
  * only place an operator can see who released what, and why, without querying the audit trail.
@@ -2015,7 +2045,7 @@ function renderGroupSection(
             const fallback = g.versions
               .slice(idx + 1)
               .find((o) =>
-                o.artifacts.some((x) => `${x.os}/${x.arch}` === p && x.status === "available"),
+                o.artifacts.some((x) => `${x.os}/${x.arch}` === p && isServableArtifact(x)),
               );
             const hint = fallback
               ? ` title="${esc(`not published upstream — /latest serves ${fallback.version} for this platform`)}"`
@@ -2038,12 +2068,19 @@ function renderGroupSection(
           // difference between "held back" and "never fetched".
           const gated = blocked && display === "available";
           const notes: string[] = [];
+          // Prefetched during cooling-off: the bytes are already stored, only general release is held off.
+          const cached = cooling !== null && a.status === "available";
           if (cooling) notes.push(`available ${cooling.toISOString()}`);
+          if (cached)
+            notes.push("bytes already cached — signed-in privileged users can download early");
           if (gated) notes.push("blocked: downloads return 403 — critical CVE");
           const title = notes.length > 0 ? ` title="${esc(notes.join(" · "))}"` : "";
           const cls = gated ? `status-${display} cell-gated` : `status-${display}`;
           const [os, arch] = p.split("/");
-          const label = `${icon[display] ?? "?"} ${esc(display)}`;
+          // Stored but held back: say so in the cell, not only in the tooltip.
+          const label = cached
+            ? `${icon[display] ?? "?"} ${esc(display)} · cached`
+            : `${icon[display] ?? "?"} ${esc(display)}`;
           if (viewer) {
             // Link only what GET /download would actually serve: a gated or cooling-off cell is
             // visibly not a link, and its tooltip says why.
@@ -2053,11 +2090,17 @@ function renderGroupSection(
               ? `<td><a class="${cls}" href="${href}"${title}>${label}</a></td>`
               : `<td><span class="${cls}"${title}>${label}</span></td>`;
           }
+          const earlyHref = `${withBase(basePath, "/auth/download/")}${encodeURIComponent(packageName)}/${encodeURIComponent(v.version)}/${encodeURIComponent(os)}/${encodeURIComponent(arch)}`;
+          const earlyLink =
+            cached && !gated
+              ? ` <a class="btn btn-sm btn-secondary" title="Download early — before the cooling-off period ends" aria-label="Download early" href="${earlyHref}">⤓</a>`
+              : "";
           const redownloadBtn =
             a.status === "failed" || a.status === "available"
               ? ` <button class="btn btn-sm btn-secondary" title="Re-download" onclick="redownload('${esc(packageName)}','${esc(v.version)}','${esc(os)}','${esc(arch)}')">↺</button>`
               : "";
-          return `<td><span class="${cls}"${title}>${label}</span>${redownloadBtn}</td>`;
+          // One line per cell: status, then the compact icon buttons (⤓ download early, ↺ re-download).
+          return `<td style="white-space:nowrap"><span class="${cls}"${title}>${label}</span>${earlyLink}${redownloadBtn}</td>`;
         })
         .join("");
       const badges =
@@ -2066,7 +2109,7 @@ function renderGroupSection(
       // The waiver is per version, not per platform, so one button covers every cooling-off cell.
       const releaseBtn =
         !viewer && canWaive && v.artifacts.some((a) => coolingOffUntil(a) !== null)
-          ? ` <button class="btn btn-sm btn-secondary" title="Release from cooling-off now" onclick="releaseNow('${esc(packageName)}','${esc(v.version)}')">Release now</button>`
+          ? ` <button class="btn btn-sm btn-secondary" title="Release now — end cooling-off for everyone (audited)" aria-label="Release now" onclick="releaseNow('${esc(packageName)}','${esc(v.version)}')">⤒</button>`
           : "";
       return `<tr><td><strong>${esc(v.version)}</strong>${badges}${releaseBtn}</td>${cells}</tr>`;
     })

@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { withBase } from "../common/base-path.js";
+import { isServableArtifact } from "../db/queries/servable.js";
 import { ArtifactRow, PackageRow, SyncJobRow, VersionRow } from "../types/db.js";
 import { AffectsWithCveRow } from "../db/queries/cves.js";
 import {
@@ -323,7 +324,7 @@ function selectArtifact(
   os?: string,
   arch?: string,
 ): ArtifactRow | undefined {
-  const available = artifacts.filter((artifact) => artifact.status === "available");
+  const available = artifacts.filter((artifact) => isServableArtifact(artifact));
 
   return available.find(
     (artifact) => (!os || artifact.os === os) && (!arch || artifact.arch === arch),

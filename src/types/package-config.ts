@@ -222,6 +222,9 @@ const RetentionSchema = z.object({
   versions_per_group: z.number().int().positive().default(3),
   groups_to_keep: z.number().int().positive().optional(),
   cooling_off_days: z.number().int().nonnegative().optional(),
+  // Fetch bytes while a release is still inside cooling_off_days. They are stored `available`
+  // but are not served in general release until the period ends; privileged callers may fetch them early.
+  prefetch_during_cooling_off: z.boolean().default(false),
 });
 
 const ChecksumSchema = z.object({
@@ -324,7 +327,10 @@ export const PackageConfigSchema = z
     description: z.string().optional(),
     discovery: DiscoverySchema,
     versioning: VersioningSchema,
-    retention: RetentionSchema.default({ versions_per_group: 3 }),
+    retention: RetentionSchema.default({
+      versions_per_group: 3,
+      prefetch_during_cooling_off: false,
+    }),
     checksum: ChecksumSchema.optional(),
     platforms: z.array(PlatformSchema).min(1),
     vulnerabilities: VulnerabilitiesSchema.optional(),

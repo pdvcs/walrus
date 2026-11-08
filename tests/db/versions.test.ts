@@ -628,4 +628,93 @@ describe("versions queries", () => {
     const keptTwo = await listVersionIdsNewestPerPlatformInGroup(pool, PKG, "1.2", 2);
     expect(keptTwo.sort()).toEqual([ids["1.2.3"], ids["1.2.4"], ids["1.2.5"]].sort());
   });
+  describe("servable artifacts during cooling-off prefetch", () => {
+    async function seed(version: string, sort: string, coolingOffUntil: Date | null) {
+      const v = await insertVersion(pool, {
+        package_name: PKG,
+        version,
+        version_group: "1.2",
+        is_lts: false,
+        version_sort: sort,
+      });
+      const a = await insertArtifact(pool, {
+        version_id: v.id,
+        os: "linux",
+        arch: "x86-64",
+        filename: "pkg.tar.gz",
+        upstream_url: `https://example.test/${version}/pkg.tar.gz`,
+        cooling_off_until: coolingOffUntil,
+      });
+      // Prefetched: bytes are stored, so the artifact is `available` even while embargoed.
+      await updateArtifactStatus(pool, a.id, { status: "available" });
+      return v;
+    }
+
+    const future = () => new Date(Date.now() + 2 * 86_400_000);
+
+    it("hides an available-but-embargoed artifact from every servable query", async () => {
+      await seed("1.2.3", "0001.0002.0003", null);
+      await seed("1.2.4", "0001.0002.0004", future());
+
+      const candidates = await listAvailableVersionsInGroup(pool, PKG, "1.2");
+      expect(candidates.map((v) => v.version)).toEqual(["1.2.3"]);
+
+      const byGroup = await listAvailableVersionsByGroup(pool, PKG);
+      expect(byGroup.map((v) => v.version)).toEqual(["1.2.3"]);
+
+      // The cooling-off watermark must not rise to a version that is itself still embargoed.
+      expect(await getMaxAvailableVersionSort(pool, PKG)).toBe("0001.0002.0003");
+    });
+
+    it("does not give an embargoed version a newest-per-platform retention slot", async () => {
+      const older = await seed("1.2.3", "0001.0002.0003", null);
+      await seed("1.2.4", "0001.0002.0004", future());
+
+      const kept = await listVersionIdsNewestPerPlatformInGroup(pool, PKG, "1.2", 1);
+      expect(kept).toEqual([older.id]);
+    });
+
+    it("listVersionGroups can rank by non-embargoed versions only", async () => {
+      const inGroup = async (group: string, version: string, sort: string, until: Date | null) => {
+        const v = await insertVersion(pool, {
+          package_name: PKG,
+          version,
+          version_group: group,
+          is_lts: false,
+          version_sort: sort,
+        });
+        const a = await insertArtifact(pool, {
+          version_id: v.id,
+          os: "linux",
+          arch: "x86-64",
+          filename: "pkg.tar.gz",
+          upstream_url: `https://example.test/${version}/pkg.tar.gz`,
+          cooling_off_until: until,
+        });
+        await updateArtifactStatus(pool, a.id, { status: "available" });
+      };
+      await inGroup("17", "17.0.1", "0017.0000.0001", null);
+      await inGroup("25", "25.0.1", "0025.0000.0001", null);
+      // Group 27 exists only as a prefetched, still-embargoed release.
+      await inGroup("27", "27.0.0", "0027.0000.0000", future());
+      // Group 25 also has a newer embargoed release; it must not change 25's rank.
+      await inGroup("25", "25.0.2", "0025.0000.0002", future());
+
+      expect(await listVersionGroups(pool, PKG)).toEqual(["27", "25", "17"]);
+      expect(await listVersionGroups(pool, PKG, { excludeEmbargoed: true })).toEqual(["25", "17"]);
+    });
+
+    it("serves the artifact the moment its cooling-off date passes, with no sync", async () => {
+      const v = await seed("1.2.4", "0001.0002.0004", future());
+      expect(await listAvailableVersionsInGroup(pool, PKG, "1.2")).toHaveLength(0);
+
+      await pool.query(
+        "UPDATE artifacts SET cooling_off_until = now() - interval '1 minute' WHERE version_id = $1",
+        [v.id],
+      );
+      expect((await listAvailableVersionsInGroup(pool, PKG, "1.2")).map((x) => x.version)).toEqual([
+        "1.2.4",
+      ]);
+    });
+  });
 });

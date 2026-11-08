@@ -363,6 +363,56 @@ describe("SyncService", () => {
     );
   });
 
+  it("downloads artifacts within the cooling off window when prefetch is enabled", async () => {
+    const prefetching: PackageConfig = {
+      ...pkg,
+      retention: {
+        versions_per_group: 2,
+        cooling_off_days: 3,
+        prefetch_during_cooling_off: true,
+      },
+    };
+    const thresholdSort = "000000.000010.000009~";
+    const coolingOffUntil = new Date(Date.now() + 3 * 86_400_000);
+
+    const deps = {
+      discoverVersions: vi.fn().mockResolvedValue([discovered("0.10.10"), discovered("0.10.9")]),
+      upsertPackage: vi.fn().mockResolvedValue({}),
+      createSyncJob: vi.fn().mockResolvedValue({ id: 301 }),
+      updateSyncJob: vi.fn().mockResolvedValue({}),
+      insertVersion: vi.fn().mockResolvedValueOnce({ id: 1 }).mockResolvedValueOnce({ id: 2 }),
+      insertArtifact: vi
+        .fn()
+        .mockResolvedValueOnce({ id: 20, status: "pending", cooling_off_until: coolingOffUntil })
+        .mockResolvedValueOnce({ id: 21, status: "pending", cooling_off_until: null }),
+      updateArtifactStatus: vi.fn().mockResolvedValue({}),
+      incrementJobCounters: vi.fn().mockResolvedValue(undefined),
+      downloadArtifact: vi.fn().mockResolvedValue({ status: "available", attempts: 1 }),
+      enforceRetention: vi
+        .fn()
+        .mockResolvedValue({ versionsPruned: 0, artifactsDeleted: 0, versionIdsPruned: [] }),
+      getMaxAvailableVersionSort: vi.fn().mockResolvedValue(thresholdSort),
+      listWaivedVersions: vi.fn().mockResolvedValue(new Set<string>()),
+    };
+
+    const service = new SyncService(
+      lockablePool(),
+      prefetching,
+      {} as DownloadService,
+      {} as RetentionService,
+      { deps },
+    );
+
+    const result = await service.run({ triggerType: "scheduled" });
+
+    // The embargoed artifact (id 20) is fetched too; it is the serving layer that holds it back.
+    expect(result.artifactsQueued).toBe(2);
+    expect(deps.downloadArtifact).toHaveBeenCalledWith(
+      expect.objectContaining({ artifactId: 20 }),
+      false,
+    );
+  });
+
   it("persists no embargo for a version an operator has waived", async () => {
     const pkgWithCoolingOff: PackageConfig = {
       ...pkg,

@@ -131,6 +131,8 @@ available → removed (via admin)
 
 Only `available` artifacts are served to clients. The API checks status before responding to download requests.
 
+`available` means the bytes are in storage, not that they may be served. With `retention.prefetch_during_cooling_off`, an artifact is fetched and marked `available` while its `cooling_off_until` is still in the future. The standard routes serve it only once that date has passed (`servableArtifactSql` / `isServableArtifact` in `src/db/queries/servable.ts` are the single definition); `GET /auth/download/...` lets permitted signed-in users fetch it early. The critical-CVE gate applies on both paths.
+
 `version_sort` (a zero-padded string) is stored alongside the raw version string to enable correct lexicographic ordering without parsing in SQL.
 
 We uses plain `pg` (node-postgres) with hand-written SQL queries.

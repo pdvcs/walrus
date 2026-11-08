@@ -246,4 +246,46 @@ describe("RetentionService", () => {
     // Group 21 is dropped wholesale; group 22 has nothing old, so no lookup is needed at all.
     expect(listVersionIdsNewestPerPlatformInGroup).not.toHaveBeenCalled();
   });
+  it("does not let a cooling-off-only group take a groups_to_keep slot", async () => {
+    const storage: StorageBackend = {
+      upload: vi.fn(),
+      download: vi.fn(),
+      delete: vi.fn().mockResolvedValue(undefined),
+      exists: vi.fn(),
+    };
+    const pool = { query: vi.fn().mockResolvedValue(undefined) } as unknown as Pool;
+    // 27 exists only as an embargoed (possibly prefetched) release. Ranked naively it would push
+    // 17 out; ranked by what the public can have, 17 stays.
+    const listVersionGroups = vi
+      .fn()
+      .mockImplementation((_pool, _name, opts?: { excludeEmbargoed?: boolean }) =>
+        Promise.resolve(opts?.excludeEmbargoed ? ["25", "21", "17"] : ["27", "25", "21", "17"]),
+      );
+    const listVersionsOlderThanInGroup = vi.fn().mockResolvedValue([]);
+
+    const service = new RetentionService(pool, storage, {
+      versionsRepo: { listVersionGroups, listVersionsOlderThanInGroup },
+      artifactsRepo: { listArtifactsForVersion: vi.fn().mockResolvedValue([]) },
+    });
+
+    const result = await service.enforceRetention("uv", 2, false, 3);
+
+    expect(result.versionIdsPruned).toEqual([]);
+    expect(storage.delete).not.toHaveBeenCalled();
+    // No group is treated as dropped (the drop path passes keepCount 0 and exemptEmbargoed false).
+    expect(listVersionsOlderThanInGroup).not.toHaveBeenCalledWith(
+      expect.anything(),
+      "uv",
+      expect.anything(),
+      0,
+      false,
+    );
+    // The embargoed-only group is not pruned either.
+    expect(listVersionsOlderThanInGroup).not.toHaveBeenCalledWith(
+      expect.anything(),
+      "uv",
+      "27",
+      expect.anything(),
+    );
+  });
 });

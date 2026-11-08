@@ -536,6 +536,43 @@ describe("admin routes", () => {
       expect(body.artifacts_cooling_off).toBe(1);
     });
 
+    it("keeps a prefetched artifact's real status and counts it as downloaded-but-held-back", async () => {
+      const until = new Date(Date.now() + 2 * 86_400_000);
+      const body = (await getJobBody(
+        makeJobDetail([
+          {
+            version: "3.14.7",
+            version_sort: "000003.000014.000007~",
+            status: "available",
+            cooling_off_until: until,
+          },
+          {
+            version: "3.14.7",
+            version_sort: "000003.000014.000007~",
+            status: "pending",
+            cooling_off_until: until,
+          },
+        ]),
+      )) as Awaited<ReturnType<typeof getJobBody>> & { artifacts_cooling_off_cached: number };
+
+      expect(body.artifacts.map((a) => a.status)).toEqual(["available", "pending"]);
+      expect(body.artifacts_cooling_off).toBe(2);
+      expect(body.artifacts_cooling_off_cached).toBe(1);
+    });
+
+    it("shows the stored status of a held-back artifact on the HTML job page", async () => {
+      const deps = baseDeps();
+      deps.getJob = vi.fn().mockResolvedValue(makeJobDetail([]));
+      const res = await request(createTestApp(deps))
+        .get("/admin/v1/jobs/99")
+        .set("Accept", "text/html");
+
+      // Held back + not fetched reads "cooling-off"; held back + fetched keeps its real status.
+      expect(res.text).toContain("isCoolingOff && !fetched ? 'cooling-off' : a.status");
+      expect(res.text).toContain("held back from general release until ");
+      expect(res.text).toContain("…of which downloaded");
+    });
+
     it("renders the shared admin navigation on the HTML detail page", async () => {
       const deps = baseDeps();
       deps.getJob = vi.fn().mockResolvedValue(makeJobDetail([]));
@@ -1036,6 +1073,36 @@ describe("cooling-off waiver routes", () => {
       const res = await page(pageDeps([artifact()], []));
 
       expect(res.text).not.toContain("releaseNow('python'");
+    });
+
+    it("explains Release now versus Download early when something is cooling off", async () => {
+      const res = await page(pageDeps([embargoed], []));
+
+      expect(res.text).toContain("cooling-off-help");
+      expect(res.text).toContain("ends the hold for everyone");
+      expect(res.text).toContain("only gets you the file now");
+    });
+
+    it("omits the cooling-off help when nothing is cooling off", async () => {
+      const res = await page(pageDeps([artifact()], []));
+
+      expect(res.text).not.toContain("cooling-off-help");
+    });
+
+    it("offers Download early only where the bytes are already cached", async () => {
+      const until = new Date(Date.now() + 2 * 86_400_000);
+      const cached = await page(
+        pageDeps(
+          [artifact({ status: "available", gcs_path: "p/v", cooling_off_until: until })],
+          [],
+        ),
+      );
+      expect(cached.text).toContain("/auth/download/python/3.13.15/linux/x86-64");
+      expect(cached.text).toContain("Download early");
+
+      expect(cached.text).toContain("cooling-off · cached");
+      const notFetched = await page(pageDeps([embargoed], []));
+      expect(notFetched.text).not.toContain("Download early</a>");
     });
 
     it("offers no Release now when waivers are not wired", async () => {

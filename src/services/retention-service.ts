@@ -88,8 +88,14 @@ export class RetentionService {
     const prunable: VersionRow[] = [];
 
     if (groupsToKeep !== undefined) {
-      const keptGroups = groups.slice(0, groupsToKeep);
-      const droppedGroups = groups.slice(groupsToKeep);
+      // groups_to_keep is a quota of series the public can have. A series that exists only as a
+      // release still in cooling-off (even one prefetched into storage) takes no slot and is
+      // never dropped; ranking by it would delete an older, servable series to make room.
+      const rankedGroups = await this.versionsRepo.listVersionGroups(this.pool, packageName, {
+        excludeEmbargoed: true,
+      });
+      const keptGroups = rankedGroups.slice(0, groupsToKeep);
+      const droppedGroups = rankedGroups.slice(groupsToKeep);
 
       for (const group of droppedGroups) {
         // The whole group is going, so a live embargo earns no reprieve.

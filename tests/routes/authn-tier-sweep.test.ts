@@ -57,7 +57,7 @@ describe("application security tier mounts", () => {
     expect(new Set(mounts.map(({ prefix }) => prefix)).size).toBe(mounts.length);
     expect(mounts.every(({ router }) => discoverRoutes(router).length > 0)).toBe(true);
 
-    // The three tiers mount on one base-path wrapper router (WAL-117), not directly on `app` —
+    // The tiers mount on one base-path wrapper router (WAL-117), not directly on `app` —
     // with no base path configured here, that wrapper sits at "/" and is otherwise invisible.
     const applicationLayers = (app as unknown as { _router: { stack: ExpressLayer[] } })._router
       .stack;
@@ -88,6 +88,29 @@ describe("application security tier mounts", () => {
       expect(response.status, `${route.method} ${route.path}`).toBe(401);
       expect(response.body).toEqual({ error: "Authentication required" });
     }
+  });
+
+  it("requires a session on every route of the authenticated tier", async () => {
+    const mount = mounts.find(({ tier }) => tier === "authenticated")!;
+    expect(mount.prefix).toBe("/auth");
+    // The guard runs ahead of routing, so even a path no route matches is refused as
+    // unauthenticated rather than revealed as missing.
+    for (const path of ["/auth/download/uv/1.0.0/linux/x86-64", "/auth/anything-else"]) {
+      const response = await request(app).get(path);
+      expect(response.status, path).toBe(401);
+      expect(response.body).toEqual({ error: "Authentication required" });
+    }
+  });
+
+  it("issues the session cookie for both the operator and authenticated tiers", async () => {
+    const response = await request(app)
+      .post("/admin/v1/login")
+      .type("form")
+      .send({ username: "admin", password: "anything", return_to: "/admin/v1/" })
+      .expect(303);
+    const cookies = ([] as string[]).concat(response.headers["set-cookie"] ?? []);
+    expect(cookies.some((c) => c.includes("Path=/admin/v1"))).toBe(true);
+    expect(cookies.some((c) => c.includes("Path=/auth"))).toBe(true);
   });
 
   it("guards every registered machine route at its tier mount", async () => {

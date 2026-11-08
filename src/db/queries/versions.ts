@@ -1,6 +1,7 @@
 import { Pool } from "pg";
 import { VersionRow } from "../../types/db.js";
 import { generateSortKey } from "../../common/version-utils.js";
+import { servableArtifactSql } from "./servable.js";
 
 export async function insertVersion(
   pool: Pool,
@@ -78,7 +79,7 @@ export async function listAvailableVersionsInGroup(
   opts: { os?: string; arch?: string } = {},
 ): Promise<VersionRow[]> {
   const params: unknown[] = [packageName, group];
-  const artifactConditions: string[] = ["a.status = 'available'"];
+  const artifactConditions: string[] = [servableArtifactSql("a")];
 
   if (opts.os) {
     params.push(opts.os);
@@ -102,11 +103,30 @@ export async function listAvailableVersionsInGroup(
   return rows;
 }
 
-export async function listVersionGroups(pool: Pool, packageName: string): Promise<string[]> {
+/**
+ * Version groups, newest first by their highest `version_sort`.
+ *
+ * With `excludeEmbargoed`, versions still inside their release embargo are ignored when ranking,
+ * and a group with no other version is omitted. Retention uses this to apply `groups_to_keep` to
+ * what the public can actually have: a series that exists only as a cooling-off release must not
+ * take a slot from, and so get deleted in place of, an older series users are downloading.
+ */
+export async function listVersionGroups(
+  pool: Pool,
+  packageName: string,
+  opts: { excludeEmbargoed?: boolean } = {},
+): Promise<string[]> {
+  const embargoFilter = opts.excludeEmbargoed
+    ? `AND NOT EXISTS (
+         SELECT 1 FROM artifacts a
+         WHERE a.version_id = versions.id AND a.cooling_off_until > now()
+       )`
+    : "";
   const { rows } = await pool.query<{ version_group: string }>(
     `SELECT version_group, MAX(version_sort) AS max_sort
      FROM versions
      WHERE package_name = $1
+     ${embargoFilter}
      GROUP BY version_group
      ORDER BY max_sort DESC`,
     [packageName],
@@ -195,7 +215,7 @@ export async function listAvailableVersionsByGroup(
   opts: { os?: string; arch?: string } = {},
 ): Promise<GroupVersionRow[]> {
   const params: unknown[] = [packageName];
-  const artifactConditions: string[] = ["a.status = 'available'"];
+  const artifactConditions: string[] = [servableArtifactSql("a")];
 
   if (opts.os) {
     params.push(opts.os);
@@ -235,7 +255,7 @@ export async function getMaxAvailableVersionSort(
      WHERE v.package_name = $1
        AND EXISTS (
          SELECT 1 FROM artifacts a
-         WHERE a.version_id = v.id AND a.status = 'available'
+         WHERE a.version_id = v.id AND ${servableArtifactSql("a")}
        )`,
     [packageName],
   );
@@ -353,7 +373,7 @@ export async function listVersionIdsNewestPerPlatformInGroup(
        SELECT v.id,
               ROW_NUMBER() OVER (PARTITION BY a.os, a.arch ORDER BY v.version_sort DESC) AS rn
        FROM versions v
-       JOIN artifacts a ON a.version_id = v.id AND a.status = 'available'
+       JOIN artifacts a ON a.version_id = v.id AND ${servableArtifactSql("a")}
        WHERE v.package_name = $1 AND v.version_group = $2
      ) ranked
      WHERE rn <= $3`,

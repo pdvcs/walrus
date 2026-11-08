@@ -7,6 +7,7 @@ dist/
 data/
 *.js.map
 
+tmp/
 *.log
 *.tmp
 *.bak

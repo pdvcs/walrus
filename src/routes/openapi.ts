@@ -224,6 +224,55 @@ registry.registerPath({
   },
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/auth/download/{package}/{version}/{os}/{arch}",
+  summary: "Download a binary, including during cooling-off (authenticated)",
+  description:
+    "Same as the standard download, but requires a signed-in session (bearer token or session " +
+    "cookie). A caller with the cooling-off-download permission receives artifacts still inside " +
+    "their cooling-off period, with `X-Walrus-Cooling-Off-Until`; anyone else gets the standard " +
+    "`423`. The critical-CVE gate still applies.",
+  operationId: "downloadArtifactAuthenticated",
+  tags: ["Download"],
+  request: {
+    params: z.object({
+      package: z.string(),
+      version: z.string(),
+      os: z.string(),
+      arch: z.string(),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Binary file stream",
+      headers: {
+        "X-Walrus-Cooling-Off-Until": {
+          description: "Present when the artifact is not yet in general release: when it will be",
+          schema: { type: "string", format: "date-time" },
+        },
+      },
+      content: { "application/octet-stream": { schema: { type: "string", format: "binary" } } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    403: {
+      description: "Version is blocked by the critical-CVE gate",
+      content: { "application/json": { schema: BlockedVersionErrorSchema } },
+    },
+    404: {
+      description: "Artifact not found or its bytes are not stored",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    423: {
+      description: "Within the cooling-off period and the caller may not fetch it early",
+      content: { "application/json": { schema: CoolingOffErrorSchema } },
+    },
+  },
+});
+
 // ── Vulnerability intelligence ─────────────────────────────────────────────────
 
 registry.registerPath({

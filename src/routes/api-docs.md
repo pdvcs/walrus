@@ -201,6 +201,16 @@ starting a download rather than discovering it from a `400`.
 
 ---
 
+### GET /auth/download/:package/:version/:os/:arch | Download a binary, including during cooling-off
+
+Same behaviour, parameters and responses as `GET /download/...`, but requires authentication (bearer token or the `walrus_session` cookie) and is the one route that may serve an artifact still inside its cooling-off period.
+
+- Packages opt in with `retention.prefetch_during_cooling_off`; otherwise nothing has been fetched yet and a cooling-off artifact is `404`.
+- A caller with the cooling-off-download permission (currently administrators) receives the bytes and an `X-Walrus-Cooling-Off-Until` header giving the date of general release. Early downloads are audited.
+- A signed-in caller without it receives the same `423` as the standard `/download` route.
+- The critical-CVE `403` still applies.
+- No session: `401`.
+
 ### GET /download/:package/:version/:os/:arch | Download a binary
 
 Download a binary. Streams directly from storage.
@@ -430,6 +440,9 @@ curl "$WALRUS_URL/admin/v1/vuln-suppressions/audit?cve_id=CVE-2099-0001&limit=20
 For an urgent upstream fix, a waiver releases **one version** of one package early. It is the
 embargo's counterpart to a CVE suppression, and it does not override the CVE gate: a waived version
 that is also CVE-blocked stays blocked.
+
+A package with `prefetch_during_cooling_off` has its bytes stored during the embargo, so a waiver
+makes it servable immediately.
 
 `POST /admin/v1/cooling-off-waivers` takes `{"package", "version", "reason"}` (`created_by` is taken
 from the authenticated subject). In one transaction it records the waiver, releases the version's

@@ -123,7 +123,8 @@ import {
   previewCveSuppressionRevocation,
   revokeAuditedCveSuppression,
 } from "./services/cve-suppression-service.js";
-import { installOperatorAuth } from "./authn/operator.js";
+import { createAuthenticatedGuard, installOperatorAuth } from "./authn/operator.js";
+import { createPermissionChecker } from "./authn/permissions.js";
 import { loadOperatorAuthRuntime, type OperatorAuthRuntime } from "./authn/runtime.js";
 import { loadMachineAuth } from "./authn/google-oidc.js";
 import { createAuthAuditSinks } from "./authn/audit.js";
@@ -341,6 +342,7 @@ export interface CreateAppOptions {
 
 export const SECURITY_TIER_MOUNTS = [
   { tier: "operator", prefix: "/admin/v1" },
+  { tier: "authenticated", prefix: "/auth" },
   { tier: "machine", prefix: "/internal" },
   { tier: "public", prefix: "/" },
 ] as const;
@@ -600,6 +602,45 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     }),
   );
 
+  // Authenticated tier: any signed-in subject reaches this router; each route authorizes itself.
+  const authenticatedRouter = express.Router();
+  if (options.operatorAuth) {
+    const authRuntime = options.operatorAuth;
+    const permissions = createPermissionChecker(authRuntime.roster);
+    authenticatedRouter.use(createAuthenticatedGuard(authRuntime, basePath));
+    authenticatedRouter.use(
+      "/download",
+      createDownloadRouter({
+        getVersion: (packageName, version) => getVersion(pool, packageName, version),
+        getPackageRow: (packageName) => getPackage(pool, packageName),
+        listAffectsForPackage: (packageName) => listAffectsWithCveForPackage(pool, packageName),
+        getArtifact: (versionId, os, arch) => getArtifact(pool, versionId, os, arch),
+        streamFromStorage: (key, range) => storage.stream(key, range),
+        mayBypassCoolingOff: (req) =>
+          req.auth !== undefined && permissions.canDownloadDuringCoolingOff(req.auth.subject),
+        onCoolingOffBypass: (req, artifact) => {
+          log.info(
+            { subject: req.auth?.subject, artifactId: artifact.id, path: req.originalUrl },
+            "Cooling-off artifact downloaded early",
+          );
+          void authRuntime
+            .auditAction?.({
+              subject: req.auth!.subject,
+              kind: req.auth!.kind,
+              method: req.method,
+              path: req.originalUrl,
+              status: 200,
+            })
+            .catch((err) => log.error({ err }, "Failed to audit early download"));
+        },
+      }),
+    );
+  } else {
+    authenticatedRouter.use((_req, res) =>
+      res.status(503).json({ error: "Authentication unavailable" }),
+    );
+  }
+
   // Shared by the admin package page and the public viewer page so both report the same gate.
   const getPackageVulnBadges = async (name: string) => {
     if (!(await isPackageTracked(pool, name))) return { tracked: false, byVersion: {} };
@@ -819,8 +860,9 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
 
   const securityTierMounts: SecurityTierMount[] = [
     { ...SECURITY_TIER_MOUNTS[0], router: operatorRouter },
-    { ...SECURITY_TIER_MOUNTS[1], router: internalRouter },
-    { ...SECURITY_TIER_MOUNTS[2], router: publicRouter },
+    { ...SECURITY_TIER_MOUNTS[1], router: authenticatedRouter },
+    { ...SECURITY_TIER_MOUNTS[2], router: internalRouter },
+    { ...SECURITY_TIER_MOUNTS[3], router: publicRouter },
   ];
   app.locals.securityTierMounts = securityTierMounts;
   app.locals.metrics = metrics;

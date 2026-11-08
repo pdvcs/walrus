@@ -551,7 +551,11 @@ export class SyncService {
       }
 
       if (artifactRow.status === "pending" || needsChecksumRepair) {
-        if (artifactRow.cooling_off_until !== null && artifactRow.cooling_off_until > new Date()) {
+        if (
+          artifactRow.cooling_off_until !== null &&
+          artifactRow.cooling_off_until > new Date() &&
+          !this.packageConfig.retention.prefetch_during_cooling_off
+        ) {
           continue; // still in cooling off period — leave as pending, download on next sync
         }
         queued.push({
