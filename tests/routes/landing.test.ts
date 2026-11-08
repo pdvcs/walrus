@@ -15,7 +15,7 @@ describe("public landing page", () => {
   it("introduces Walrus, reports the package version, and links its entry points", async () => {
     const response = await request(app).get("/").expect(200).expect("content-type", /html/);
     expect(response.headers.location).toBeUndefined();
-    expect(response.text).toContain("<h1>Walrus</h1>");
+    expect(response.text).toContain("<h1>Walrus Ingress Server</h1>");
     expect(response.text).toContain(`v${packageMetadata.version}`);
     expect(response.text).toContain(
       'href="/admin/v1/login?return_to=%2Fadmin%2Fv1%2F">Log in as admin</a>',
