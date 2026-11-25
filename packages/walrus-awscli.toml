@@ -1,0 +1,113 @@
+name = "aws"
+display_name = "AWS CLI Package"
+vendor = "Amazon"
+website = "https://aws.amazon.com/cli/"
+description = "AWS Command Line Interface"
+ 
+# Within AWS CLI v2, the middle number is the minor version and the last number is the patch version:
+ 
+# Versions:
+#   Minor version releases:
+#     Generally include substantial new CLI capabilities or changes in behavior. Examples of these
+#     are new global options that apply to all commands, a new credentials type, changes to "foundational" commands such
+#     as s3, and adding or dropping support for a Python version. The minor version increases and the patch version
+#     resets to zero (for example, 2.39.6 to 2.40.0).
+#
+#   Patch version releases:
+#     Generally include incremental improvements to existing functionality, bug fixes, dependency
+#     updates, and updates to supported AWS service APIs. Examples of these include new service launches, new operations
+#     for existing services, and bugfixes or enhancements to a single command. The patch version increases
+#     (for example, 2.39.6 to 2.39.7).
+#
+#   Minor releases:
+#     Can also include improvements, bug fixes, and service API updates. Review the release notes for the
+#     specific changes in each version.
+ 
+[discovery]
+type = "directory-listing"
+url = "https://raw.githubusercontent.com/aws/aws-cli/refs/heads/v2/CHANGELOG.rst"
+# Applied to the raw body; the capture group yields the version from each release heading.
+pattern = "(?<=^|\\n)(\\d+\\.\\d+\\.\\d+)\\r?\\n=+(?=\\r?\\n|$)"
+ 
+[versioning]
+type = "semver"
+# The second version number identifies the minor release (for example, 2.41.x or 2.42.x).
+# Patch releases are grouped together; versions_per_group keeps the latest patch in each
+# minor-version group, and groups_to_keep limits how many groups are retained.
+version_group_extract = "^\\d+\\.(\\d+)"
+# Archives are named AWSCLIV2.pkg, awscli-exe-linux-x86_64.zip, awscli-exe-linux-aarch64.zip and AWSCLIV2.msi
+min_version = "2.42.0"
+lts_support = false
+ 
+[retention]
+versions_per_group = 1
+groups_to_keep = 2 # keep the latest two minor versions, with the latest patch from each
+cooling_off_days = 3
+ 
+[checksum]
+# No automatic checksum or signature verification is configured. Perform the checks below
+# separately before using a download.
+#
+# Latest installer URLs and detached signature URLs:
+#   macOS:        https://awscli.amazonaws.com/AWSCLIV2.pkg
+#                 https://awscli.amazonaws.com/AWSCLIV2.pkg.sig (404 when checked 2026-11-24)
+#   Linux x86-64: https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip
+#                 https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip.sig
+#   Linux ARM64:  https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip
+#                 https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip.sig
+#   Windows:      https://awscli.amazonaws.com/AWSCLIV2.msi
+#                 https://awscli.amazonaws.com/AWSCLIV2.msi.sig (404 when checked 2026-11-24)
+#
+# For Linux, import the AWS CLI public key from the instructions below and check its
+# fingerprint against the trusted AWS documentation before verifying the signature:
+#   https://docs.aws.amazon.com/cli/latest/userguide/getting-started-version.html
+#   gpg --import aws-cli-public-key.asc
+#   gpg --fingerprint FB5DB77FD5C118B80511ADA8A6310ACC4672475C
+# Expected fingerprint: FB5D B77F D5C1 18B8 0511 ADA8 A631 0ACC 4672 475C
+#
+# Example for a pinned Linux x86-64 release; use the matching version for both files:
+#   curl -fLO https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.42.2.zip
+#   curl -fLO https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.42.2.zip.sig
+#   gpg --verify awscli-exe-linux-x86_64-2.42.2.zip.sig \
+#                awscli-exe-linux-x86_64-2.42.2.zip
+# Require a good signature from the expected key; reject failed or unexpected signatures.
+#
+# The macOS and Windows .sig URLs above are unavailable. Check their native signatures:
+#   macOS:   pkgutil --check-signature AWSCLIV2.pkg
+#   Windows: Get-AuthenticodeSignature .\AWSCLIV2.msi | Format-List Status, StatusMessage, SignerCertificate
+# Require a valid signature from the expected Amazon signing identity.
+type = "none"
+ 
+[[platforms]]
+os = "windows"
+arch = "x86-64"
+os_upstream = "windows"
+arch_upstream = "x86_64"
+extension = "msi"
+url_template = "https://awscli.amazonaws.com/AWSCLIV2.{ext}"
+ 
+[[platforms]]
+os = "macos"
+arch = "arm64"
+os_upstream = "darwin"
+arch_upstream = "arm"
+extension = "pkg"
+url_template = "https://awscli.amazonaws.com/AWSCLIV2.{ext}"
+ 
+[[platforms]]
+os = "linux"
+arch = "x86-64"
+os_upstream = "linux"
+arch_upstream = "x86_64"
+extension = "zip"
+url_template = "https://awscli.amazonaws.com/awscli-exe-{os}-{arch}.{ext}"
+ 
+[vulnerabilities]
+# NVD tracks AWS CLI v2 CVEs under this CPE; version 2.34.28 matches
+# CVE-2026-13769 and CVE-2026-18654.
+cpes = ["amazon:aws_command_line_interface"]
+# No OSV mapping: the checked PyPI awscli advisory ranges apply to v1, not the v2
+# installers. Also monitor https://github.com/aws/aws-cli/security/advisories for
+# advisories that may not have CVEs.
+aliases = ["awscli", "aws-cli", "aws cli", "aws command line interface", "amazon aws cli"]
+
